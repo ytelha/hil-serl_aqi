@@ -44,7 +44,25 @@ MODE_ONE_LINER = {
     "e2hil": "EXTERNAL baseline E2HiL (Deng et al., RA-L 2026): plain "
              "HIL-SERL + entropy-bounded actor loss (gate off, quality off, "
              "training logs off)",
+    "hiril": "EXTERNAL baseline HiRIL (Zhou et al., ESWA 2026), separate "
+             "pipeline train_hiril.py: TD3 actor + BIQN critic, risk-"
+             "triggered interventions, TDRD replay, BC on human actions",
 }
+
+
+def hiril_condition_rows(hiril: dict) -> list:
+    """Conditions rows for a HiRIL run (examples/train_hiril.py) from its
+    HiRILConfig.as_dict(); every knob is active in that pipeline."""
+    rows = [{"choice": "pipeline", "value": "hiril", "status": "mode",
+             "note": MODE_ONE_LINER["hiril"]}]
+    for key in sorted(hiril):
+        note = "HiRIL hyperparameter (serl_launcher/hiril/config.py)"
+        if key == "tau_risk" and float(hiril[key]) <= 0:
+            note = ("calibrated once as calib_quantile of early DU(s, a_RL), "
+                    "then frozen (logged in aqi_logs/<run>/gate_state.json)")
+        rows.append({"choice": key, "value": _fmt_val(hiril[key]),
+                     "status": "active", "note": note})
+    return rows
 
 
 def _is_baseline_arch(mode) -> bool:

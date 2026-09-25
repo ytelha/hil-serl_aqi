@@ -61,6 +61,7 @@ flowchart TD
 | script | writes |
 |---|---|
 | [`train_aqi_rlpd.py`](../examples/train_aqi_rlpd.py) | `runs/<task>_<mode>_<op>_s<seed>/` (checkpoints) and `aqi_logs/<run>/` (`steps.jsonl`, `segments.jsonl`, `episodes.jsonl`) |
+| [`train_hiril.py`](../examples/train_hiril.py) | external HiRIL baseline (own learner): checkpoints + `agent_type.json`, `aqi_logs/<run>/` (`episodes.jsonl`, `segments.jsonl`); launched by `run_campaign.py` for arms with `mode: hiril` ([hiril_baseline.md](hiril_baseline.md)) |
 | [`record_demos.py`](../examples/record_demos.py) | human (SpaceMouse) demos → `demo_data/<task>/human/` |
 | [`collect_synthetic_demos.py`](../examples/collect_synthetic_demos.py) | **geometric-oracle** demos → `demo_data/<task>/synthetic/` |
 | [`collect_policy_synthetic_demos.py`](../examples/collect_policy_synthetic_demos.py) | **policy-oracle** demos → `demo_data/<task>/policy/` |

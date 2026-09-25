@@ -1,0 +1,118 @@
+# =====================================================================
+# hiril_comparison.yaml — external baseline: HiRIL vs plain HIL-SERL.
+#
+# HiRIL (Zhou et al., Expert Systems With Applications 308 (2026) 131118)
+# is the closest published competitor to AQI: the robot REQUESTS a human
+# takeover when a critic-based risk score is high (AQI: active gate), and
+# it weights human corrections in replay by how much they reduce risk
+# (AQI: quality-aware replay), plus behaviour cloning on human actions.
+# It is a separate learner, so it runs through examples/train_hiril.py
+# (arm `mode: hiril`); see docs/hiril_baseline.md.
+#
+# ARMS
+#   hilserl  plain 2-critic RLPD (reference; operator acts on its own
+#            task monitor).
+#   hiril    TD3 + BIQN critic; the synthetic operator RESPONDS to HiRIL's
+#            risk-triggered requests (DU(s, a_RL) > tau_risk) with its
+#            skill-modulated gate, exactly like AQI's active arms.
+# To compare with AQI's own robot-triggered method, add `active` / `aqi`
+# (and their aqi knobs) to `methods:`.
+#
+# Everything else = rq4_ensemble_convergence.yaml's hilserl arm (cuboid,
+# roster, 6 demos, 40k-step cap, convergence rule, +-16 mm ruler), so RQ4's
+# 18 hilserl cells can be REUSED (docs/e2hil_baseline.md section 4 recipe):
+# only the 18 hiril cells are new.
+#
+# Launch (OOM-protected, as for RQ3/RQ4):
+#   WANDB_RUN_GROUP=hiril_comparison \
+#   systemd-run --user --unit=hiril_campaign --collect \
+#     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/hiril_comparison.yaml \
+#          --campaign runs/hiril_comparison \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/hiril_comparison.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl
+  - hiril
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000
+  minutes_per_cell: 300
+  converge_success: 0.9            # convergence rule identical to RQ3/RQ4
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: false             # plain (hilserl as RQ4; HiRIL: paper has
+  demo_pretrain_steps: 0           # no warm start)
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # hilserl: built-in 3e-4 (HiRIL has its own)
+
+aqi:
+  synthetic_intervention_mode: signal
+
+# HiRIL knobs (serl_launcher/hiril/config.py). Omitted keys = paper /
+# documented defaults. The ones listed are those the paper does not fix for
+# this task -- the first candidates for a sensitivity sweep.
+hiril:
+  tau_risk: 0.0                    # <=0: calibrate once (80th pct of early DU)
+  calib_quantile: 0.8
+  intervention_penalty: -0.1       # r_p at takeover onset (reward is 0/1)
+  lambda_bc: 1.0                   # BC weight in the actor loss (Eq. 32)
+  du_mode: dual                    # dual | aleatoric | epistemic (ablations)
+  explore_decay_steps: 20000       # 1.0 -> 0.05 exploration noise
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI
+
+analysis:
+  baseline: hilserl
+  plots: true

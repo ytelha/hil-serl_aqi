@@ -126,6 +126,43 @@ def make_sac_pixel_agent(
     return agent
 
 
+def make_hiril_pixel_agent(
+    seed,
+    sample_obs,
+    sample_action,
+    image_keys=("image",),
+    encoder_type="resnet-pretrained",
+    reward_bias=0.0,
+    discount=0.97,
+    hiril=None,
+):
+    """HiRIL baseline agent (serl_launcher/hiril/agent.py): TD3 actor + BIQN
+    critic, on the SAME pixel encoder / pretrained ResNet-10 / random-crop
+    augmentation as make_sac_pixel_agent, so the comparison differs only in
+    the learning method. ``hiril`` = HiRILConfig (None = paper defaults)."""
+    from serl_launcher.hiril.agent import (HiRILAgent, make_hiril_defs,
+                                           make_pixel_encoder)
+    from serl_launcher.hiril.config import HiRILConfig
+    from serl_launcher.utils.train_utils import load_resnet10_params
+
+    hiril = hiril or HiRILConfig()
+    encoder = make_pixel_encoder(encoder_type, image_keys)
+    actor_def, critic_def = make_hiril_defs(sample_action.shape[-1], hiril,
+                                            encoder=encoder)
+    agent = HiRILAgent.create(
+        jax.random.PRNGKey(seed), sample_obs, sample_action,
+        actor_def=actor_def, critic_def=critic_def, hiril=hiril,
+        discount=discount, image_keys=image_keys,
+        augmentation_function=make_batch_augmentation_func(image_keys),
+        reward_bias=reward_bias)
+    if "pretrained" in encoder_type:
+        agent = load_resnet10_params(agent, image_keys)
+        # start the target networks from the loaded weights as well
+        agent = agent.replace(state=agent.state.replace(
+            target_params=agent.state.params))
+    return agent
+
+
 def make_sac_pixel_agent_hybrid_single_arm(
     seed,
     sample_obs,

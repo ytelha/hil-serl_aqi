@@ -278,6 +278,70 @@ class QualityAwareReplayBufferDataStore(MemoryEfficientReplayBufferDataStore):
             )
 
 
+class RiskAwarePERDataStore(MemoryEfficientReplayBufferDataStore):
+    """HiRIL's single replay buffer D = D1 (RL) + D2 (human) with TDRD
+    prioritised sampling (paper Eq. 26-28; serl_launcher/hiril/priorities.py).
+
+    Each transition carries
+        hiril_human  1.0 for a human action (takeover step or offline demo),
+                     0.0 for the policy's own action (D1 / D2 split, Eq. 29)
+        hiril_bonus  the RD term exp(DU(s, a_RL) - DU(s, a_H)) for human
+                     steps, fixed at collection; 0.0 for RL steps
+    Every sampled batch also contains
+        per_index    buffer slots, to hand back to update_priorities()
+        is_weight    importance-sampling weights (per_beta)
+    """
+
+    def __init__(self, observation_space, action_space, capacity,
+                 image_keys=("image",), per_alpha=1.0, per_beta=1.0,
+                 per_eps=1e-3, **kwargs):
+        from serl_launcher.hiril.priorities import RiskAwarePriorities
+        super().__init__(observation_space, action_space, capacity,
+                         image_keys=image_keys, **kwargs)
+        self.dataset_dict["hiril_human"] = np.zeros(capacity, np.float32)
+        self.dataset_dict["hiril_bonus"] = np.zeros(capacity, np.float32)
+        self.priorities = RiskAwarePriorities(capacity, per_alpha, per_beta,
+                                              per_eps)
+        self._last_sampled = None
+        self._last_weights = None
+
+    def insert(self, data_dict):
+        with self._lock:
+            data_dict = dict(data_dict)
+            data_dict.setdefault("hiril_human", np.float32(0.0))
+            data_dict.setdefault("hiril_bonus", np.float32(0.0))
+            pre = self._insert_index
+            MemoryEfficientReplayBuffer.insert(self, data_dict)
+            n_written = (self._insert_index - pre) % self._capacity
+            idx = (pre + np.arange(n_written)) % self._capacity
+            self.priorities.set_new(idx, float(data_dict["hiril_bonus"]))
+
+    # called from within sample() -> already holds self._lock
+    def _sample_indices(self, batch_size: int) -> np.ndarray:
+        n = len(self)
+        idx, w = self.priorities.sample(n, batch_size, self.np_random,
+                                        valid=self._is_correct_index)
+        self._last_sampled, self._last_weights = idx, w
+        return idx
+
+    def sample(self, *args, **kwargs):
+        with self._lock:
+            batch = MemoryEfficientReplayBuffer.sample(self, *args, **kwargs)
+            b = batch.unfreeze()
+            b["per_index"] = self._last_sampled.astype(np.int32)
+            b["is_weight"] = self._last_weights
+            return frozen_dict.freeze(b)
+
+    def update_priorities(self, indices, abs_td) -> None:
+        with self._lock:
+            self.priorities.update(indices, abs_td)
+
+    def priority_stats(self) -> dict:
+        with self._lock:
+            return self.priorities.stats(
+                len(self), human=self.dataset_dict["hiril_human"])
+
+
 def populate_data_store(
     data_store: DataStoreBase,
     demos_path: str,

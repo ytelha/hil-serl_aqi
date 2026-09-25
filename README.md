@@ -126,6 +126,7 @@ allows parallel training and inference.
 | [franka_sim](./franka_sim/) | **Simulation extension:** MuJoCo Panda peg-insertion env; run the whole pipeline with no hardware |
 | [examples/experiments/sim_peg_insertion](./examples/experiments/sim_peg_insertion/) | **Simulation experiment:** config, wrappers and launch scripts for `--exp_name=sim_peg_insertion` |
 | [examples/train_aqi_rlpd.py](./examples/train_aqi_rlpd.py) | **AQI training entry point:** adds `--aqi_mode`, active-trigger cues, ensemble/quality knobs |
+| [examples/train_hiril.py](./examples/train_hiril.py) + [serl_launcher.hiril](./serl_launcher/serl_launcher/hiril/) | **External baseline HiRIL** (Zhou et al., ESWA 2026): separate pipeline, TD3 + Bayesian IQN critic, risk-triggered interventions, TDRD replay; see [docs/hiril_baseline.md](./docs/hiril_baseline.md) |
 | [serl_launcher.agents.continuous.e2hil](./serl_launcher/serl_launcher/agents/continuous/e2hil.py) | **External baseline E2HiL** (Deng et al., RA-L 2026): `--aqi_mode=e2hil`, entropy-bounded actor loss; see [docs/e2hil_baseline.md](./docs/e2hil_baseline.md) |
 | [serl_robot_infra](./serl_robot_infra/) | Robot infra for running with real robots |
 | [serl_robot_infra.robot_servers](./serl_robot_infra/robot_servers/) | Flask server for sending commands to robot via ROS |

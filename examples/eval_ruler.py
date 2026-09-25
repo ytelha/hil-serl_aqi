@@ -58,6 +58,21 @@ from serl_launcher.aqi import stats as aqi_stats
 from experiments.mappings import CONFIG_MAPPING
 
 FLAGS = flags.FLAGS
+
+
+def _resolve_agent_type(checkpoint_path):
+    """(agent_type, metadata) from --agent_type / agent_type.json."""
+    meta = {}
+    path = os.path.join(os.path.abspath(checkpoint_path or ""),
+                        "agent_type.json")
+    if os.path.exists(path):
+        try:
+            meta = json.load(open(path))
+        except (ValueError, OSError):
+            meta = {}
+    if FLAGS.agent_type != "auto":
+        return FLAGS.agent_type, meta
+    return meta.get("agent_type", "sac"), meta
 flags.DEFINE_string("exp_name", None, "Experiment name (task).")
 flags.DEFINE_enum("peg_shape", None, ["cylinder", "hex", "cuboid"],
                   "Insertion geometry for the eval env. If unset, falls back to "
@@ -66,6 +81,11 @@ flags.DEFINE_enum("peg_shape", None, ["cylinder", "hex", "cuboid"],
                   "config default is 'cylinder', so a cuboid/hex policy scored "
                   "without this flag is silently evaluated on the wrong peg.")
 flags.DEFINE_string("checkpoint_path", None, "Trained cell's checkpoint dir.")
+flags.DEFINE_enum("agent_type", "auto", ["auto", "sac", "hiril"],
+                  "Architecture to restore the checkpoint into. 'auto' reads "
+                  "<checkpoint_path>/agent_type.json (written by "
+                  "train_hiril.py) and falls back to 'sac' (every "
+                  "train_aqi_rlpd.py mode).")
 flags.DEFINE_integer("eval_checkpoint_step", 0,
                      "Checkpoint step; 0 = latest (the frozen policy).")
 flags.DEFINE_integer("eval_last_k", 1,
@@ -264,8 +284,18 @@ def main(_):
         encoder_type=config.encoder_type,
         discount=config.discount,
     )
-    if config.setup_mode in ("single-arm-fixed-gripper",
-                             "dual-arm-fixed-gripper"):
+    agent_type, agent_meta = _resolve_agent_type(FLAGS.checkpoint_path)
+    if agent_type == "hiril":
+        # HiRIL baseline (train_hiril.py): TD3 actor + BIQN critic; rebuilt
+        # from the exact HiRILConfig the learner saved. argmax = pi(s).
+        from serl_launcher.hiril.config import HiRILConfig
+        from serl_launcher.utils.launcher import make_hiril_pixel_agent
+        agent = make_hiril_pixel_agent(
+            **agent_kwargs,
+            hiril=HiRILConfig.from_dict(agent_meta.get("hiril", {})))
+        print("[ruler] agent_type = hiril")
+    elif config.setup_mode in ("single-arm-fixed-gripper",
+                               "dual-arm-fixed-gripper"):
         agent = make_sac_pixel_agent(**agent_kwargs)
     elif config.setup_mode == "single-arm-learned-gripper":
         agent = make_sac_pixel_agent_hybrid_single_arm(**agent_kwargs)

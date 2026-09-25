@@ -82,6 +82,7 @@ from serl_launcher.aqi.operator_model import (  # noqa: E402
     theta_from_scale, TIER_S)
 from serl_launcher.aqi import stats as S  # noqa: E402
 from serl_launcher.aqi.config import MODES as AQI_MODES  # noqa: E402
+from serl_launcher.hiril.config import CLI_FIELDS as HIRIL_FIELDS  # noqa: E402
 import provenance as prov  # noqa: E402
 
 
@@ -308,6 +309,15 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     mo = cfg.get("method_overrides")
     if mo is not None and "method_overrides" not in explicit:
         args.method_overrides = dict(mo)
+    hir = cfg.get("hiril") or {}
+    for name, cast in HIRIL_FIELDS.items():
+        if hir.get(name) is not None and f"hiril_{name}" not in explicit:
+            setattr(args, f"hiril_{name}",
+                    _to_bool(hir[name]) if cast is bool else cast(hir[name]))
+    unknown = sorted(set(hir) - set(HIRIL_FIELDS))
+    if unknown:
+        raise SystemExit(f"[config] unknown hiril keys {unknown}; valid: "
+                         f"{sorted(HIRIL_FIELDS)}")
     arms = cfg.get("arms")
     if arms is not None:
         if not isinstance(arms, dict):
@@ -424,6 +434,19 @@ def _method_conditions(method, args):
 
     def val(key):
         return _arm_val(args, method, key, getattr(args, key, None))
+
+    if mode in PIPELINES:
+        from serl_launcher.hiril.config import HiRILConfig
+        kw = {n: val(f"hiril_{n}") for n in HIRIL_FIELDS
+              if val(f"hiril_{n}") is not None}
+        rows = prov.hiril_condition_rows(HiRILConfig(**kw).as_dict())
+        dp = bool(val("demo_pretrain"))
+        dps = int(val("demo_pretrain_steps") or 0)
+        rows.append({"choice": "demo_pretrain",
+                     "value": f"{dps} steps" if dp and dps > 0 else "off",
+                     "status": "active" if dp and dps > 0 else "inert",
+                     "note": "demo-only learner warm start (not in the paper)"})
+        return rows
 
     def as_tuple(v):
         v = "" if v is None else str(v)
@@ -901,6 +924,13 @@ def _wandb_env(args):
 # scripts parse back, so they may not contain "_" (use "-", e.g. quality-beh).
 ARM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 
+# Arms whose `mode` is a separate training PIPELINE instead of an aqi_mode of
+# train_aqi_rlpd.py. Their learner/actor commands are built by
+# _pipeline_learner_cmd / _pipeline_actor_cmd (own flags; the AQI flags are
+# never passed) and the ruler is told the agent type.
+PIPELINES = {"hiril": "train_hiril.py"}   # external baseline, see
+                                          # docs/hiril_baseline.md
+
 
 def _to_bool(v):
     if isinstance(v, str):
@@ -936,7 +966,17 @@ ARM_KEYS = {
     # E2HiL external baseline (e2hil)
     "e2hil_K": int, "e2hil_q_low": float, "e2hil_q_high": float,
     "e2hil_q_agg": str,
+    # HiRIL external baseline (mode: hiril) -- serl_launcher/hiril/config.py
+    **{f"hiril_{name}": (_to_bool if cast is bool else cast)
+       for name, cast in HIRIL_FIELDS.items()},
 }
+
+
+# per-arm keys that every pipeline understands (demo warm start); the rest
+# are either train_aqi_rlpd knobs (incl. learning_rate) or hiril_* knobs
+# (train_hiril.py, which has its own actor/critic learning rates)
+_LEARNER_ARM_KEYS = {"demo_pretrain", "demo_pretrain_steps",
+                     "demo_pretrain_batch_size"}
 
 
 def _arm_def(args, arm: str) -> dict:
@@ -978,11 +1018,12 @@ def validate_arms(args, methods):
                 f"digits, '-' or '.', no '_' (cell ids are "
                 f"<arm>_<operator>_s<seed>).")
         d = _arm_def(args, arm)
-        if d["mode"] not in AQI_MODES:
+        valid_modes = tuple(AQI_MODES) + tuple(PIPELINES)
+        if d["mode"] not in valid_modes:
             raise SystemExit(
-                f"[arms] '{arm}' is not an aqi_mode {AQI_MODES}; define it "
+                f"[arms] '{arm}' is not a mode {valid_modes}; define it "
                 f"under `arms:` with a `mode:` key.")
-        if arm in AQI_MODES and d["mode"] != arm:
+        if arm in valid_modes and d["mode"] != arm:
             raise SystemExit(
                 f"[arms] arm '{arm}' is a mode name but maps to mode "
                 f"'{d['mode']}'; give the variant its own name.")
@@ -999,14 +1040,109 @@ def validate_arms(args, methods):
                 ARM_KEYS[k](v)
             except (TypeError, ValueError) as exc:
                 raise SystemExit(f"[arms] '{arm}': bad value for {k}: {exc}")
+        is_pipeline = d["mode"] in PIPELINES
+        if is_pipeline:     # the pipeline's own config validates the values
+            from serl_launcher.hiril.config import HiRILConfig
+            kw = {n: _arm_val(args, arm, f"hiril_{n}",
+                              getattr(args, f"hiril_{n}", None))
+                  for n in HIRIL_FIELDS}
+            try:
+                HiRILConfig(**{k: v for k, v in kw.items() if v is not None})
+            except (AssertionError, TypeError, ValueError) as exc:
+                raise SystemExit(f"[arms] '{arm}': invalid HiRIL setting "
+                                 f"({exc or 'see serl_launcher/hiril/config.py'})")
+        inert = sorted(k for k in d if k != "mode" and (
+            k.startswith("hiril_") != is_pipeline)
+            and k not in _LEARNER_ARM_KEYS)
+        if inert:
+            _yellow(f"[arms] '{arm}' (mode {d['mode']}): {inert} do not "
+                    f"apply to this mode and are ignored.")
     for arm in (getattr(args, "arms", None) or {}):
         if arm not in methods:
             _yellow(f"[arms] '{arm}' is defined under `arms:` but not listed "
                     f"in `methods:` -> it will not run.")
 
 
+def _pipeline_flags(args, arm):
+    """--hiril_<name> <value> for every HiRIL knob set campaign-wide or on
+    the arm (unset knobs keep HiRILConfig's paper defaults)."""
+    f = []
+    for name, cast in HIRIL_FIELDS.items():
+        key = f"hiril_{name}"
+        v = _arm_val(args, arm, key, getattr(args, key, None))
+        if v is None:
+            continue
+        if cast is bool:            # absl boolean flag: --x / --nox
+            f += [f"--{key}" if _to_bool(v) else f"--no{key}"]
+        else:
+            f += [f"--{key}", str(v)]
+    return f
+
+
+def _pipeline_learner_cmd(args, ckpt, demo_path, method, seed, run_name):
+    """Learner command of a PIPELINES arm (train_hiril.py): the shared budget
+    / warm-start flags + its own knobs. It has its own optimiser settings,
+    so the campaign-wide learning_rate is NOT passed."""
+    dp = bool(_arm_val(args, method, "demo_pretrain", args.demo_pretrain))
+    dps = int(_arm_val(args, method, "demo_pretrain_steps",
+                       args.demo_pretrain_steps))
+    dpb = int(_arm_val(args, method, "demo_pretrain_batch_size",
+                       args.demo_pretrain_batch_size))
+    return [PIPELINES[_arm_mode(args, method)], "--exp_name", args.exp_name,
+            "--learner", "--demo_path", str(demo_path),
+            "--checkpoint_path", str(ckpt), "--resume", "scratch",
+            "--peg_shape", args.peg_shape, "--seed", str(seed),
+            "--max_steps", str(args.learner_max_steps),
+            "--checkpoint_keep", str(getattr(args, "checkpoint_keep", 25)),
+            ("--demo_pretrain" if dp else "--nodemo_pretrain"),
+            "--demo_pretrain_steps", str(dps),
+            "--demo_pretrain_batch_size", str(dpb),
+            "--run_name", run_name, "--arm", method,
+            ] + _pipeline_flags(args, method) + _wandb_flags(args)
+
+
+def _pipeline_actor_cmd(args, ckpt, method, tier, operator, theta_json, seed,
+                        run_name):
+    """Actor command of a PIPELINES arm: the same operator / budget /
+    convergence flags as the AQI actor, without --aqi_mode and AQI knobs."""
+    actor_steps, actor_minutes = _actor_budget(args)
+    cmd = [PIPELINES[_arm_mode(args, method)], "--exp_name", args.exp_name,
+           "--actor", "--checkpoint_path", str(ckpt),
+           "--peg_shape", args.peg_shape, "--seed", str(seed),
+           "--max_steps", str(actor_steps),
+           "--max_minutes", str(actor_minutes),
+           "--buffer_period", str(getattr(args, "buffer_period", 0)),
+           "--converge_success", str(args.converge_success),
+           "--converge_window", str(args.converge_window),
+           "--converge_min_steps", str(args.converge_min_steps),
+           "--converge_eval_threshold", str(args.converge_eval_threshold),
+           "--converge_eval_max_steps", str(args.converge_eval_max_steps),
+           "--converge_eval_poses", str(args.converge_eval_poses),
+           ("--converge_require_autonomous"
+            if args.converge_require_autonomous
+            else "--noconverge_require_autonomous"),
+           "--operator_id", operator,
+           "--synthetic_operator", tier,
+           "--synthetic_theta", str(theta_json),
+           "--synthetic_seed", str(seed),
+           "--synthetic_intervention_mode",
+           str(args.synthetic_intervention_mode),
+           "--env_seed", str(seed),
+           "--run_name", run_name,
+           "--aqi_log_dir", str((ckpt.parent.parent / "aqi_logs").resolve()),
+           "--arm", method] + _pipeline_flags(args, method)
+    if args.policy_oracle_checkpoint:
+        cmd += ["--oracle_checkpoint", str(args.policy_oracle_checkpoint)]
+    if getattr(args, "training_oracle", "auto") != "auto":
+        cmd += ["--training_oracle", args.training_oracle]
+    return cmd
+
+
 def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
                  run_name: str):
+    if _arm_mode(args, method) in PIPELINES:
+        return _pipeline_learner_cmd(args, ckpt, demo_path, method, seed,
+                                     run_name)
     dp = bool(_arm_val(args, method, "demo_pretrain", args.demo_pretrain))
     dps = int(_arm_val(args, method, "demo_pretrain_steps",
                        args.demo_pretrain_steps))
@@ -1037,6 +1173,9 @@ def _arm_flag(args, arm):
 
 def _actor_cmd(args, ckpt: Path, method: str, tier: str, operator: str,
                theta_json: Path, seed: int, run_name: str):
+    if _arm_mode(args, method) in PIPELINES:
+        return _pipeline_actor_cmd(args, ckpt, method, tier, operator,
+                                   theta_json, seed, run_name)
     actor_steps, actor_minutes = _actor_budget(args)
     cmd = ["train_aqi_rlpd.py", "--exp_name", args.exp_name, "--actor",
             "--checkpoint_path", str(ckpt), "--aqi_mode",
@@ -1269,6 +1408,8 @@ def eval_cell(args, campaign: Path, cell: Cell):
               "--select", args.eval_select,
               "--select_window_k", str(args.eval_window_k),
               "--no_realtime"]
+    if _arm_mode(args, cell.method) in PIPELINES:
+        pyargs += ["--agent_type", _arm_mode(args, cell.method)]
     if args.eval_select in ("best", "mean", "best_window"):
         # these metrics score ALL checkpoints; don't let the certified ckpt
         # (saved late at convergence) pre-empt the sweep.
@@ -2147,6 +2288,12 @@ def build_arg_parser():
                    default=None,
                    help="each ensemble member draws its own target "
                         "(decorrelated) instead of one shared REDQ target.")
+    # HiRIL external baseline knobs (apply only to arms with mode hiril);
+    # defaults live in serl_launcher/hiril/config.py (paper values)
+    for _name, _cast in HIRIL_FIELDS.items():
+        p.add_argument(f"--hiril_{_name}",
+                       type=_to_bool if _cast is bool else _cast, default=None,
+                       help=f"HiRIL (train_hiril.py): HiRILConfig.{_name}")
     # E2HiL external baseline knobs (apply only to the 'e2hil' arm)
     p.add_argument("--e2hil_K", type=int, default=None,
                    help="E2HiL: MC actions per state for the entropy-influence "
