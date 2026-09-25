@@ -1,0 +1,113 @@
+# =====================================================================
+# e2hil_comparison.yaml — external baseline: E2HiL vs plain HIL-SERL.
+#
+# E2HiL (Deng et al., IEEE RA-L 2026, arXiv:2601.19969, e2hil.github.io)
+# is a plug-in for HIL-SERL: each actor update drops the batch states whose
+# estimated influence on policy entropy |c(s)| is extreme (top 10% =
+# "shortcut", bottom 5% = "noisy"). Critic, temperature, buffers, demos and
+# the actor loop are unchanged. Port: serl_launcher/agents/continuous/e2hil.py
+# (step-for-step port of the authors' examples/cov_actor_loss.py).
+#
+# ARMS
+#   hilserl  plain 2-critic RLPD (reference).
+#   e2hil    identical to hilserl + the E2HiL entropy-bounded actor loss.
+#            Paper/official defaults: K=8 MC actions, 5th-90th percentile
+#            band, min-over-critics Q in the actor objective.
+#
+# Everything else is copied from rq4_ensemble_convergence.yaml's hilserl arm
+# (cuboid, same roster, same demos, 40k-step cap, same convergence rule,
+# same frozen +-16 mm ruler), so:
+#   * the new "Human effort: intervention rate" report section gives E2HiL's
+#     second headline metric next to SR / ICC / convergence;
+#   * RQ4's 18 hilserl cells can be REUSED instead of retrained -- see
+#     docs/e2hil_baseline.md ("Reusing the RQ4 hilserl cells").
+#
+# Design: 2 methods x 3 tiers x 3 operators x 2 seeds = 36 cells.
+#
+# Launch (OOM-protected, as for RQ3/RQ4):
+#   WANDB_RUN_GROUP=e2hil_comparison \
+#   systemd-run --user --unit=e2hil_campaign --collect \
+#     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/e2hil_comparison.yaml \
+#          --campaign runs/e2hil_comparison \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/e2hil_comparison.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl                        # plain HIL-SERL reference
+  - e2hil                          # + E2HiL entropy-bounded actor loss
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000                 # per-cell ACTOR env-step cap (as RQ4)
+  minutes_per_cell: 300            # wall-clock anti-hang safety only
+  converge_success: 0.9            # convergence rule identical to RQ3/RQ4
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0                 # DISK: no replay dumps
+  checkpoint_keep: 25
+  demo_pretrain: false             # both arms plain: the paper plugs E2HiL
+  demo_pretrain_steps: 0           # into HIL-SERL trained from scratch
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # 0 = built-in 3e-4 (as RQ4's hilserl)
+
+aqi:
+  synthetic_intervention_mode: signal
+  # ---- E2HiL knobs (inert for hilserl) ----
+  e2hil_K: 8                       # MC actions per state (paper: 8)
+  e2hil_q_low: 0.05                # drop |c| below the 5th pct  ("noisy")
+  e2hil_q_high: 0.90               # drop |c| above the 90th pct ("shortcut")
+  e2hil_q_agg: min                 # official code; 'mean' isolates the mask
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI
+
+analysis:
+  baseline: hilserl
+  plots: true

@@ -17,6 +17,10 @@ and phases (S6.2/S6.4); --aqi_mode selects them:
               force veto / outcome filter, given quality-weighted replay
               priority and a weighted imitation loss (S5.6).
     aqi       active + quality. Full proposed system (Phase 5).
+    e2hil     EXTERNAL comparison baseline (Deng et al., RA-L 2026,
+              arXiv:2601.19969): hilserl + the entropy-bounded actor loss
+              (agents/continuous/e2hil.py). Actor side identical to hilserl;
+              knobs --e2hil_K / --e2hil_q_low / --e2hil_q_high / --e2hil_q_agg.
 
 Ablations from S6.4 are expressed through the experiment's get_aqi_config()
 (e.g. lambda_force=0 for "no force term", lambda_ood=0 for "no OOD term";
@@ -301,6 +305,20 @@ flags.DEFINE_enum("quality_score_mode", None,
                   "Graded intervention signal: 'counterfactual' = A_hat "
                   "critic Q-gap (default); 'behavioral' = critic-free "
                   "z(d_value)-z(t_int)-z(f_peak) composite. quality/aqi only.")
+flags.DEFINE_integer("e2hil_K", None,
+                     "E2HiL: Monte-Carlo actions per state for the entropy-"
+                     "influence estimate c(s) (paper default 8). e2hil only.")
+flags.DEFINE_float("e2hil_q_low", None,
+                   "E2HiL: lower batch percentile (0-1) of |c(s)|; states "
+                   "below it are dropped as 'noisy' (default 0.05). e2hil only.")
+flags.DEFINE_float("e2hil_q_high", None,
+                   "E2HiL: upper batch percentile (0-1) of |c(s)|; states "
+                   "above it are dropped as 'shortcut' (default 0.90). "
+                   "e2hil only.")
+flags.DEFINE_enum("e2hil_q_agg", None, ["min", "mean"],
+                  "E2HiL: critic reduction in the actor objective and in "
+                  "c(s). 'min' = official E2HiL code (default); 'mean' = "
+                  "this repo's hilserl actor, isolating the mask. e2hil only.")
 flags.DEFINE_enum("peg_shape", None, ["cylinder", "hex", "cuboid"],
                   "Sim only: insertion geometry -- 'cylinder' (easy, round, no "
                   "yaw) or 'hex' (exact tight task). Defaults to the experiment "
@@ -761,6 +779,10 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             )
             if 'grasp_penalty' in info:
                 transition['grasp_penalty'] = info['grasp_penalty']
+            if aqi_cfg.e2hil_on:
+                # source label for E2HiL's per-source diagnostics
+                # (1 = online policy step, 2 = human/synthetic takeover)
+                transition["labels"] = 2 if already_intervened else 1
             if aqi_cfg.quality_on:
                 # every transition must carry the AQI fields because the
                 # learner buffers allocate them; autonomous steps are zeros.
@@ -1451,6 +1473,9 @@ def main(_):
         # explicit subsample M wins over the auto value above; clamp to K.
         _K = overrides.get("critic_ensemble_size", aqi_cfg.critic_ensemble_size)
         overrides["critic_subsample_size"] = min(FLAGS.critic_subsample_size, _K)
+    for _key in ("e2hil_K", "e2hil_q_low", "e2hil_q_high", "e2hil_q_agg"):
+        if FLAGS[_key].present:
+            overrides[_key] = getattr(FLAGS, _key)
 
     # Drop any override that is IRRELEVANT to the selected mode, so an option
     # the task always asks for (e.g. a quality filter while running the
@@ -1459,8 +1484,11 @@ def main(_):
     #   trigger_*  matter only when the active gate acts   (active, aqi)
     #   quality_*  matter only for quality replay + loss   (quality, aqi)
     #   critic_*   matter only for the K-critic ensemble   (every mode but
-    #              hilserl, which is fixed at the 2-critic baseline).
+    #              hilserl/e2hil, fixed at the 2-critic baseline).
+    #   e2hil_*    matter only for the e2hil baseline.
     def _override_relevant(key: str) -> bool:
+        if key.startswith("e2hil_"):
+            return aqi_cfg.e2hil_on
         if key in ("trigger_terms", "trigger_combiner"):
             return aqi_cfg.active_on
         if key in ("quality_disagreement_gate", "quality_filters",
@@ -1471,7 +1499,7 @@ def main(_):
             return aqi_cfg.quality_on
         if key in ("critic_ensemble_size", "critic_subsample_size",
                    "critic_bootstrap_p", "critic_per_member_targets"):
-            return aqi_cfg.mode != "hilserl"
+            return not aqi_cfg.baseline_arch
         return True
     ignored_overrides = {k: v for k, v in overrides.items()
                          if not _override_relevant(k)}
@@ -1516,7 +1544,9 @@ def main(_):
     # of S5.3 (REDQ-style: sigma_Q over all K, min-Q backup over a random
     # subsample), which is what "Logged HIL-SERL" in S6.4 is for: the
     # same-architecture diagnostic control against the active/quality modes.
-    if aqi_cfg.mode == "hilserl":
+    # e2hil keeps hilserl's exact 2-critic architecture (it only changes the
+    # actor loss), so hilserl and e2hil checkpoints are interchangeable.
+    if aqi_cfg.baseline_arch:
         ensemble_size, subsample_size = 2, None
     else:
         ensemble_size = aqi_cfg.critic_ensemble_size
@@ -1526,11 +1556,11 @@ def main(_):
     # targets) applies to every instrumented mode; hilserl stays the
     # exact 2-critic shared-target baseline.
     per_member_targets = (aqi_cfg.critic_per_member_targets
-                          if aqi_cfg.mode != "hilserl" else False)
+                          if not aqi_cfg.baseline_arch else False)
     bootstrap_kwargs = (
         dict(bootstrap_ensemble_size=ensemble_size,
              bootstrap_p=aqi_cfg.critic_bootstrap_p)
-        if aqi_cfg.mode != "hilserl" and aqi_cfg.critic_bootstrap_p < 1.0
+        if not aqi_cfg.baseline_arch and aqi_cfg.critic_bootstrap_p < 1.0
         else {})
 
     agent_kwargs = dict(
@@ -1545,9 +1575,24 @@ def main(_):
         aqi_bc_weight=bc_weight,
         critic_per_member_targets=per_member_targets,
     )
+    if aqi_cfg.e2hil_on and config.setup_mode not in (
+            'single-arm-fixed-gripper', 'dual-arm-fixed-gripper'):
+        raise NotImplementedError(
+            "--aqi_mode=e2hil is implemented for SACAgent (fixed-gripper "
+            f"setups) only, not '{config.setup_mode}'.")
     if config.setup_mode == 'single-arm-fixed-gripper' or config.setup_mode == 'dual-arm-fixed-gripper':
         if FLAGS.learning_rate and FLAGS.learning_rate > 0:
             agent_kwargs = {**agent_kwargs, "learning_rate": float(FLAGS.learning_rate)}
+        if aqi_cfg.e2hil_on:
+            agent_kwargs = {**agent_kwargs, "e2hil": True,
+                            "e2hil_K": aqi_cfg.e2hil_K,
+                            "e2hil_q_low": aqi_cfg.e2hil_q_low,
+                            "e2hil_q_high": aqi_cfg.e2hil_q_high,
+                            "e2hil_q_agg": aqi_cfg.e2hil_q_agg}
+            print_green(
+                f"E2HiL actor loss ON: K={aqi_cfg.e2hil_K}, |c| band = "
+                f"[{aqi_cfg.e2hil_q_low:.2f}, {aqi_cfg.e2hil_q_high:.2f}] "
+                f"batch percentiles, Q reduction = {aqi_cfg.e2hil_q_agg}")
         agent: SACAgent = make_sac_pixel_agent(**agent_kwargs)
         include_grasp_penalty = False
     elif config.setup_mode == 'single-arm-learned-gripper':
@@ -1645,6 +1690,10 @@ def main(_):
                              "current flags; waiting for the learner's weights.")
 
     include_aqi_fields = aqi_cfg.quality_on
+    # e2hil: every transition carries its source label (0 demo, 1 online
+    # policy, 2 intervention) so the learner can log E2HiL's per-source
+    # entropy-influence / keep-rate diagnostics. Diagnostics only.
+    include_label = aqi_cfg.e2hil_on
 
     def create_replay_buffer_and_wandb_logger():
         replay_buffer = MemoryEfficientReplayBufferDataStore(
@@ -1654,6 +1703,7 @@ def main(_):
             image_keys=config.image_keys,
             include_grasp_penalty=include_grasp_penalty,
             include_aqi_fields=include_aqi_fields,
+            include_label=include_label,
             **bootstrap_kwargs,
         )
         # set up wandb and logging
@@ -1698,6 +1748,7 @@ def main(_):
                 capacity=config.replay_buffer_capacity,
                 image_keys=config.image_keys,
                 include_grasp_penalty=include_grasp_penalty,
+                include_label=include_label,
                 **bootstrap_kwargs,
             )
 
@@ -1708,6 +1759,8 @@ def main(_):
                 for transition in transitions:
                     if 'infos' in transition and 'grasp_penalty' in transition['infos']:
                         transition['grasp_penalty'] = transition['infos']['grasp_penalty']
+                    if include_label:
+                        transition.setdefault("labels", 0)
                     demo_buffer.insert(transition)
         print_green(f"demo buffer size: {len(demo_buffer)}")
         print_green(f"online buffer size: {len(replay_buffer)}")
@@ -1723,6 +1776,8 @@ def main(_):
                             transition.setdefault("q_int", np.float32(0.0))
                             transition.setdefault("quality_weight", np.float32(0.0))
                             transition.setdefault("intervention_mask", np.float32(0.0))
+                        if include_label:
+                            transition.setdefault("labels", 1)
                         replay_buffer.insert(transition)
             print_green(
                 f"Loaded previous buffer data. Replay buffer size: {len(replay_buffer)}"
@@ -1737,6 +1792,8 @@ def main(_):
                 with open(file, "rb") as f:
                     transitions = pkl.load(f)
                     for transition in transitions:
+                        if include_label:
+                            transition.setdefault("labels", 2)
                         demo_buffer.insert(transition)
             print_green(
                 f"Loaded previous demo buffer data. Demo buffer size: {len(demo_buffer)}"

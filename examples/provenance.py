@@ -41,7 +41,14 @@ MODE_ONE_LINER = {
     "quality": "quality-aware replay + BC loss ON; active gate off "
                "(manual/idle interventions)",
     "aqi": "full system: active gate + quality-aware replay/loss",
+    "e2hil": "EXTERNAL baseline E2HiL (Deng et al., RA-L 2026): plain "
+             "HIL-SERL + entropy-bounded actor loss (gate off, quality off, "
+             "training logs off)",
 }
+
+
+def _is_baseline_arch(mode) -> bool:
+    return mode in ("hilserl", "e2hil")
 
 
 # ===========================================================================
@@ -75,7 +82,7 @@ def condition_rows(cfg) -> list:
     mode = g("mode") or "?"
     active = bool(getattr(cfg, "active_on", mode in ("active", "aqi")))
     quality = bool(getattr(cfg, "quality_on", mode in ("quality", "aqi")))
-    logging_on = bool(getattr(cfg, "logging_on", mode != "hilserl"))
+    logging_on = bool(getattr(cfg, "logging_on", not _is_baseline_arch(mode)))
     terms = tuple(g("trigger_terms") or ())
     uses_uncertainty = active and ("uncertainty" in terms)
 
@@ -93,10 +100,10 @@ def condition_rows(cfg) -> list:
 
     # --- critic ensemble / epistemic uncertainty --------------------------
     K = g("critic_ensemble_size")
-    if mode == "hilserl":
+    if _is_baseline_arch(mode):
         rows.append(_row(
             "critic_ensemble_size", K, False, "",
-            "INERT for epistemics - 'hilserl' is the plain 2-critic SAC "
+            f"INERT for epistemics - '{mode}' is the plain 2-critic SAC "
             "baseline (bootstrap + per-member targets disabled), so the "
             "ensemble size carries no disagreement signal", status="baseline"))
     else:
@@ -126,11 +133,21 @@ def condition_rows(cfg) -> list:
         f"INERT - '{mode}' has no gate/quality, every takeover is treated "
         f"the same regardless of this"))
 
+    # --- E2HiL external baseline -------------------------------------------
+    e2hil = mode == "e2hil"
+    for name in ("e2hil_K", "e2hil_q_low", "e2hil_q_high", "e2hil_q_agg"):
+        rows.append(_row(
+            name, g(name), e2hil,
+            "E2HiL entropy-bounded actor loss (MC samples / |c| percentile "
+            "band / critic reduction)",
+            f"INERT - the E2HiL actor loss is only used in 'e2hil', not "
+            f"'{mode}'"))
+
     # --- logging -----------------------------------------------------------
     rows.append(_row(
         "training logs", "on" if logging_on else "off", logging_on,
         "per-step / per-segment / per-episode JSONL logs are written",
-        "INERT - 'hilserl' writes no training logs by design (its ruler "
+        f"INERT - '{mode}' writes no training logs by design (its ruler "
         "outcome metrics still work)"))
     return rows
 

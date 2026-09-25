@@ -36,7 +36,7 @@ try:
     from serl_launcher.aqi import AQIConfig, MODES
 except Exception:                       # pragma: no cover
     AQIConfig = None
-    MODES = ("hilserl", "logged", "active", "quality", "aqi")
+    MODES = ("hilserl", "logged", "active", "quality", "aqi", "e2hil")
 
 
 def _conditions_for_mode(mode, config_dict=None):

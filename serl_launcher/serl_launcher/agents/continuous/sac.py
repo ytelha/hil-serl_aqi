@@ -8,6 +8,7 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
+from serl_launcher.agents.continuous.e2hil import e2hil_actor_loss, reduce_q
 from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from serl_launcher.common.encoding import EncodingWrapper
 from serl_launcher.common.optimizers import make_optimizer
@@ -250,17 +251,38 @@ class SACAgent(flax.struct.PyTreeNode):
             actions,
             rng=critic_rng,
         )
-        predicted_q = predicted_qs.mean(axis=0)
+        e2hil = bool(self.config.get("e2hil", False))
+        if e2hil:
+            predicted_q = reduce_q(predicted_qs, self.config["e2hil_q_agg"])
+        else:
+            predicted_q = predicted_qs.mean(axis=0)
         chex.assert_shape(predicted_q, (batch_size,))
         chex.assert_shape(log_probs, (batch_size,))
 
         actor_objective = predicted_q - temperature * log_probs
-        actor_loss = -jnp.mean(actor_objective)
+        e2hil_info = {}
+        if e2hil:
+            # E2HiL baseline (agents/continuous/e2hil.py): only batch states
+            # whose entropy influence |c(s)| is moderate enter the update.
+            rng, e2hil_rng = jax.random.split(rng)
+            actor_loss, e2hil_info = e2hil_actor_loss(
+                actor_objective, action_distributions, batch["observations"],
+                lambda obs, acts, key: self.forward_critic(obs, acts, rng=key),
+                temperature, e2hil_rng,
+                K=self.config["e2hil_K"],
+                q_low=self.config["e2hil_q_low"],
+                q_high=self.config["e2hil_q_high"],
+                q_agg=self.config["e2hil_q_agg"],
+                labels=batch.get("labels", None),
+            )
+        else:
+            actor_loss = -jnp.mean(actor_objective)
 
         info = {
             "actor_loss": actor_loss,
             "temperature": temperature,
             "entropy": -log_probs.mean(),
+            **e2hil_info,
         }
 
         # AQI-HIL-SERL (proposal S5.6): quality-weighted intervention loss

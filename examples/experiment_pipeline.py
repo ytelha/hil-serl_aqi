@@ -352,8 +352,8 @@ def cmd_session(args):
         training_episodes=len(_read_jsonl(
             os.path.join(log_dst, "episodes.jsonl"))),
     )
-    if method == "hilserl":
-        checks["note"] = "hilserl arm: no training logs by design"
+    if method in ("hilserl", "e2hil"):
+        checks["note"] = f"{method} arm: no training logs by design"
     meta_path = os.path.join(log_dst, "meta.json")
     hp_hash = (hashlib.sha256(json.dumps(
         _load(meta_path).get("config", {}), sort_keys=True).encode()
@@ -373,7 +373,7 @@ def cmd_session(args):
     )
     _dump(os.path.join(camp, "sessions", f"{cid}.json"), sheet)
     ok = checks["eval_cell_json"] and (checks["training_episodes"] > 0
-                                       or method == "hilserl")
+                                       or method in ("hilserl", "e2hil"))
     status = ("artifacts OK" if ok
               else "WARNING: artifacts incomplete - see artifact_checks")
     print(f"[session] sheet committed: sessions/{cid}.json ({status})")
@@ -961,7 +961,7 @@ def cmd_simulate(args):
                    outcomes=S.cell_outcomes(trials, f_max=30.0)))
 
         # ---- training episode logs ---------------------------------------
-        if m != "hilserl":
+        if m not in ("hilserl", "e2hil"):
             ld = os.path.join(camp, "aqi_logs", cid)
             os.makedirs(ld, exist_ok=True)
             n_ep, ln = 60, 100

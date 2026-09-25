@@ -21,6 +21,7 @@ class MemoryEfficientReplayBuffer(ReplayBuffer):
         include_aqi_fields: Optional[bool] = False,
         bootstrap_ensemble_size: int = 0,
         bootstrap_p: float = 1.0,
+        include_label: Optional[bool] = False,
     ):
         self.pixel_keys = pixel_keys
 
@@ -58,6 +59,7 @@ class MemoryEfficientReplayBuffer(ReplayBuffer):
             include_aqi_fields=include_aqi_fields,
             bootstrap_ensemble_size=bootstrap_ensemble_size,
             bootstrap_p=bootstrap_p,
+            include_label=include_label,
         )
 
     def insert(self, data_dict: DatasetDict):

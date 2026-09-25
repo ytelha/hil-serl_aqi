@@ -11,6 +11,14 @@ Modes (S6.4 baselines/ablations):
     "active"   : active query gate A(s_t) on, replay/loss unchanged (Phase 3).
     "quality"  : manual interventions, quality-aware replay + loss (Phase 4).
     "aqi"      : active gate + quality-aware replay/loss (Phase 5, full system).
+    "e2hil"    : EXTERNAL COMPARISON BASELINE, not part of AQI. Plain
+                 HIL-SERL (hilserl's exact 2-critic architecture, gate off,
+                 quality off, logging off) plus the entropy-bounded actor
+                 loss of E2HiL (Deng et al., IEEE RA-L 2026, arXiv:2601.19969):
+                 the actor update drops batch states whose estimated
+                 influence on policy entropy |c(s)| lies outside the batch
+                 [e2hil_q_low, e2hil_q_high] percentile band. See
+                 serl_launcher/agents/continuous/e2hil.py.
 
 Ablations from S6.4 are compositions, not code changes: `trigger_terms`
 selects which term sections feed A(s_t) (("uncertainty",) = ensemble
@@ -24,7 +32,17 @@ weighted-sum combiner; mode="active" == "no q_int".
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
-MODES = ("hilserl", "logged", "active", "quality", "aqi")
+MODES = ("hilserl", "logged", "active", "quality", "aqi", "e2hil")
+
+# Modes that train the plain 2-critic HIL-SERL architecture (no ensemble,
+# no bootstrap, no AQI runtime). Checkpoints are interchangeable between them.
+BASELINE_ARCH_MODES = ("hilserl", "e2hil")
+
+# E2HiL: how the critic ensemble is reduced to one Q in the actor objective
+# and in the influence estimate. "min" matches the official E2HiL code
+# (cov_actor_loss.py); "mean" matches this repo's hilserl actor loss, so with
+# it the entropy-bounded mask is the ONLY difference from hilserl.
+E2HIL_Q_AGGS = ("min", "mean")
 
 # Composable trigger sections (S5.2-S5.4). Each name is an independent code
 # section; `trigger_terms` selects which ones feed A(s_t):
@@ -240,6 +258,22 @@ class AQIConfig:
     unsolicited_policy: str = "allow"
 
     # ------------------------------------------------------------------
+    # E2HiL comparison baseline (mode="e2hil" only; inert otherwise).
+    # Per actor update, for every batch state s:
+    #   c(s) = -Cov_k( log pi(a_k|s), pi(a_k|s) * A_soft(s,a_k) ),
+    #          a_k ~ pi(.|s), k = 1..e2hil_K   (paper Eq. 9-10)
+    #   I(s) = 1[ |c(s)| in [P_q_low, P_q_high] of the batch's |c| ]  (Eq. 11)
+    #   L_actor = -sum_s I(s) l(s) / (sum_s I(s) + eps)               (Eq. 12)
+    # Defaults are the paper's / official code's (K=8, 5th-90th pct).
+    # e2hil_K=1 makes every covariance 0, i.e. no selection (as in the
+    # official code).
+    # ------------------------------------------------------------------
+    e2hil_K: int = 8
+    e2hil_q_low: float = 0.05
+    e2hil_q_high: float = 0.90
+    e2hil_q_agg: str = "min"
+
+    # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
     log_dir: str = "aqi_logs"
@@ -265,6 +299,11 @@ class AQIConfig:
         if self.active_on:
             assert set(self.trigger_terms) - {"cost"}, (
                 "active gating needs at least one signal term besides 'cost'")
+        assert int(self.e2hil_K) >= 1, "e2hil_K must be >= 1"
+        assert 0.0 <= self.e2hil_q_low < self.e2hil_q_high <= 1.0, (
+            "need 0 <= e2hil_q_low < e2hil_q_high <= 1")
+        assert self.e2hil_q_agg in E2HIL_Q_AGGS, (
+            f"e2hil_q_agg must be one of {E2HIL_Q_AGGS}")
 
     # Composition helpers ---------------------------------------------------
     def uses_term(self, name: str) -> bool:
@@ -305,7 +344,16 @@ class AQIConfig:
 
     @property
     def logging_on(self) -> bool:
-        return self.mode != "hilserl"
+        return not self.baseline_arch
+
+    @property
+    def baseline_arch(self) -> bool:
+        """Plain 2-critic HIL-SERL architecture (hilserl, e2hil)."""
+        return self.mode in BASELINE_ARCH_MODES
+
+    @property
+    def e2hil_on(self) -> bool:
+        return self.mode == "e2hil"
 
     def trigger_lambdas(self) -> Tuple[float, float, float, float, float]:
         return (

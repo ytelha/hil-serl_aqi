@@ -290,6 +290,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     if (aqi.get("per_member_targets") is not None
             and "per_member_targets" not in explicit):
         args.per_member_targets = bool(aqi["per_member_targets"])
+    for key, cast in (("e2hil_K", int), ("e2hil_q_low", float),
+                      ("e2hil_q_high", float), ("e2hil_q_agg", str)):
+        if aqi.get(key) is not None and key not in explicit:
+            setattr(args, key, cast(aqi[key]))
 
     mo = cfg.get("method_overrides")
     if mo is not None and "method_overrides" not in explicit:
@@ -412,6 +416,9 @@ def _method_conditions(method, args):
             kw["quality_disagreement_gate"] = args.quality_disagreement_gate
         if getattr(args, "bc_loss_weight", None) is not None:
             kw["bc_loss_weight"] = args.bc_loss_weight
+        for key in ("e2hil_K", "e2hil_q_low", "e2hil_q_high", "e2hil_q_agg"):
+            if getattr(args, key, None) is not None:
+                kw[key] = getattr(args, key)
         return prov.condition_rows(AQIConfig(**kw))
     except Exception:
         return [{"choice": "aqi_mode", "value": method, "status": "mode",
@@ -797,6 +804,9 @@ def _aqi_flags(args):
     if getattr(args, "per_member_targets", None) is not None:
         f += ["--per_member_targets" if args.per_member_targets
               else "--noper_member_targets"]
+    for key in ("e2hil_K", "e2hil_q_low", "e2hil_q_high", "e2hil_q_agg"):
+        if getattr(args, key, None) is not None:
+            f += [f"--{key}", str(getattr(args, key))]
     return f
 
 
@@ -1203,13 +1213,23 @@ def compute_dependency(sr_by_method, methods, tiers, baseline):
     return report
 
 
+def _sign_test_p(n_pos, n_neg):
+    """Two-sided exact-binomial sign test over the non-tied pairs."""
+    import math
+    m = n_pos + n_neg
+    if m == 0:
+        return float("nan")
+    k = min(n_pos, n_neg)
+    tail = sum(math.comb(m, i) for i in range(0, k + 1)) * (0.5 ** m)
+    return min(1.0, 2.0 * tail)
+
+
 def compute_paired(sr_by_method, methods, baseline):
     """Paired per-cell comparison: since every method shares the SAME operator
     and seed grid, SR_method - SR_baseline for each matched (operator, seed) is
     a paired difference that cancels operator/seed variance. Reports the deltas
     and a two-sided exact-binomial SIGN TEST over the non-tied pairs."""
     import numpy as np
-    import math
     out = {}
     base = sr_by_method.get(baseline, {})
     for method in methods:
@@ -1231,13 +1251,7 @@ def compute_paired(sr_by_method, methods, baseline):
         n_pos = sum(1 for x in deltas if x > 0)
         n_neg = sum(1 for x in deltas if x < 0)
         n_tie = sum(1 for x in deltas if x == 0)
-        m = n_pos + n_neg
-        k = min(n_pos, n_neg)
-        if m > 0:
-            tail = sum(math.comb(m, i) for i in range(0, k + 1)) * (0.5 ** m)
-            sign_p = min(1.0, 2.0 * tail)
-        else:
-            sign_p = float("nan")
+        sign_p = _sign_test_p(n_pos, n_neg)
         out[method] = dict(
             baseline=baseline, n_pairs=len(pairs),
             n_method_wins=n_pos, n_baseline_wins=n_neg, n_tied=n_tie,
@@ -1290,13 +1304,96 @@ def compute_convergence(steps_by_method, methods, tiers):
     return out
 
 
+def _read_cell_interventions(campaign: Path, cell: Cell):
+    """Human effort of one trained cell from the actor's per-episode takeover
+    log (checkpoints/<cell>/episodes.jsonl, written in every mode): operator-
+    controlled env steps / all env steps run during training. None if the
+    log is absent (e.g. a cell trained before the log existed)."""
+    path = campaign / "checkpoints" / cell.id / "episodes.jsonl"
+    if not path.exists():
+        return None
+    n_int = n_steps = n_ep = n_ep_int = 0
+    with open(path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            k = int(rec.get("intervention_steps", 0))
+            n_int += k
+            n_steps += int(rec.get("length", 0))
+            n_ep += 1
+            n_ep_int += int(k > 0)
+    if n_steps <= 0:
+        return None
+    return {"intervention_steps": n_int, "env_steps": n_steps,
+            "episodes": n_ep, "episodes_with_takeover": n_ep_int,
+            "rate": n_int / n_steps}
+
+
+def compute_interventions(ivn_by_method, methods, tiers, baseline):
+    """Human-effort comparison (the intervention-rate metric E2HiL reports).
+    ``ivn_by_method`` = {method: {operator: {"tier", "ivn": {seed: dict}}}}
+    with dicts from _read_cell_interventions. Per method: mean/median
+    intervention rate over cells, mean operator steps per cell, per-tier
+    rates; versus ``baseline``: paired per-(operator, seed) rate deltas with
+    a sign test (negative delta = the method needed LESS human effort)."""
+    import numpy as np
+    out = {"methods": {}, "paired": {}, "baseline": baseline}
+    for method in methods:
+        ops = ivn_by_method.get(method, {})
+        cells = [v for d in ops.values() for v in d["ivn"].values()]
+        rates = [c["rate"] for c in cells]
+        tier_rate = {}
+        for t in tiers:
+            vals = [v["rate"] for d in ops.values() if d["tier"] == t
+                    for v in d["ivn"].values()]
+            tier_rate[t] = float(np.mean(vals)) if vals else float("nan")
+        out["methods"][method] = {
+            "n_cells": len(cells),
+            "rate_mean": float(np.mean(rates)) if rates else float("nan"),
+            "rate_median": float(np.median(rates)) if rates else float("nan"),
+            "intervention_steps_mean": (
+                float(np.mean([c["intervention_steps"] for c in cells]))
+                if cells else float("nan")),
+            "env_steps_mean": (float(np.mean([c["env_steps"] for c in cells]))
+                               if cells else float("nan")),
+            "tier_rate": tier_rate,
+        }
+    base = ivn_by_method.get(baseline, {})
+    for method in methods:
+        if method == baseline:
+            continue
+        pairs = []
+        for op, d in ivn_by_method.get(method, {}).items():
+            b_ivn = base.get(op, {}).get("ivn", {})
+            for s, v in d["ivn"].items():
+                if s in b_ivn:
+                    pairs.append(dict(operator=op, tier=d["tier"], seed=s,
+                                      baseline_rate=b_ivn[s]["rate"],
+                                      method_rate=v["rate"],
+                                      delta=v["rate"] - b_ivn[s]["rate"]))
+        deltas = [p["delta"] for p in pairs]
+        n_lower = sum(1 for x in deltas if x < 0)
+        n_higher = sum(1 for x in deltas if x > 0)
+        out["paired"][method] = dict(
+            baseline=baseline, n_pairs=len(pairs),
+            n_method_lower=n_lower, n_baseline_lower=n_higher,
+            n_tied=len(deltas) - n_lower - n_higher,
+            mean_delta=float(np.mean(deltas)) if deltas else float("nan"),
+            median_delta=float(np.median(deltas)) if deltas else float("nan"),
+            sign_test_p=_sign_test_p(n_lower, n_higher), pairs=pairs)
+    return out
+
+
 def _fmt(x, pct=False):
     if x is None or (isinstance(x, float) and x != x):
         return "  n/a"
     return f"{100 * x:5.1f}%" if pct else f"{x:6.3f}"
 
 
-def render_report_md(report, campaign_meta, tiers, conv=None, paired=None):
+def render_report_md(report, campaign_meta, tiers, conv=None, paired=None,
+                     ivn=None):
     L = []
     L.append("# Operator-dependency report\n")
     L.append(f"- campaign: `{campaign_meta['campaign_dir']}`")
@@ -1399,6 +1496,35 @@ def render_report_md(report, campaign_meta, tiers, conv=None, paired=None):
                     f"{_fmt(p['baseline_sr'], pct=True)} | "
                     f"{_fmt(p['method_sr'], pct=True)} | "
                     f"{p['delta']*100:+.1f} |")
+    if ivn and any(m["n_cells"] for m in ivn["methods"].values()):
+        L.append("\n## Human effort: intervention rate\n")
+        L.append("Operator-controlled env steps / all env steps the actor ran "
+                 "during training (until convergence or the cap), from each "
+                 "cell's `episodes.jsonl`. Lower = less human effort. This is "
+                 "the metric E2HiL reports next to success rate.\n")
+        L.append("| method | cells | mean rate | median rate | mean operator "
+                 "steps/cell | mean env steps/cell | " + " | ".join(tiers) + " |")
+        L.append("|---|---|---|---|---|---|" + "|".join(["---"] * len(tiers))
+                 + "|")
+        for method, m in ivn["methods"].items():
+            row = " | ".join(_fmt(m["tier_rate"].get(t), pct=True) for t in tiers)
+            L.append(f"| `{method}` | {m['n_cells']} | "
+                     f"{_fmt(m['rate_mean'], pct=True)} | "
+                     f"{_fmt(m['rate_median'], pct=True)} | "
+                     f"{m['intervention_steps_mean']:.0f} | "
+                     f"{m['env_steps_mean']:.0f} | {row} |")
+        if ivn["paired"]:
+            L.append(f"\n| method vs `{base}` | pairs | method lower | "
+                     f"{base} lower | ties | mean d rate (pp) | median d "
+                     "(pp) | sign-test p |")
+            L.append("|---|---|---|---|---|---|---|---|")
+            for method, pr in ivn["paired"].items():
+                L.append(
+                    f"| `{method}` | {pr['n_pairs']} | {pr['n_method_lower']} | "
+                    f"{pr['n_baseline_lower']} | {pr['n_tied']} | "
+                    f"{pr['mean_delta']*100:+.1f} | "
+                    f"{pr['median_delta']*100:+.1f} | "
+                    f"{_fmt(pr['sign_test_p'])} |")
     L.append("\n## Headline\n")
     if base in report["methods"]:
         for method, m in report["methods"].items():
@@ -1420,19 +1546,25 @@ def analyze(args, campaign: Path, roster, methods, seeds, tiers):
     tier_of = {th.operator_id: th.tier for th in roster}
     sr_by_method = {}
     steps_by_method = {}
+    ivn_by_method = {}
     n_have = 0
     for method in methods:
         sr_by_method[method] = {}
         steps_by_method[method] = {}
+        ivn_by_method[method] = {}
         for th in roster:
             entry = {"tier": tier_of[th.operator_id], "sr": {}}
             steps_entry = {"tier": tier_of[th.operator_id], "steps": {}}
+            ivn_entry = {"tier": tier_of[th.operator_id], "ivn": {}}
             for s in seeds:
-                sr = _read_cell_sr(campaign, Cell(method, th.operator_id,
-                                                  th.tier, s))
+                cell = Cell(method, th.operator_id, th.tier, s)
+                sr = _read_cell_sr(campaign, cell)
                 if sr is not None:
                     entry["sr"][s] = sr
                     n_have += 1
+                ivn = _read_cell_interventions(campaign, cell)
+                if ivn is not None:
+                    ivn_entry["ivn"][s] = ivn
                 done = (campaign / "checkpoints"
                         / f"{method}_{th.operator_id}_s{s}" / ".done")
                 if done.exists():
@@ -1443,6 +1575,7 @@ def analyze(args, campaign: Path, roster, methods, seeds, tiers):
                         steps_entry["steps"][s] = None
             sr_by_method[method][th.operator_id] = entry
             steps_by_method[method][th.operator_id] = steps_entry
+            ivn_by_method[method][th.operator_id] = ivn_entry
     baseline = args.baseline if args.baseline in methods else methods[0]
     report = compute_dependency(sr_by_method, methods, tiers, baseline)
     conv = compute_convergence(steps_by_method, methods, tiers)
@@ -1462,9 +1595,13 @@ def analyze(args, campaign: Path, roster, methods, seeds, tiers):
                           timespec="seconds"))
     paired = compute_paired(sr_by_method, methods, baseline)
     report_out["paired"] = paired
+    interventions = compute_interventions(ivn_by_method, methods, tiers,
+                                          baseline)
+    report_out["interventions"] = interventions
     json.dump(report_out, open(campaign / "report" / "dependency.json", "w"),
               indent=2)
-    md = render_report_md(report, campaign_meta, tiers, conv=conv, paired=paired)
+    md = render_report_md(report, campaign_meta, tiers, conv=conv, paired=paired,
+                          ivn=interventions)
     open(campaign / "report" / "dependency.md", "w").write(md)
     _green(f"[analyze] {n_have} cells scored; report -> "
            f"{campaign / 'report' / 'dependency.md'}")
@@ -1702,7 +1839,8 @@ def build_arg_parser():
                    help="checkpoint directory for PolicyOracle demos/actor "
                         "(enables policy-oracle synthetic interventions when set).")
     p.add_argument("--policy_oracle_mode", default="hilserl",
-                   choices=["hilserl", "logged", "active", "quality", "aqi"],
+                   choices=["hilserl", "logged", "active", "quality", "aqi",
+                            "e2hil"],
                    help="aqi_mode architecture used by the policy-oracle checkpoint.")
     p.add_argument("--policy_oracle_step", type=int, default=0,
                    help="PolicyOracle checkpoint step (0=latest).")
@@ -1787,6 +1925,19 @@ def build_arg_parser():
                    default=None,
                    help="each ensemble member draws its own target "
                         "(decorrelated) instead of one shared REDQ target.")
+    # E2HiL external baseline knobs (apply only to the 'e2hil' arm)
+    p.add_argument("--e2hil_K", type=int, default=None,
+                   help="E2HiL: MC actions per state for the entropy-influence "
+                        "estimate (paper default 8).")
+    p.add_argument("--e2hil_q_low", type=float, default=None,
+                   help="E2HiL: lower batch percentile (0-1) of |c(s)| "
+                        "(default 0.05).")
+    p.add_argument("--e2hil_q_high", type=float, default=None,
+                   help="E2HiL: upper batch percentile (0-1) of |c(s)| "
+                        "(default 0.90).")
+    p.add_argument("--e2hil_q_agg", choices=["min", "mean"], default=None,
+                   help="E2HiL: critic reduction in the actor objective "
+                        "('min' = official code, 'mean' = hilserl's actor).")
     # convergence-based termination (what actually ends each cell's training)
     p.add_argument("--converge_success", type=float, default=0.9,
                    help="stop a cell once its rolling success rate over "

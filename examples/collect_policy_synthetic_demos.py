@@ -80,7 +80,7 @@ def _build_agent(config, env):
         ensemble_size = FLAGS.critic_ensemble_size
         subsample_size = min(aqi_cfg.critic_subsample_size or ensemble_size,
                              ensemble_size)
-    elif aqi_cfg.mode == "hilserl":
+    elif aqi_cfg.baseline_arch:          # hilserl / e2hil: 2 critics
         ensemble_size, subsample_size = 2, None
     else:
         ensemble_size = aqi_cfg.critic_ensemble_size
@@ -97,7 +97,7 @@ def _build_agent(config, env):
         critic_subsample_size=subsample_size,
         aqi_bc_weight=0.0,
         critic_per_member_targets=(aqi_cfg.critic_per_member_targets
-                                   if aqi_cfg.mode != "hilserl" else False),
+                                   if not aqi_cfg.baseline_arch else False),
     )
 
     if config.setup_mode in ("single-arm-fixed-gripper", "dual-arm-fixed-gripper"):

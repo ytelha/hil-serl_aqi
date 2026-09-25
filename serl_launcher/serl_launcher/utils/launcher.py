@@ -66,6 +66,13 @@ def make_sac_pixel_agent(
     aqi_bc_weight=0.0,
     critic_per_member_targets=False,
     learning_rate=None,
+    # E2HiL comparison baseline (agents/continuous/e2hil.py). Keys enter the
+    # agent config only when enabled, so other agents' configs are unchanged.
+    e2hil=False,
+    e2hil_K=8,
+    e2hil_q_low=0.05,
+    e2hil_q_high=0.90,
+    e2hil_q_agg="min",
 ):
     opt_kwargs = {}
     if learning_rate is not None:
@@ -75,6 +82,11 @@ def make_sac_pixel_agent(
             critic_optimizer_kwargs={"learning_rate": lr},
             temperature_optimizer_kwargs={"learning_rate": lr},
         )
+    e2hil_kwargs = (dict(e2hil=True, e2hil_K=int(e2hil_K),
+                         e2hil_q_low=float(e2hil_q_low),
+                         e2hil_q_high=float(e2hil_q_high),
+                         e2hil_q_agg=str(e2hil_q_agg))
+                    if e2hil else {})
     agent = SACAgent.create_pixels(
         jax.random.PRNGKey(seed),
         sample_obs,
@@ -109,6 +121,7 @@ def make_sac_pixel_agent(
         aqi_bc_weight=aqi_bc_weight,
         critic_per_member_targets=critic_per_member_targets,
         **opt_kwargs,
+        **e2hil_kwargs,
     )
     return agent
 

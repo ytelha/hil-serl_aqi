@@ -20,8 +20,9 @@ per-step and per-episode AQI work is delegated here:
         scored transitions returned for the intervention buffer        (S5.6)
         JSONL logging of steps / segments / episode                    (S7)
 
-mode="hilserl" constructs no state and turns every method into a no-op, so
-the baseline path is byte-identical to train_rlpd.py behaviour.
+mode="hilserl" (and the external "e2hil" baseline) constructs no state and
+turns every method into a no-op, so the baseline path is byte-identical to
+train_rlpd.py behaviour.
 """
 
 import copy
@@ -109,7 +110,7 @@ class AQIRuntime:
         config_dict_for_log: Optional[dict] = None,
     ):
         self.cfg = cfg
-        self.enabled = cfg.mode != "hilserl"
+        self.enabled = cfg.logging_on   # off for hilserl / e2hil
         self.operator_id = operator_id
         self.max_episode_length = max(int(max_episode_length), 1)
         if not self.enabled:
