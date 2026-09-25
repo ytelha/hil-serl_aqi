@@ -227,6 +227,12 @@ flags.DEFINE_float("synthetic_env_mm_per_unit", 100.0,
                    "operator's Table-2 motor parameters (mm/s) to the env's "
                    "action scale. Measured for sim_peg_insertion: 1 action "
                    "unit = 0.01 m delta/step at 10 Hz = 100 mm/s.")
+flags.DEFINE_string("arm", "",
+                    "Name of the campaign ARM this run belongs to when it "
+                    "differs from --aqi_mode (e.g. 'quality-beh' = quality + "
+                    "behavioral score). Recorded in meta.json and the wandb "
+                    "run name so analyses group by arm, not by mode. Set by "
+                    "run_campaign.py; '' = the arm is the mode.")
 flags.DEFINE_string("run_name", None,
                     "Log-directory name under <aqi log_dir>/. Defaults to "
                     "<exp_name>_<mode>_<operator>_s<seed>_<timestamp>.")
@@ -567,6 +573,7 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
         run_name=run_name,
         max_episode_length=config.max_traj_length,
         config_dict_for_log={**vars(aqi_cfg),
+                             "arm": FLAGS.arm or aqi_cfg.mode,
                              **({"synthetic_operator":
                                  synthetic_theta.as_dict()}
                                 if synthetic_theta else {})},
@@ -1116,7 +1123,7 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                 os.path.abspath(FLAGS.checkpoint_path), "run", quiet=True,
                 task={"exp_name": FLAGS.exp_name,
                       "peg_shape": getattr(config, "peg_shape", None)},
-                method=aqi_cfg.mode, operator=op,
+                method=FLAGS.arm or aqi_cfg.mode, operator=op,
                 seeds={"seed": FLAGS.seed,
                        "synthetic_seed": FLAGS.synthetic_seed,
                        "env_seed": (FLAGS.env_seed if FLAGS.env_seed >= 0
@@ -1709,7 +1716,8 @@ def main(_):
         # set up wandb and logging
         wandb_logger = make_wandb_logger(
             project="hil-serl",
-            description=f"{FLAGS.exp_name}_{aqi_cfg.mode}_{FLAGS.operator_id}",
+            description=(f"{FLAGS.exp_name}_{FLAGS.arm or aqi_cfg.mode}_"
+                         f"{FLAGS.operator_id}"),
             debug=FLAGS.debug,
             output_dir=(os.path.join(os.path.abspath(FLAGS.checkpoint_path),
                                      "wandb")

@@ -76,7 +76,10 @@ def _parse_run(run_dir, meta):
         mo, seed_s = base.rsplit("_s", 1)
         seed = int(seed_s) if seed_s.isdigit() else seed_s
     method = meta.get("mode", "unknown")
-    if mo.endswith("_" + str(operator)):
+    arm = (meta.get("config") or {}).get("arm")
+    if arm:                                  # campaign arm, recorded by the actor
+        method = arm
+    elif mo.endswith("_" + str(operator)):
         method = mo[: -(len(str(operator)) + 1)]
     elif "_" in mo:
         method = mo.rsplit("_", 1)[0]

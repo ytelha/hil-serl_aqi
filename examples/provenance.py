@@ -118,6 +118,23 @@ def condition_rows(cfg) -> list:
                     "trigger (gate off in this mode)"
         rows.append(_row("critic_ensemble_size", K, True, note, ""))
 
+    # --- critic TD target / bootstrap (the RQ3 -> RQ4 knobs) --------------
+    ens = not _is_baseline_arch(mode)
+    ens_no = (f"INERT - '{mode}' is the plain 2-critic baseline (min over "
+              f"both critics, shared data)")
+    rows.append(_row(
+        "critic_subsample_size", g("critic_subsample_size"), ens,
+        "M critics min-ed in the TD target (REDQ); 1 = one random critic, "
+        "no min-Q pessimism", ens_no))
+    rows.append(_row(
+        "critic_per_member_targets", g("critic_per_member_targets"), ens,
+        "each critic draws its own target subsample (decorrelated members)",
+        ens_no))
+    rows.append(_row(
+        "critic_bootstrap_p", g("critic_bootstrap_p"), ens,
+        "per-(transition, critic) keep-probability of the bootstrap masks "
+        "(1.0 = shared data)", ens_no))
+
     # --- quality-aware module ---------------------------------------------
     q_ok = ("scores intervention segments (counterfactual advantage) for "
             "weighted replay + BC")
@@ -125,6 +142,15 @@ def condition_rows(cfg) -> list:
     for name in ("quality_disagreement_gate", "quality_filters",
                  "bc_loss_weight", "outcome_filter"):
         rows.append(_row(name, g(name), quality, q_ok, q_no))
+    rows.append(_row(
+        "quality_score_mode", g("quality_score_mode"), quality,
+        "graded intervention signal: 'counterfactual' Q-gap A_hat or the "
+        "critic-free 'behavioral' composite", q_no))
+    for name in ("per_standardize", "per_eta", "per_eps", "per_delta_init",
+                 "quality_warmup_steps", "per_scale_decay",
+                 "per_refresh_period", "per_is_beta"):
+        rows.append(_row(name, g(name), quality,
+                         "prioritised intervention replay (S5.6)", q_no))
 
     # --- unsolicited-takeover routing (needs a gate/quality to matter) ----
     rows.append(_row(

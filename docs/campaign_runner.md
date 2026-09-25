@@ -105,8 +105,8 @@ Re‑run only a later stage (e.g. after all cells trained):
 | `--ops_per_tier` | 5 | distinct (jittered) operators per tier (thesis: 5–10) |
 | `--tiers` | `expert,intermediate,novice` | skill tiers to sample |
 | `--seeds` | 3 | replicate seeds per operator (≥2 for a within‑operator variance estimate) |
-| `--methods` | `hilserl,active,quality,aqi` | AQI modes to compare |
-| `--baseline` | `hilserl` | method the others are Δ‑compared against |
+| `--methods` | `hilserl,active,quality,aqi` | ARMS to compare: plain AQI modes and/or names defined under YAML `arms:` (see below) |
+| `--baseline` | `hilserl` | arm the others are Δ‑compared against |
 | `--demos` | 6 | demos per `(operator, seed)` — keep **modest** (see below) |
 | `--steps` | 20000 | per‑cell **actor** env‑step **hard cap** (bounds only non‑converging cells) |
 | `--converge_success` | 0.9 | stop a cell at this rolling success rate (0 disables → `--steps` is the only stop) |
@@ -117,6 +117,60 @@ Re‑run only a later stage (e.g. after all cells trained):
 | `--jax_platform` | `cuda` | `cuda` or `cpu` |
 | `--gpu_mem_learner` / `--gpu_mem_actor` | 0.6 / 0.2 | VRAM fraction ceilings |
 | `--plan` / `--dry_run` / `--stages` / `--retrain` / `--force` | — | flow control |
+
+## Arms: several variants of one mode in the same campaign
+
+Cells are named `<arm>_<operator>_s<seed>`. A plain mode name (`hilserl`,
+`logged`, `quality`, …) is an arm with no overrides. To compare **variants of
+the same mode**, for example two quality scores or several ensemble settings,
+declare named arms. Each arm is a base `mode` plus overrides of any
+learning-method knob:
+
+```yaml
+methods: [logged, quality-cf, quality-beh]     # arm names, in report order
+arms:
+  quality-cf:  {mode: quality, quality_score_mode: counterfactual}
+  quality-beh: {mode: quality, quality_score_mode: behavioral}
+analysis:
+  baseline: logged
+```
+
+- **Resolution** for each knob of an arm:
+  `arms[arm][key]` > `method_overrides[arm][key]` > campaign-wide value
+  (CLI > YAML > default). `method_overrides` is the older per-mode block and
+  keeps working unchanged. An arm entry named after a mode (e.g. `hilserl:`)
+  must keep that mode.
+- **Per-arm knobs** (`ARM_KEYS` in `run_campaign.py`):
+  - learner: `demo_pretrain`, `demo_pretrain_steps`,
+    `demo_pretrain_batch_size`, `learning_rate`;
+  - ensemble: `critic_ensemble_size`, `critic_subsample_size`,
+    `per_member_targets`;
+  - active gate: `trigger_terms`, `trigger_combiner`;
+  - quality: `quality_filters`, `quality_disagreement_gate`,
+    `bc_loss_weight`, `quality_score_mode`, `per_*`, `quality_warmup_steps`;
+  - E2HiL: `e2hil_*`.
+
+  Operators, demos, budget, the convergence rule and the ruler are
+  deliberately **not** per-arm: the arm must be the only difference between
+  paired cells.
+- **Names:** lowercase letters, digits, `-` and `.` only, **no `_`**, because
+  the analysis scripts parse cell ids back into arm / operator / seed.
+- **Checks:** everything is validated before any job starts: unknown mode,
+  unknown knob, bad value, bad name.
+- **Where the arm shows up:**
+  - `--plan` prints each arm's mode and overrides;
+  - `campaign.json` and every cell's `manifest.json`/`README.md` record the
+    arm definition, and the cell README's reproduce block is the exact
+    learner/actor command that ran;
+  - the actor gets `--arm <name>` (recorded in `aqi_logs/<run>/meta.json` and
+    the wandb run name), so `aqi_analysis.py`, `q_summary.py` and
+    `intervention_curves.py` group by arm, not by base mode.
+- **Resume safety:** changing an arm's overrides after cells finished does not
+  retrain them (`.done` skips). Give the new variant a new arm name, or use
+  `--retrain`.
+
+Worked example: [campaigns/rq4_attribution_sweep.yaml](../examples/campaigns/rq4_attribution_sweep.yaml)
+(the one-factor attribution of RQ4's four ensemble fixes).
 
 ## Choosing the regime (important)
 

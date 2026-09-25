@@ -37,9 +37,15 @@ _METHOD_COLORS = ["tab:blue", "tab:red", "tab:green", "tab:purple",
                  "tab:orange", "tab:brown"]
 
 
+_CELL_ID_RE = re.compile(r"^(?P<method>.+)_(?P<operator>[^_]+)_s(?P<seed>\d+)$")
+
+
 def _method_of(cid):
-    """Method token of a cell id '<method>_<operator>_s<seed>'."""
-    return cid.split("_", 1)[0]
+    """Method (arm) of a cell id '<method>_<operator>_s<seed>'. Parsed from
+    the RIGHT, so an arm name may contain any character except that the
+    operator id must not contain '_'."""
+    m = _CELL_ID_RE.match(cid)
+    return m.group("method") if m else cid.split("_", 1)[0]
 
 
 def _pkl_len(path):

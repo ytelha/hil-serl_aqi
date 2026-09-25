@@ -74,7 +74,11 @@ def load_run(run_dir):
     return dict(
         dir=run_dir,
         name=os.path.basename(run_dir.rstrip("/")),
-        mode=meta.get("mode", "unknown"),
+        # group by campaign ARM (e.g. 'quality-beh'), which is the mode for
+        # plain arms and for runs logged before arms existed
+        mode=((meta.get("config") or {}).get("arm")
+              or meta.get("mode", "unknown")),
+        base_mode=meta.get("mode", "unknown"),
         operator=meta.get("operator_id", "unknown"),
         config=meta.get("config", {}),
         episodes=_read_jsonl(os.path.join(run_dir, "episodes.jsonl")),

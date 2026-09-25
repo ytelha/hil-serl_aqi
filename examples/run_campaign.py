@@ -24,6 +24,9 @@ AQI reduce that dependency versus the baseline?**  It runs, unattended:
                 variance vs baseline HIL-SERL?).
 
 A *cell* is one (method, operator, seed); its id is ``<method>_<operator>_s<seed>``.
+A *method* is an ARM: a base ``--aqi_mode`` plus optional per-arm overrides
+(YAML ``arms:``), so e.g. two ``quality`` variants can run side by side; see
+the "arms" section below and docs/campaign_runner.md.
 
 Layout created under ``--campaign``::
 
@@ -55,6 +58,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -77,6 +81,7 @@ from serl_launcher.aqi.operator_model import (  # noqa: E402
     make_operator_theta, jitter_theta, theta_to_json, theta_from_json,
     theta_from_scale, TIER_S)
 from serl_launcher.aqi import stats as S  # noqa: E402
+from serl_launcher.aqi.config import MODES as AQI_MODES  # noqa: E402
 import provenance as prov  # noqa: E402
 
 
@@ -250,7 +255,9 @@ def apply_config(args, cfg: dict, explicit) -> dict:
             and "trigger_combiner" not in explicit):
         args.trigger_combiner = str(aqi["trigger_combiner"])
     if aqi.get("quality_filters") is not None and "quality_filters" not in explicit:
-        args.quality_filters = _csv(aqi["quality_filters"])
+        # an explicit empty list means NO filters ("none"); an empty string
+        # would emit no flag and silently fall back to the default filters.
+        args.quality_filters = _csv(aqi["quality_filters"]) or "none"
     if (aqi.get("quality_disagreement_gate") is not None
             and "quality_disagreement_gate" not in explicit):
         args.quality_disagreement_gate = bool(aqi["quality_disagreement_gate"])
@@ -298,6 +305,12 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     mo = cfg.get("method_overrides")
     if mo is not None and "method_overrides" not in explicit:
         args.method_overrides = dict(mo)
+    arms = cfg.get("arms")
+    if arms is not None:
+        if not isinstance(arms, dict):
+            raise SystemExit("[config] `arms:` must map arm names to "
+                             "{mode: <aqi_mode>, <knob>: <value>, ...}.")
+        args.arms = {str(k): dict(v or {}) for k, v in arms.items()}
 
     por = cfg.get("policy_oracle") or {}
     if por.get("demo_source") is not None and "demo_source" not in explicit:
@@ -398,32 +411,71 @@ def _operator_dict(th, campaign: Path):
 
 
 def _method_conditions(method, args):
-    """Conditions rows for a method, derived from a real AQIConfig (with this
-    campaign's trigger/quality composition) so inert choices are labelled
-    exactly as the runtime would see them."""
+    """Conditions rows for an ARM, derived from a real AQIConfig built with this
+    arm's resolved knobs (campaign-wide values + per-arm overrides), so inert
+    choices are labelled exactly as the runtime sees them, plus rows for the
+    learner knobs that can differ per arm (warm start, learning rate).
+    Unlisted AQIConfig fields show dataclass defaults, not the experiment's
+    get_aqi_config() values."""
+    mode = _arm_mode(args, method)
+
+    def val(key):
+        return _arm_val(args, method, key, getattr(args, key, None))
+
+    def as_tuple(v):
+        v = "" if v is None else str(v)
+        return () if v in ("", "none") else tuple(t for t in v.split(",") if t)
+
     try:
         from serl_launcher.aqi import AQIConfig
-        kw = {"mode": method}
-        if getattr(args, "trigger_terms", ""):
-            kw["trigger_terms"] = tuple(t for t in args.trigger_terms.split(",")
-                                        if t)
-        if getattr(args, "trigger_combiner", ""):
-            kw["trigger_combiner"] = args.trigger_combiner
-        if getattr(args, "quality_filters", ""):
-            kw["quality_filters"] = tuple(t for t in args.quality_filters.split(",")
-                                          if t)
-        if getattr(args, "quality_disagreement_gate", None) is not None:
-            kw["quality_disagreement_gate"] = args.quality_disagreement_gate
-        if getattr(args, "bc_loss_weight", None) is not None:
-            kw["bc_loss_weight"] = args.bc_loss_weight
-        for key in ("e2hil_K", "e2hil_q_low", "e2hil_q_high", "e2hil_q_agg"):
-            if getattr(args, key, None) is not None:
-                kw[key] = getattr(args, key)
-        return prov.condition_rows(AQIConfig(**kw))
+        kw = {"mode": mode}
+        for key in ("trigger_terms", "quality_filters"):
+            if val(key):
+                kw[key] = as_tuple(val(key))
+        for key, field in (
+                ("trigger_combiner", "trigger_combiner"),
+                ("quality_disagreement_gate", "quality_disagreement_gate"),
+                ("bc_loss_weight", "bc_loss_weight"),
+                ("quality_score_mode", "quality_score_mode"),
+                ("per_standardize", "per_standardize"),
+                ("per_delta_init", "per_delta_init"),
+                ("per_eta", "per_eta"), ("per_eps", "per_eps"),
+                ("quality_warmup_steps", "quality_warmup_steps"),
+                ("per_scale_decay", "per_scale_decay"),
+                ("per_refresh_period", "per_refresh_period"),
+                ("per_is_beta", "per_is_beta"),
+                ("critic_ensemble_size", "critic_ensemble_size"),
+                ("per_member_targets", "critic_per_member_targets"),
+                ("e2hil_K", "e2hil_K"), ("e2hil_q_low", "e2hil_q_low"),
+                ("e2hil_q_high", "e2hil_q_high"),
+                ("e2hil_q_agg", "e2hil_q_agg")):
+            if val(key) not in (None, ""):
+                kw[field] = val(key)
+        # mirror train_aqi_rlpd: M defaults to min(2, K), an explicit M wins,
+        # always clamped to K
+        k = int(kw.get("critic_ensemble_size", 10))
+        m = val("critic_subsample_size")
+        kw["critic_subsample_size"] = min(int(m) if m is not None else 2, k)
+        rows = prov.condition_rows(AQIConfig(**kw))
     except Exception:
-        return [{"choice": "aqi_mode", "value": method, "status": "mode",
-                 "note": prov.MODE_ONE_LINER.get(method, "")}]
-
+        rows = [{"choice": "aqi_mode", "value": mode, "status": "mode",
+                 "note": prov.MODE_ONE_LINER.get(mode, "")}]
+    lr = float(val("learning_rate") or 0)
+    rows.append({"choice": "learning_rate",
+                 "value": f"{lr:g}" if lr > 0 else "3e-4 (built-in)",
+                 "status": "active",
+                 "note": "Adam LR of actor, critic and temperature"})
+    dp, dps = bool(val("demo_pretrain")), int(val("demo_pretrain_steps") or 0)
+    rows.append({"choice": "demo_pretrain",
+                 "value": f"{dps} steps" if dp and dps > 0 else "off",
+                 "status": "active" if dp and dps > 0 else "inert",
+                 "note": "demo-only learner warm start before online RL"})
+    ovr = _arm_overrides(args, method)
+    if ovr:
+        rows.insert(1, {"choice": "arm", "value": method, "status": "arm",
+                        "note": "per-arm overrides: " + ", ".join(
+                            f"{k}={v}" for k, v in ovr.items())})
+    return rows
 
 
 # ===========================================================================
@@ -762,51 +814,44 @@ def _document_demos(args, campaign: Path, operator: str, seed: int):
 # ===========================================================================
 # stage 3: train one cell (distributed learner+actor, synchronous loop)
 # ===========================================================================
-def _aqi_flags(args):
-    """AQI composition flags shared by learner + actor. Safe on every mode --
+# (campaign key, kind) in the EXACT order the flags are emitted. kind:
+#   "str"  -> "--key v" if v is a non-empty string (csv lists, enums)
+#   "val"  -> "--key v" if v is not None
+#   "bool" -> "--key" / "--nokey" if v is not None
+# train_aqi_rlpd.py drops any of these that do not apply to the run's mode.
+_AQI_FLAG_SPEC = (
+    ("trigger_terms", "str"), ("trigger_combiner", "str"),
+    ("quality_filters", "str"), ("quality_disagreement_gate", "bool"),
+    ("bc_loss_weight", "val"), ("per_standardize", "bool"),
+    ("per_delta_init", "val"), ("per_eta", "val"), ("per_eps", "val"),
+    ("quality_warmup_steps", "val"), ("per_scale_decay", "val"),
+    ("per_refresh_period", "val"), ("per_is_beta", "val"),
+    ("quality_score_mode", "val"),
+    ("critic_ensemble_size", "val"), ("critic_subsample_size", "val"),
+    ("per_member_targets", "bool"),
+    ("e2hil_K", "val"), ("e2hil_q_low", "val"), ("e2hil_q_high", "val"),
+    ("e2hil_q_agg", "val"),
+)
+
+
+def _aqi_flags(args, arm=None):
+    """AQI composition flags shared by learner + actor, resolved for ``arm``
+    (campaign-wide value unless the arm overrides it). Safe on every mode --
     train_aqi_rlpd drops the ones irrelevant to the mode (e.g. hilserl ignores
     all of them)."""
     f = []
-    if getattr(args, "trigger_terms", ""):
-        f += ["--trigger_terms", args.trigger_terms]
-    if getattr(args, "trigger_combiner", ""):
-        f += ["--trigger_combiner", args.trigger_combiner]
-    if getattr(args, "quality_filters", ""):
-        f += ["--quality_filters", args.quality_filters]
-    if getattr(args, "quality_disagreement_gate", None) is not None:
-        f += ["--quality_disagreement_gate" if args.quality_disagreement_gate
-              else "--noquality_disagreement_gate"]
-    if getattr(args, "bc_loss_weight", None) is not None:
-        f += ["--bc_loss_weight", str(args.bc_loss_weight)]
-    if getattr(args, "per_standardize", None) is not None:
-        f += ["--per_standardize" if args.per_standardize
-              else "--noper_standardize"]
-    if getattr(args, "per_delta_init", None) is not None:
-        f += ["--per_delta_init", str(args.per_delta_init)]
-    if getattr(args, "per_eta", None) is not None:
-        f += ["--per_eta", str(args.per_eta)]
-    if getattr(args, "per_eps", None) is not None:
-        f += ["--per_eps", str(args.per_eps)]
-    if getattr(args, "quality_warmup_steps", None) is not None:
-        f += ["--quality_warmup_steps", str(args.quality_warmup_steps)]
-    if getattr(args, "per_scale_decay", None) is not None:
-        f += ["--per_scale_decay", str(args.per_scale_decay)]
-    if getattr(args, "per_refresh_period", None) is not None:
-        f += ["--per_refresh_period", str(args.per_refresh_period)]
-    if getattr(args, "per_is_beta", None) is not None:
-        f += ["--per_is_beta", str(args.per_is_beta)]
-    if getattr(args, "quality_score_mode", None) is not None:
-        f += ["--quality_score_mode", str(args.quality_score_mode)]
-    if getattr(args, "critic_ensemble_size", None) is not None:
-        f += ["--critic_ensemble_size", str(args.critic_ensemble_size)]
-    if getattr(args, "critic_subsample_size", None) is not None:
-        f += ["--critic_subsample_size", str(args.critic_subsample_size)]
-    if getattr(args, "per_member_targets", None) is not None:
-        f += ["--per_member_targets" if args.per_member_targets
-              else "--noper_member_targets"]
-    for key in ("e2hil_K", "e2hil_q_low", "e2hil_q_high", "e2hil_q_agg"):
-        if getattr(args, key, None) is not None:
-            f += [f"--{key}", str(getattr(args, key))]
+    for key, kind in _AQI_FLAG_SPEC:
+        v = getattr(args, key, None)
+        if arm is not None:
+            v = _arm_val(args, arm, key, v)
+        if kind == "str":
+            if v:
+                f += [f"--{key}", str(v)]
+        elif kind == "bool":
+            if v is not None:
+                f += [f"--{key}" if v else f"--no{key}"]
+        elif v is not None:
+            f += [f"--{key}", str(v)]
     return f
 
 
@@ -826,13 +871,133 @@ def _wandb_env(args):
     return {"WANDB_MODE": "offline"} if getattr(args, "wandb", "off") == "offline" else {}
 
 
+# ===========================================================================
+# arms: named method variants (base aqi_mode + per-arm overrides)
+# ===========================================================================
+# A campaign compares ARMS. An arm is a base --aqi_mode plus overrides of the
+# learning-method knobs in ARM_KEYS. A plain mode name ("hilserl", "logged",
+# ...) is an arm with no overrides, so every older config means exactly what
+# it did before. Variants are declared in the YAML:
+#
+#   methods: [logged, quality-cf, quality-beh]       # arm names, report order
+#   arms:
+#     quality-cf:  {mode: quality, quality_score_mode: counterfactual}
+#     quality-beh: {mode: quality, quality_score_mode: behavioral}
+#
+# A knob of an arm resolves as
+#   arms[arm][key]  >  method_overrides[arm][key]  >  campaign-wide value
+# (method_overrides is the older per-mode block; same meaning, still read).
+# The campaign-wide value is itself CLI > YAML > argparse default.
+#
+# Only learning-method knobs vary per arm. Operators, demos, budget,
+# convergence rule and ruler stay campaign-wide on purpose: the arm must be
+# the ONLY difference between paired cells (same operator x seed).
+#
+# Arm names become cell-id prefixes "<arm>_<operator>_s<seed>" that analysis
+# scripts parse back, so they may not contain "_" (use "-", e.g. quality-beh).
+ARM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
+
+
+def _to_bool(v):
+    if isinstance(v, str):
+        if v.strip().lower() in ("1", "true", "yes", "on"):
+            return True
+        if v.strip().lower() in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"not a boolean: {v!r}")
+    return bool(v)
+
+
+def _to_csv(v):
+    """List or comma string -> comma string; an empty list means 'none'."""
+    return _csv(v) or "none"
+
+
+ARM_KEYS = {
+    # learner optimisation / warm start
+    "demo_pretrain": _to_bool, "demo_pretrain_steps": int,
+    "demo_pretrain_batch_size": int, "learning_rate": float,
+    # critic ensemble (inert for hilserl/e2hil)
+    "critic_ensemble_size": int, "critic_subsample_size": int,
+    "per_member_targets": _to_bool,
+    # active gate (active/aqi)
+    "trigger_terms": _to_csv, "trigger_combiner": str,
+    # quality module (quality/aqi)
+    "quality_filters": _to_csv, "quality_disagreement_gate": _to_bool,
+    "bc_loss_weight": float, "quality_score_mode": str,
+    "per_standardize": _to_bool, "per_delta_init": float, "per_eta": float,
+    "per_eps": float, "quality_warmup_steps": int, "per_scale_decay": float,
+    "per_refresh_period": int, "per_is_beta": float,
+    # E2HiL external baseline (e2hil)
+    "e2hil_K": int, "e2hil_q_low": float, "e2hil_q_high": float,
+    "e2hil_q_agg": str,
+}
+
+
+def _arm_def(args, arm: str) -> dict:
+    """Raw definition {"mode": ..., <key>: <value>} of an arm. A name with no
+    definition is a plain mode: {"mode": arm}."""
+    d = dict((getattr(args, "method_overrides", None) or {}).get(arm) or {})
+    d.update((getattr(args, "arms", None) or {}).get(arm) or {})
+    d.setdefault("mode", arm)
+    return d
+
+
+def _arm_mode(args, arm: str) -> str:
+    """The --aqi_mode an arm runs."""
+    return str(_arm_def(args, arm)["mode"])
+
+
+def _arm_overrides(args, arm: str) -> dict:
+    """The arm's own overrides (cast, without 'mode'), for docs/manifests."""
+    return {k: ARM_KEYS[k](v) for k, v in _arm_def(args, arm).items()
+            if k != "mode"}
+
+
 def _arm_val(args, method: str, key: str, default):
-    """Per-arm override: config `method_overrides: {<method>: {<key>: val}}`
-    lets a single arm (e.g. the plain hilserl baseline) opt out of a
-    campaign-wide fix (e.g. demo_pretrain / learning_rate applied only to the
-    ensemble arm). Falls back to the campaign-wide value."""
-    mo = (getattr(args, "method_overrides", None) or {}).get(method) or {}
-    return mo[key] if key in mo else default
+    """Value of ``key`` for arm ``method``: its override if it has one,
+    else the campaign-wide ``default``."""
+    d = _arm_def(args, method)
+    if key in d and key != "mode":
+        return ARM_KEYS[key](d[key]) if key in ARM_KEYS else d[key]
+    return default
+
+
+def validate_arms(args, methods):
+    """Fail fast (before any training) on a bad arm: invalid name, unknown
+    mode, unknown knob, or a value of the wrong type."""
+    for arm in methods:
+        if not ARM_NAME_RE.match(arm):
+            raise SystemExit(
+                f"[arms] invalid arm name {arm!r}: use lowercase letters, "
+                f"digits, '-' or '.', no '_' (cell ids are "
+                f"<arm>_<operator>_s<seed>).")
+        d = _arm_def(args, arm)
+        if d["mode"] not in AQI_MODES:
+            raise SystemExit(
+                f"[arms] '{arm}' is not an aqi_mode {AQI_MODES}; define it "
+                f"under `arms:` with a `mode:` key.")
+        if arm in AQI_MODES and d["mode"] != arm:
+            raise SystemExit(
+                f"[arms] arm '{arm}' is a mode name but maps to mode "
+                f"'{d['mode']}'; give the variant its own name.")
+        unknown = sorted(set(d) - set(ARM_KEYS) - {"mode"})
+        if unknown:
+            raise SystemExit(
+                f"[arms] '{arm}': unknown knob(s) {unknown}; per-arm knobs "
+                f"are {sorted(ARM_KEYS)} (operators, demos, budget and ruler "
+                f"are campaign-wide by design).")
+        for k, v in d.items():
+            if k == "mode":
+                continue
+            try:
+                ARM_KEYS[k](v)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(f"[arms] '{arm}': bad value for {k}: {exc}")
+    for arm in (getattr(args, "arms", None) or {}):
+        if arm not in methods:
+            _yellow(f"[arms] '{arm}' is defined under `arms:` but not listed "
+                    f"in `methods:` -> it will not run.")
 
 
 def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
@@ -846,7 +1011,7 @@ def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
                         getattr(args, "learning_rate", 0) or 0))
     return ["train_aqi_rlpd.py", "--exp_name", args.exp_name, "--learner",
             "--demo_path", str(demo_path), "--checkpoint_path", str(ckpt),
-            "--resume", "scratch", "--aqi_mode", method,
+            "--resume", "scratch", "--aqi_mode", _arm_mode(args, method),
             "--peg_shape", args.peg_shape, "--seed", str(seed),
             "--max_steps", str(args.learner_max_steps),
             "--checkpoint_keep", str(getattr(args, "checkpoint_keep", 25)),
@@ -855,14 +1020,22 @@ def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
         "--demo_pretrain_batch_size", str(dpb),
             "--run_name", run_name] + (
         ["--learning_rate", str(lr)] if lr and lr > 0 else []
-    ) + _aqi_flags(args) + _wandb_flags(args)
+    ) + _arm_flag(args, method) + _aqi_flags(args, method) + _wandb_flags(args)
+
+
+def _arm_flag(args, arm):
+    """--arm <name> for a named variant (recorded in meta.json / wandb so the
+    analysis scripts group by arm); omitted for a plain mode, whose arm name
+    IS its mode."""
+    return ["--arm", arm] if _arm_mode(args, arm) != arm else []
 
 
 def _actor_cmd(args, ckpt: Path, method: str, tier: str, operator: str,
                theta_json: Path, seed: int, run_name: str):
     actor_steps, actor_minutes = _actor_budget(args)
     cmd = ["train_aqi_rlpd.py", "--exp_name", args.exp_name, "--actor",
-            "--checkpoint_path", str(ckpt), "--aqi_mode", method,
+            "--checkpoint_path", str(ckpt), "--aqi_mode",
+            _arm_mode(args, method),
             "--peg_shape", args.peg_shape, "--seed", str(seed),
         "--max_steps", str(actor_steps),
         "--max_minutes", str(actor_minutes),
@@ -885,12 +1058,25 @@ def _actor_cmd(args, ckpt: Path, method: str, tier: str, operator: str,
             "--env_seed", str(seed),               # independent resets/replicate
             "--run_name", run_name,
             "--aqi_log_dir", str((ckpt.parent.parent / "aqi_logs").resolve()),
-            ] + _aqi_flags(args)
+            ] + _arm_flag(args, method) + _aqi_flags(args, method)
     if args.policy_oracle_checkpoint:
         cmd += ["--oracle_checkpoint", str(args.policy_oracle_checkpoint)]
     if getattr(args, "training_oracle", "auto") != "auto":
         cmd += ["--training_oracle", args.training_oracle]
     return cmd
+
+
+def _ready_timeout(args, arm):
+    """Seconds to wait for the learner's LEARNER READY banner. Demo
+    pretraining runs BEFORE the banner, so it is budgeted at a conservative
+    >= 2.5 demo-pretrain it/s -- per ARM, since an arm may opt in or out."""
+    timeout = float(args.ready_timeout)
+    dp = bool(_arm_val(args, arm, "demo_pretrain", args.demo_pretrain))
+    dps = int(_arm_val(args, arm, "demo_pretrain_steps",
+                       args.demo_pretrain_steps))
+    if dp and dps > 0:
+        timeout += dps / 2.5
+    return timeout
 
 
 def train_cell(args, campaign: Path, cell: Cell):
@@ -928,9 +1114,7 @@ def train_cell(args, campaign: Path, cell: Cell):
         # Demo pretraining runs BEFORE the learner prints "LEARNER READY", so
         # the ready wait must budget for it (a crash still returns early via
         # proc.poll()). Assume a conservative >=2.5 demo-pretrain it/s.
-        ready_timeout = args.ready_timeout
-        if args.demo_pretrain and args.demo_pretrain_steps > 0:
-            ready_timeout += args.demo_pretrain_steps / 2.5
+        ready_timeout = _ready_timeout(args, cell.method)
         if not _wait_for_banner(lp, llog, "LEARNER READY", ready_timeout):
             _red(f"[train] {cell.id}: learner never reported READY "
                  f"(timeout {ready_timeout:g}s or crash); see {llog.name}.")
@@ -1000,7 +1184,7 @@ def train_cell(args, campaign: Path, cell: Cell):
         "convergence": conv,
         "finished": datetime.datetime.now().isoformat(timespec="seconds")},
         indent=2))
-    _document_run(args, campaign, cell, conv)
+    _document_run(args, campaign, cell, conv, cmds=(lcmd, acmd))
     if conv is not None:
         _green(f"[train] {cell.id}: done (converged at step {conv['step']}).")
     else:
@@ -1013,8 +1197,10 @@ def train_cell(args, campaign: Path, cell: Cell):
     return True
 
 
-def _document_run(args, campaign: Path, cell, conv):
-    """Write README.md + manifest.json next to a trained cell's checkpoints."""
+def _document_run(args, campaign: Path, cell, conv, cmds=None):
+    """Write README.md + manifest.json next to a trained cell's checkpoints.
+    ``cmds`` = (learner_cmd, actor_cmd) exactly as launched; the reproduce
+    block then replays them verbatim (every per-arm knob included)."""
     ckpt = campaign / "checkpoints" / cell.id
     th = _roster_theta(campaign, cell.operator)
     term = {"budget_mode": args.cell_budget_mode}
@@ -1028,6 +1214,20 @@ def _document_run(args, campaign: Path, cell, conv):
                     window=conv.get("window"), autonomous=conv.get("autonomous"))
     else:
         term["converged"] = False
+    if cmds is None:
+        cmds = (_learner_cmd(args, ckpt, _demo_pkl(campaign, cell.operator,
+                                                   cell.seed),
+                             cell.method, cell.seed, f"{cell.id}_learner"),
+                _actor_cmd(args, ckpt, cell.method, cell.tier, cell.operator,
+                           campaign / "operators" / f"{cell.operator}.json",
+                           cell.seed, f"{cell.id}_actor"))
+    env = "cd examples && source experiments/sim_peg_insertion/sim_env.sh && "
+    reproduce = [
+        f"# 1) learner (leave running)\n{env}python "
+        + " ".join(shlex.quote(str(a)) for a in cmds[0]),
+        f"# 2) actor (synthetic operator {cell.operator}), once the learner "
+        f"prints LEARNER READY\n{env}python "
+        + " ".join(shlex.quote(str(a)) for a in cmds[1])]
     prov.document(
         ckpt, "run", quiet=True, task=_task_dict(args), method=cell.method,
         operator=_operator_dict(th, campaign) if th else {"operator_id": cell.operator},
@@ -1036,22 +1236,10 @@ def _document_run(args, campaign: Path, cell, conv):
         demos={"n": args.demos, "filtered": args.filtered,
                "path": f"../../demos/{cell.operator}_s{cell.seed}/demos.pkl"},
         termination=term, conditions=_method_conditions(cell.method, args),
-        reproduce=[
-            f"# 1) learner (leave running)\n./.venv/bin/python "
-            f"examples/train_aqi_rlpd.py --exp_name {args.exp_name} --learner "
-            f"--aqi_mode {cell.method} --peg_shape {args.peg_shape} --resume "
-            f"scratch --demo_path demos/{cell.operator}_s{cell.seed}/demos.pkl "
-            f"--checkpoint_path checkpoints/{cell.id} --seed {cell.seed}",
-            f"# 2) actor (synthetic operator {cell.operator})\n"
-            f"./.venv/bin/python examples/train_aqi_rlpd.py --exp_name "
-            f"{args.exp_name} --actor --aqi_mode {cell.method} --peg_shape "
-            f"{args.peg_shape} --checkpoint_path checkpoints/{cell.id} "
-            f"--synthetic_operator {cell.tier} --synthetic_theta "
-            f"operators/{cell.operator}.json --operator_id {cell.operator} "
-            f"--seed {cell.seed} --synthetic_seed {cell.seed} --env_seed "
-            f"{cell.seed} --converge_success {args.converge_success} "
-            f"--max_steps {args.steps}"])
-
+        reproduce=reproduce,
+        extra={"arm": {"name": cell.method,
+                       "aqi_mode": _arm_mode(args, cell.method),
+                       "overrides": _arm_overrides(args, cell.method)}})
 
 
 # ===========================================================================
@@ -1653,8 +1841,16 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
         "steps": args.steps, "learner_max_steps": args.learner_max_steps,
         "grid_sha256": grid["sha256"], "n_grid_trials": len(grid["trials"]),
         "operators": [th.operator_id for th in roster],
+        "arms": _arms_summary(args),
     }
     json.dump(manifest, open(campaign / "campaign.json", "w"), indent=2)
+
+
+def _arms_summary(args):
+    """{arm: {"aqi_mode": ..., "overrides": {...}}} for every listed arm."""
+    return {arm: {"aqi_mode": _arm_mode(args, arm),
+                  "overrides": _arm_overrides(args, arm)}
+            for arm in args.methods.split(",") if arm}
 
 
 def _document_campaign(args, campaign: Path, roster, grid, seeds):
@@ -1676,6 +1872,7 @@ def _document_campaign(args, campaign: Path, roster, grid, seeds):
             "minutes_per_cell": args.minutes_per_cell,
             "max_hours": args.max_hours,
             "grid_sha256": grid["sha256"], "n_grid_trials": len(grid["trials"]),
+            "arms": _arms_summary(args),
         }})
 
 
@@ -1696,6 +1893,10 @@ def print_plan(args, roster, cells, seeds, grid):
               f"(skill varies only in EXECUTION)")
     print(f"  seeds/op     : {len(seeds)}  {list(seeds)}")
     print(f"  methods      : {args.methods}")
+    for arm, a in _arms_summary(args).items():
+        if a["overrides"] or a["aqi_mode"] != arm:
+            print(f"    arm {arm:14s} aqi_mode={a['aqi_mode']:8s} "
+                  + " ".join(f"{k}={v}" for k, v in a["overrides"].items()))
     if args.trigger_terms or args.trigger_combiner:
       print(f"  active gate  : trigger_terms="
           f"{args.trigger_terms or 'default(all)'} "
@@ -2042,6 +2243,10 @@ def main(argv=None):
 
     tiers = [t for t in args.tiers.split(",") if t]
     methods = [m for m in args.methods.split(",") if m]
+    validate_arms(args, methods)
+    if args.baseline not in methods:
+        _yellow(f"[config] baseline '{args.baseline}' is not among the "
+                f"methods {methods}; the analysis will use '{methods[0]}'.")
     seeds = [args.seed_base + i for i in range(args.seeds)]
     stages = set(s for s in args.stages.split(",") if s)
     if args.plan:
