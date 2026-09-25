@@ -1,0 +1,149 @@
+# =====================================================================
+# rq5_quality_score.yaml — does a validated intervention score help TRAINING?
+#
+# RQ4 section 12 showed the critic-free behavioral score predicts
+# intervention outcome (AUROC 0.78 live) where the counterfactual Q-gap is
+# anti-predictive (0.175). Predicting outcome is not improving the policy.
+# RQ5 (recommended in RQ4 12.4) compares, on the RQ4-fixed ensemble:
+#
+#   arm              mode     replay priority from
+#   hilserl          hilserl  - (plain reference, RQ4-identical)
+#   logged           logged   uniform replay (same-architecture control)
+#   quality-cf       quality  counterfactual A_hat (the old score)
+#   quality-beh      quality  behavioral z(dV) - z(t_int) - z(F_peak)
+#   quality-beh-not  quality  behavioral WITHOUT t_int: z(dV) - z(F_peak)
+#
+# quality-beh-not answers the validity question: takeover length t_int may
+# be confounded by the synthetic operator's d_max cap and time-in-episode
+# (docs/quality_signal_audit.md). Run examples/quality_signal_audit.py on
+# runs/quality_behavioral_diag FIRST; if t_int's predictive power is mostly
+# timing, quality-beh-not is the honest version of the behavioral score.
+#
+# Everything is the RQ4 base: cuboid, 3 ops/tier x 2 seeds, 40k-step cap,
+# RQ4 convergence rule, frozen +-16 mm ruler, ensemble K=8 / M=1 /
+# per-member targets, demo warm start 5000 + LR 1.5e-4 (hilserl opts out).
+# Quality knobs = quality_behavioral_diag.yaml (replay-priority only,
+# bc_loss_weight 0, stabilised PER). Baseline for the paired analysis:
+# `logged` (same architecture; only the replay priority differs).
+#
+# COST: 5 arms x 18 cells = 90. hilserl_* and logged_* are identical to
+# RQ4's and can be COPIED from runs/rq4_ensemble_convergence (recipe in
+# docs/e2hil_baseline.md "Reusing the RQ4 hilserl cells"; copy logged_* the
+# same way) -> 54 new cells.
+#
+# Read-out: report/dependency.md (SR, ICC, convergence, intervention rate,
+# paired deltas vs logged) and report/quality_audit/summary.md (per-arm
+# signal AUROCs + leakage checks on the live q_int of each quality arm).
+#
+# Launch (OOM-protected, as for RQ3/RQ4):
+#   WANDB_RUN_GROUP=rq5_quality_score \
+#   systemd-run --user --unit=rq5_campaign --collect \
+#     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/rq5_quality_score.yaml \
+#          --campaign runs/rq5_quality_score \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/rq5_quality_score.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:                           # arm names, report order
+  - hilserl
+  - logged
+  - quality-cf
+  - quality-beh
+  - quality-beh-not
+
+arms:
+  hilserl:                         # plain: no warm start, built-in LR
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  quality-cf:      {mode: quality, quality_score_mode: counterfactual}
+  quality-beh:     {mode: quality, quality_score_mode: behavioral}
+  quality-beh-not: {mode: quality, quality_score_mode: behavioral,
+                    quality_behavioral_terms: [d_value, f_peak]}
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000                 # as RQ4
+  minutes_per_cell: 300
+  converge_success: 0.9            # convergence rule identical to RQ3/RQ4
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true              # RQ4 fix: warm start (hilserl opts out)
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015           # RQ4 fix: halved LR (hilserl opts out)
+
+aqi:
+  synthetic_intervention_mode: signal
+  # ---- RQ4-fixed ensemble (inert for hilserl) ----
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+  # ---- quality module (inert for hilserl / logged) ----
+  bc_loss_weight: 0.0              # replay priority only
+  quality_filters:
+    - safety_veto
+    - jerk_veto
+  per_standardize: true
+  per_delta_init: 0.1
+  per_eps: 0.05
+  per_eta: 1.0
+  quality_warmup_steps: 5000
+  per_scale_decay: 0.01
+  per_refresh_period: 2000
+  per_is_beta: 0.5
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI
+
+analysis:
+  baseline: logged
+  plots: true

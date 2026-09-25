@@ -134,10 +134,19 @@ class QualityScorer:
     def behavioral_q(self, t_int: float, d_value: float, f_peak: float) -> float:
         """Critic-free intervention score: short + value-increasing + force-
         controlled takeover -> high. z(d_value) - z(t_int) - z(f_peak), each
-        standardised online. Returns 0 until each z-scorer has min_count."""
-        return (self._z_dval.z(float(d_value))
-                - self._z_tint.z(float(t_int))
-                - self._z_fpeak.z(float(f_peak)))
+        standardised online, restricted to cfg.quality_behavioral_terms
+        (default: all three). A term's z-scorer returns 0 until it has seen
+        min_count segments."""
+        terms = getattr(self.cfg, "quality_behavioral_terms",
+                        ("d_value", "t_int", "f_peak"))
+        q = 0.0
+        if "d_value" in terms:
+            q += self._z_dval.z(float(d_value))
+        if "t_int" in terms:
+            q -= self._z_tint.z(float(t_int))
+        if "f_peak" in terms:
+            q -= self._z_fpeak.z(float(f_peak))
+        return q
 
     # -- called every control step so scales track the current critic -----
     def observe_sigma(self, sigma_q: float) -> None:

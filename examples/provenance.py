@@ -146,6 +146,12 @@ def condition_rows(cfg) -> list:
         "quality_score_mode", g("quality_score_mode"), quality,
         "graded intervention signal: 'counterfactual' Q-gap A_hat or the "
         "critic-free 'behavioral' composite", q_no))
+    behavioral = quality and g("quality_score_mode") == "behavioral"
+    rows.append(_row(
+        "quality_behavioral_terms", g("quality_behavioral_terms"), behavioral,
+        "terms of the behavioral score: +z(d_value) -z(t_int) -z(f_peak)",
+        f"INERT - only used by quality_score_mode=behavioral (mode '{mode}', "
+        f"score '{g('quality_score_mode')}')"))
     for name in ("per_standardize", "per_eta", "per_eps", "per_delta_init",
                  "quality_warmup_steps", "per_scale_decay",
                  "per_refresh_period", "per_is_beta"):

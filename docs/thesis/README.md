@@ -57,6 +57,7 @@ Full step-by-step (E0–E3, ablations, human study, plotting) → **[experiment_
 | **RQ2** usage | AUROC, corr$(q_{\text{int}},\text{outcome})$ | `aqi_analysis.py` | `q_int_by_operator.png` |
 | **RQ3** trigger | AUROC + ECE of $A(s_t)$/$P_{\text{fail}}$ | `aqi_analysis.py` | `p_fail_calibration.png` |
 | validation | accuracy/QWK/ρ/ICC | `operator_skill.py --mode validate-synthetic` | E0 table |
+| quality-signal validity (RQ4 §11–12, RQ5) | AUROC all / clean / time-stratified / post-release, takeover-cap shares | `quality_signal_audit.py` ([doc](../quality_signal_audit.md)) | `report/quality_audit/summary.md`, `<arm>_auroc.png` |
 
 ## Where results live
 

@@ -72,6 +72,15 @@ TRIGGER_COMBINERS = ("weighted_sum", "max")
 #                      unsolicited_policy == "rl_only" and gate active)
 QUALITY_FILTERS = ("safety_veto", "jerk_veto", "outcome_filter", "unsolicited")
 
+# Terms of the critic-free "behavioral" intervention score (sign in brackets):
+#   "d_value" (+)  value gained over the takeover, mu_Q(end) - mu_Q(start)
+#   "t_int"   (-)  takeover length in steps
+#   "f_peak"  (-)  peak contact force during the takeover
+# quality_behavioral_terms selects a subset (ablation). t_int can be
+# confounded by the synthetic operator's max-takeover cap d_max and by time
+# into the episode; examples/quality_signal_audit.py tests that.
+BEHAVIORAL_TERMS = ("d_value", "t_int", "f_peak")
+
 
 @dataclass
 class AQIConfig:
@@ -213,6 +222,7 @@ class AQIConfig:
     #     critic evaluation of a_H that makes A_hat anti-aligned with outcome
     #     (diagnostic AUROC 0.72 vs 0.18). Standardised online per run.
     quality_score_mode: str = "counterfactual"
+    quality_behavioral_terms: Tuple[str, ...] = BEHAVIORAL_TERMS
 
     # ------------------------------------------------------------------
     # Quality-aware replay (S5.6): p_i = (eps + |delta_i| + eta*max(q,0))^alpha
@@ -288,12 +298,17 @@ class AQIConfig:
             assert self.critic_subsample_size <= self.critic_ensemble_size
         self.trigger_terms = tuple(self.trigger_terms)
         self.quality_filters = tuple(self.quality_filters)
+        self.quality_behavioral_terms = tuple(self.quality_behavioral_terms)
         bad = set(self.trigger_terms) - set(TRIGGER_TERMS)
         assert not bad, f"unknown trigger_terms {bad}; valid: {TRIGGER_TERMS}"
         assert self.trigger_combiner in TRIGGER_COMBINERS, (
             f"trigger_combiner must be one of {TRIGGER_COMBINERS}")
         bad = set(self.quality_filters) - set(QUALITY_FILTERS)
         assert not bad, f"unknown quality_filters {bad}; valid: {QUALITY_FILTERS}"
+        bad = set(self.quality_behavioral_terms) - set(BEHAVIORAL_TERMS)
+        assert self.quality_behavioral_terms and not bad, (
+            f"quality_behavioral_terms must be a non-empty subset of "
+            f"{BEHAVIORAL_TERMS}, got {self.quality_behavioral_terms}")
         assert 0.0 < self.critic_bootstrap_p <= 1.0, (
             "critic_bootstrap_p must be in (0, 1]")
         if self.active_on:

@@ -284,6 +284,9 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     if (aqi.get("quality_score_mode") is not None
             and "quality_score_mode" not in explicit):
         args.quality_score_mode = str(aqi["quality_score_mode"])
+    if (aqi.get("quality_behavioral_terms") is not None
+            and "quality_behavioral_terms" not in explicit):
+        args.quality_behavioral_terms = _csv(aqi["quality_behavioral_terms"])
     if (aqi.get("synthetic_intervention_mode") is not None
             and "synthetic_intervention_mode" not in explicit):
         args.synthetic_intervention_mode = str(
@@ -429,7 +432,8 @@ def _method_conditions(method, args):
     try:
         from serl_launcher.aqi import AQIConfig
         kw = {"mode": mode}
-        for key in ("trigger_terms", "quality_filters"):
+        for key in ("trigger_terms", "quality_filters",
+                    "quality_behavioral_terms"):
             if val(key):
                 kw[key] = as_tuple(val(key))
         for key, field in (
@@ -826,7 +830,7 @@ _AQI_FLAG_SPEC = (
     ("per_delta_init", "val"), ("per_eta", "val"), ("per_eps", "val"),
     ("quality_warmup_steps", "val"), ("per_scale_decay", "val"),
     ("per_refresh_period", "val"), ("per_is_beta", "val"),
-    ("quality_score_mode", "val"),
+    ("quality_score_mode", "val"), ("quality_behavioral_terms", "str"),
     ("critic_ensemble_size", "val"), ("critic_subsample_size", "val"),
     ("per_member_targets", "bool"),
     ("e2hil_K", "val"), ("e2hil_q_low", "val"), ("e2hil_q_high", "val"),
@@ -925,6 +929,7 @@ ARM_KEYS = {
     # quality module (quality/aqi)
     "quality_filters": _to_csv, "quality_disagreement_gate": _to_bool,
     "bc_loss_weight": float, "quality_score_mode": str,
+    "quality_behavioral_terms": _to_csv,
     "per_standardize": _to_bool, "per_delta_init": float, "per_eta": float,
     "per_eps": float, "quality_warmup_steps": int, "per_scale_decay": float,
     "per_refresh_period": int, "per_is_beta": float,
@@ -1819,6 +1824,18 @@ def analyze(args, campaign: Path, roster, methods, seeds, tiers):
     except Exception as exc:
         _yellow(f"[analyze] q-score summary failed ({exc}); report was still "
                 "written.")
+    # intervention-quality signal audit: AUROC of every per-takeover signal
+    # vs episode success + timing-leakage checks (docs/quality_signal_audit.md).
+    # No-op when no intervention segments were logged (hilserl/e2hil only).
+    try:
+        import quality_signal_audit
+        qa_out = quality_signal_audit.make_audit(
+            str(campaign), plots=getattr(args, "plots", True))
+        if qa_out:
+            _green(f"[analyze] quality-signal audit -> {qa_out}/summary.md")
+    except Exception as exc:
+        _yellow(f"[analyze] quality-signal audit failed ({exc}); report was "
+                "still written.")
     print("\n" + md)
     return report
 
@@ -2001,6 +2018,10 @@ def build_arg_parser():
                    help="graded intervention signal: 'counterfactual' A_hat "
                         "Q-gap (default) or critic-free 'behavioral' composite "
                         "z(d_value)-z(t_int)-z(f_peak) (quality/aqi).")
+    p.add_argument("--quality_behavioral_terms", default=None,
+                   help="comma-separated terms of the behavioral score out of "
+                        "d_value,t_int,f_peak (default all; quality/aqi with "
+                        "quality_score_mode=behavioral).")
     p.add_argument("--per_delta_init", type=float, default=None,
                    help="PER |delta| init in the priority (quality/aqi).")
     p.add_argument("--per_eta", type=float, default=None,

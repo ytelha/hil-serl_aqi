@@ -311,6 +311,11 @@ flags.DEFINE_enum("quality_score_mode", None,
                   "Graded intervention signal: 'counterfactual' = A_hat "
                   "critic Q-gap (default); 'behavioral' = critic-free "
                   "z(d_value)-z(t_int)-z(f_peak) composite. quality/aqi only.")
+flags.DEFINE_string("quality_behavioral_terms", None,
+                    "Comma-separated terms of the behavioral score out of "
+                    "{d_value,t_int,f_peak} (default all). E.g. "
+                    "'d_value,f_peak' drops takeover length. quality/aqi with "
+                    "--quality_score_mode=behavioral only.")
 flags.DEFINE_integer("e2hil_K", None,
                      "E2HiL: Monte-Carlo actions per state for the entropy-"
                      "influence estimate c(s) (paper default 8). e2hil only.")
@@ -1466,6 +1471,9 @@ def main(_):
         overrides["per_is_beta"] = FLAGS.per_is_beta
     if FLAGS["quality_score_mode"].present:
         overrides["quality_score_mode"] = FLAGS.quality_score_mode
+    if FLAGS["quality_behavioral_terms"].present:
+        overrides["quality_behavioral_terms"] = _csv(
+            FLAGS.quality_behavioral_terms)
     if FLAGS["bootstrap_p"].present:
         overrides["critic_bootstrap_p"] = FLAGS.bootstrap_p
     if FLAGS["per_member_targets"].present:
@@ -1502,7 +1510,7 @@ def main(_):
                    "bc_loss_weight", "per_standardize", "per_delta_init",
                    "per_eta", "per_eps", "quality_warmup_steps",
                    "per_scale_decay", "per_refresh_period", "per_is_beta",
-                   "quality_score_mode"):
+                   "quality_score_mode", "quality_behavioral_terms"):
             return aqi_cfg.quality_on
         if key in ("critic_ensemble_size", "critic_subsample_size",
                    "critic_bootstrap_p", "critic_per_member_targets"):
