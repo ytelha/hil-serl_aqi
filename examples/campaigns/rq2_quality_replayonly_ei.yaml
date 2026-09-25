@@ -1,0 +1,108 @@
+# =====================================================================
+# rq2_quality_replayonly_ei.yaml — FAST expert-vs-intermediate variant of
+# rq2_quality_replayonly.yaml (novice tier dropped for speed).
+#
+# Same question and A/B as rq2_quality_replayonly.yaml (does the QUALITY
+# score help when used for REPLAY PRIORITY ONLY, bc_loss_weight=0?), compared
+# against the RQ1 baseline `hilserl`. The ONLY change is the tier axis:
+#   tiers  = {expert, intermediate}   (novice removed)
+#   methods = {hilserl, quality}
+#   seeds  = 3
+#   -> 2 tiers x 2 methods x 3 seeds = 12 cells (vs 18).
+# Novice cells never converged and ran the full 50k-step cap, so dropping
+# them is where most of the wall-clock savings come from.
+#
+# Launch (from repo root; --converge_require_autonomous is NOT a config
+# field and MUST be passed on the CLI):
+#   nohup ./.venv/bin/python examples/run_campaign.py \
+#       --config examples/campaigns/rq2_quality_replayonly_ei.yaml \
+#       --campaign runs/rq2_quality_replayonly_ei --converge_require_autonomous \
+#       > runs/rq2_quality_replayonly_ei.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid                # HEADROOM: cylinder saturates to 100% (ICC
+                                   # uncomputable); cuboid keeps the unsaturated
+                                   # gradient the RQ1 signal lives on.
+
+operators:                         # 1 jittered operator/tier = the tier
+  expert: 1                        # representative (exp00/int00). NOVICE DROPPED
+  intermediate: 1                  # for speed. operator == tier.
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster (same anchors as rq2)
+
+demos:
+  per_operator: 6                  # SAME 6 filtered geometric demos as rq2.
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl                        # RQ1 baseline (2-critic, no AQI)
+  - quality                        # K-critic + quality-prioritised replay, bc=0
+
+replicates:
+  seeds: 3                         # within-operator repeats.
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 50000                 # convergence-stop ends fast cells early.
+  minutes_per_cell: 300            # SAFETY wall-clock cap only (anti-hang).
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  demo_pretrain: false
+  demo_pretrain_steps: 0
+  demo_pretrain_batch_size: 0
+
+aqi:
+  synthetic_intervention_mode: signal
+  bc_loss_weight: 0.0                   # quality score drives ONLY the replay
+                                        # priority, no imitation loss.
+  quality_filters:                      # outcome_filter OFF (learn from failures).
+    - safety_veto
+    - jerk_veto
+  # ---- q-priority FIX (so the score actually moves sampling) ----
+  per_standardize: true                 # divide q_int by its running scale ->
+                                        # per_eta acts on a ~unit signal instead
+                                        # of the raw ~1e-3 one that was swamped.
+  per_delta_init: 0.1                   # small |delta| floor (was 1.0, which
+                                        # dwarfed q). With standardized q a
+                                        # typical +intervention now gets ~3x the
+                                        # baseline replay priority (was 1.03x).
+  per_eps: 0.05
+  per_eta: 1.0
+
+eval:                              # frozen, hash-locked ruler (operator-independent)
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: hilserl
+  plots: true

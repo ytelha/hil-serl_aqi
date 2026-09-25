@@ -1,0 +1,95 @@
+<mujoco model="PandaCylinderInsertionArena">
+  <!--
+    EASY cylindrical peg-in-hole variant for HIL-SERL / AQI-HIL-SERL.
+
+    Same robot / interface / sensor names as arena_peg.xml (the exact hex task),
+    but with a round peg + round bore so it is much easier to teleoperate:
+      * a cylinder is axisymmetric -> NO yaw alignment is ever required, and
+      * generous radial clearance (8 mm) tolerates coarse xy positioning.
+    The bore is approximated by 12 box "staves" arranged in a circle (MuJoCo has
+    no tube primitive). Select this arena with peg_shape="cylinder"; the hex task
+    (arena_peg.xml) remains available with peg_shape="hex".
+
+    Geometry (hole body at z=0.22): bore mouth at world z=0.32, bore floor at
+    z=0.12; peg radius 0.02 m, bore inner radius ~0.028 m.
+  -->
+  <include file="panda.xml"/>
+
+  <option timestep=".002" noslip_iterations="5" noslip_tolerance="0"/>
+
+  <statistic center="0.4 0 0.3" extent=".8"/>
+
+  <visual>
+    <headlight diffuse=".4 .4 .4" ambient=".5 .5 .5"/>
+    <global azimuth="160" elevation="-20" offheight="480" offwidth="640"/>
+    <quality offsamples="8"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="32" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" reflectance="0"/>
+    <material name="peg_mat" rgba="0.2 0.45 0.85 1"/>
+    <material name="hole_mat" rgba="0.75 0.75 0.78 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Operator / monitoring camera used by env.render(): 3/4 isometric from the
+         front-right, aimed at the socket so xy alignment and depth are both visible. -->
+    <camera name="front" pos="1.14 -0.64 0.72" mode="targetbody" target="hole" fovy="45"/>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="1 1 1" specular=".3 .3 .3"/>
+    <light pos="0.5 -.4 .8" dir="-0.3 0.3 -1" diffuse=".7 .7 .7" specular=".2 .2 .2"/>
+    <geom name="floor" size="3 3 0.01" type="plane" material="grid"/>
+
+    <!-- Round peg: cylinder radius 0.02 m, length 0.20 m, welded to the gripper
+         base (pregrasped). Axisymmetric, so no yaw flip / recenter is needed and
+         the insertion tip = +Z end (world-down when welded) is on the axis. -->
+    <body name="peg" pos="0.5 0 0.3">
+      <freejoint name="peg"/>
+      <inertial pos="0 0 0" mass="0.15" diaginertia="8e-4 8e-4 2e-4"/>
+      <geom name="peg" type="cylinder" size="0.02 0.10" pos="0 0 0"
+            rgba="0.2 0.45 0.85 1" contype="2" conaffinity="2" condim="3"
+            friction="0.3 0.02 0.001" margin="0.001"
+            solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <site name="peg_tip" pos="0 0 0.1" size="0.005" rgba="1 0 0 0.8"/>
+      <camera name="wrist_1" pos="0.13 0 -0.03"  xyaxes="0 1 0 1 0 0.6"  fovy="60"/>
+      <camera name="wrist_2" pos="-0.13 0 -0.03" xyaxes="0 1 0 1 0 -0.6" fovy="60"/>
+    </body>
+
+    <!-- Round socket: 12 box staves forming a ~round bore (inner radius ~0.028 m).
+         Static fixture; bore axis at the hole-body origin so peg-over-hole = mated.
+         Opening (peg entry) at stave +Z (local z=0.1), bore floor at local z=-0.1. -->
+    <body name="hole" pos="0.5 0 0.22">
+      <geom name="hole_pedestal" type="box" pos="0 0 -0.16" size="0.11 0.11 0.06"
+            material="hole_mat" contype="0" conaffinity="0"/>
+      <geom name="hole_floor" type="box" pos="0 0 -0.105" size="0.11 0.11 0.006"
+            material="hole_mat" contype="2" conaffinity="2" condim="3" margin="0.001"/>
+      <geom name="stave0"  type="box" size="0.006 0.010 0.10" pos="0.034 0 0"           quat="1 0 0 0"             rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave1"  type="box" size="0.006 0.010 0.10" pos="0.029444 0.017 0"     quat="0.96593 0 0 0.25882" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave2"  type="box" size="0.006 0.010 0.10" pos="0.017 0.029444 0"     quat="0.86603 0 0 0.5"     rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave3"  type="box" size="0.006 0.010 0.10" pos="0 0.034 0"           quat="0.70711 0 0 0.70711" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave4"  type="box" size="0.006 0.010 0.10" pos="-0.017 0.029444 0"    quat="0.5 0 0 0.86603"     rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave5"  type="box" size="0.006 0.010 0.10" pos="-0.029444 0.017 0"    quat="0.25882 0 0 0.96593" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave6"  type="box" size="0.006 0.010 0.10" pos="-0.034 0 0"          quat="0 0 0 1"             rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave7"  type="box" size="0.006 0.010 0.10" pos="-0.029444 -0.017 0"   quat="-0.25882 0 0 0.96593" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave8"  type="box" size="0.006 0.010 0.10" pos="-0.017 -0.029444 0"   quat="-0.5 0 0 0.86603"     rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave9"  type="box" size="0.006 0.010 0.10" pos="0 -0.034 0"          quat="-0.70711 0 0 0.70711" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave10" type="box" size="0.006 0.010 0.10" pos="0.017 -0.029444 0"    quat="-0.86603 0 0 0.5"     rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <geom name="stave11" type="box" size="0.006 0.010 0.10" pos="0.029444 -0.017 0"    quat="-0.96593 0 0 0.25882" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" friction="0.3 0.02 0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <!-- sites on the bore axis: mouth at +Z, floor at -Z -->
+      <site name="hole_top" pos="0 0 0.1" size="0.006" rgba="0 1 0 0.6"/>
+      <site name="hole_bottom" pos="0 0 -0.1" size="0.006" rgba="0 0 1 0.6"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <weld name="peg_weld" body1="base" body2="peg" relpose="0 0 0.12 1 0 0 0"
+          solref="0.001 1" solimp="0.99 0.999 0.001"/>
+  </equality>
+
+  <sensor>
+    <framepos name="peg_tip_pos" objtype="site" objname="peg_tip"/>
+    <framepos name="hole_top_pos" objtype="site" objname="hole_top"/>
+    <framepos name="hole_bottom_pos" objtype="site" objname="hole_bottom"/>
+  </sensor>
+</mujoco>

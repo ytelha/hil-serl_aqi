@@ -1,0 +1,122 @@
+# =====================================================================
+# rq3_plain_logged_quality.yaml — structural (critic-count) ablation.
+#
+# Three methods on the SAME operators/seeds/task, to separate the two changes
+# that were confounded in the earlier hilserl-vs-quality runs:
+#   hilserl  PLAIN HIL-SERL: 2-critic RLPD, uniform replay, no AQI. Baseline.
+#   logged   10-critic ensemble (REDQ min-Q + bootstrap + per-member targets),
+#            UNIFORM replay, no quality signal. The same-architecture control:
+#            hilserl -> logged isolates the STRUCTURAL (2->10 critic) change.
+#   quality  10-critic ensemble + quality-PRIORITISED replay (bc=0), with the
+#            stabilised priority: standardised q, warm-up, EMA scale, periodic
+#            refresh, and importance-sampling correction. logged -> quality
+#            isolates the quality-replay effect at EQUAL architecture.
+#
+# Goal: how does the critic-extended setup (logged) compare to the 2-critic
+# baseline on CONVERGENCE and STABILITY, and does quality-prioritised replay
+# add anything over the logged ablation.
+#
+# The quality-only knobs (per_*, warm-up) are quality_on-gated, so they affect
+# ONLY the quality cells; logged runs as a clean 10-critic uniform-replay arm
+# and hilserl as the exact 2-critic baseline.
+#
+# Design: 2 operators/tier x 3 tiers x 2 seeds x 3 methods = 36 cells.
+#   (exp/int/nov, 2 jittered operators each -> some operator variance AND seed
+#    variance per tier.)
+#
+# Launch (from repo root; --converge_require_autonomous is NOT a config field
+# and MUST be on the CLI; wandb group via the WANDB_RUN_GROUP env var):
+#   WANDB_RUN_GROUP=rq3_plain_logged_quality nohup ./.venv/bin/python \
+#       examples/run_campaign.py \
+#       --config examples/campaigns/rq3_plain_logged_quality.yaml \
+#       --campaign runs/rq3_plain_logged_quality \
+#       --converge_require_autonomous --wandb online \
+#       > runs/rq3_plain_logged_quality.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:                         # 2 jittered operators PER TIER (operator !=
+  expert: 2                        # tier now) -> some within-tier operator
+  intermediate: 2                  # variance in addition to seed variance.
+  novice: 2
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 6                  # 6 filtered geometric demos per (operator,seed)
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl                        # plain (2-critic)
+  - logged                         # 10-critic, uniform replay (structural control)
+  - quality                        # 10-critic + quality-prioritised replay (fixed)
+
+replicates:
+  seeds: 2                         # 2 seeds PER operator -> 4 samples/tier/method.
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 50000
+  minutes_per_cell: 300            # SAFETY wall-clock cap only (anti-hang).
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0                   # campaign-wide cap (0 = unlimited, resumable)
+  learner_max_steps: 1000000
+  buffer_period: 0                 # DISK: no ~9GB/cell replay dumps (no restart)
+  checkpoint_keep: 25              # DISK: retain 25 checkpoints/cell, not 100
+  demo_pretrain: false
+  demo_pretrain_steps: 0
+  demo_pretrain_batch_size: 0
+
+aqi:
+  synthetic_intervention_mode: signal
+  # ---- quality arm only (quality_on-gated; ignored by hilserl/logged) ----
+  bc_loss_weight: 0.0                   # replay-priority only, no imitation loss.
+  quality_filters:
+    - safety_veto
+    - jerk_veto
+  per_standardize: true                 # standardise q by its running scale.
+  per_delta_init: 0.1
+  per_eps: 0.05
+  per_eta: 1.0
+  quality_warmup_steps: 5000            # baseline priority until the critic matures.
+  per_scale_decay: 0.01                 # forgetting EMA for the q-scale.
+  per_refresh_period: 2000              # refresh stored priorities periodically.
+  per_is_beta: 0.5                      # importance-sampling de-biasing.
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI for this run.
+
+analysis:
+  baseline: hilserl                # deltas vs plain HIL-SERL; logged is the
+  plots: true                      # same-architecture control between them.

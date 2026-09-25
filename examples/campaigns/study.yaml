@@ -1,0 +1,73 @@
+# =====================================================================
+# study.yaml — a complete operator-dependency campaign in one file.
+#
+#   Preview:  ./.venv/bin/python examples/run_campaign.py \
+#                 --config examples/campaigns/study.yaml \
+#                 --campaign runs/study1 --plan
+#   Run:      nohup ./.venv/bin/python examples/run_campaign.py \
+#                 --config examples/campaigns/study.yaml \
+#                 --campaign runs/study1 > runs/study1.out 2>&1 &
+#
+# Any command-line flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion      # the task
+  peg_shape: cylinder              # supported (translation-only) geometry
+
+operators:                         # operator POPULATION per tier (may differ)
+  expert: 8
+  intermediate: 8
+  novice: 8
+  jitter: 0.15                     # spread within a tier (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 6                  # demos per (operator, seed) -- keep MODEST
+  filtered: true                   # keep only successful demos
+  max_attempts: 300
+
+methods:                           # the ablations to compare
+  - hilserl                        # baseline: no active gate, no quality
+  - active                         # + active query gate only
+  - quality                        # + quality-aware replay only
+  - aqi                            # full system
+
+# aqi:                             # OPTIONAL AQI composition (S6.4 ablations);
+#   trigger_terms: [uncertainty]   #   subset of {uncertainty,failure,force,ood,
+#   trigger_combiner: max          #   cost} + weighted_sum|max. Omit = all 5.
+#   quality_filters: [safety_veto, outcome_filter]
+#   quality_disagreement_gate: true
+
+replicates:
+  seeds: 5                         # repeats per operator (within-operator noise)
+  seed_base: 0
+
+budget:                            # time is not an issue -> converge, big cap
+  converge_success: 0.9            # stop a cell at 90% rolling autonomous success
+  converge_window: 20
+  converge_min_steps: 500
+  steps_cap: 20000                 # hard cap per cell (bounds non-converging)
+  minutes_per_cell: 60             # fixed wall-clock budget per cell (0 = none)
+  total_hours: 0                   # fixed wall-clock budget for the WHOLE
+                                   # campaign (0 = unlimited; e.g. 10 = stop
+                                   # launching new cells after 10 h, resumable)
+  learner_max_steps: 1000000
+  demo_pretrain: false             # true enables demo-only warm start
+  demo_pretrain_steps: 0           # optional demo-only warm start (0 = off)
+  demo_pretrain_batch_size: 0      # 0 => use config.batch_size
+
+eval:                              # the fixed, hash-locked ruler
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+
+gpu:
+  jax_platform: cuda               # 'cuda' or 'cpu'
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+analysis:
+  baseline: hilserl                # the arm the others are compared against
+  plots: true                      # render figures into report/plots/

@@ -1,0 +1,116 @@
+# =====================================================================
+# rq1_s075_5seed.yaml — DEFINITIVE RQ1 run: "does the baseline depend on
+# the operator?"  (supersedes the rq1_3seed_* exploratory runs)
+#
+# What changed vs rq1_baseline.yaml, and WHY (all evidence-driven):
+#   1. SYNTHETIC ANCHORS WIDENED to old-scale s=0.75 (operator_model.py,
+#      2026-09-07). The 2026-09-06 s=0.6 recalibration removed expert
+#      free-riding but OVER-COMPRESSED the skill range (validate-synthetic
+#      rho 0.80, ICC 0.658 -> 3-seed run gave ICC 0, p 0.515, non-monotone).
+#      s=0.75 restores separation: validate-synthetic rho 0.917, ICC 0.913,
+#      QWK 0.976, composite-acc 1.0 (kmeans 0.867 = classification-only, not
+#      RQ1). Expert sigma0 0.629 (was 1.09) -- clearly better than the old
+#      intermediate yet still short of the free-riding super-human (0.25).
+#   2. NO DEMO PRETRAIN. The 3-seed A/B showed pretrain LOWERED SR
+#      (27.6 vs 39.9%) AND flattened operator spread (CV .09 vs .29): a
+#      common demo prior homogenizes policies -> kills the operator signal.
+#   3. >=5 SEEDS. n=3 could not resolve the tier gaps (int/novice flipped =
+#      seed noise). 5 seeds/operator averages the RL oscillation down.
+#
+# Design: 1 jittered operator per tier (the tier representative) x 5 seeds x
+# hilserl = 15 cells. operator == tier here, so the ICC / permutation test
+# is a TIER-dependency test; to also resolve within-tier operator variance,
+# raise `operators:` to >=3-5/tier (costs proportionally more compute).
+#
+# Endpoint (hilserl block from run_campaign analyze):
+#   ICC(1,1) high  +  operator_matters permutation-p < 0.05  +  monotone tier
+#   gradient (expert > intermediate > novice)  ->  "baseline depends on operator".
+#
+# Launch (from repo root; MUST pass --converge_require_autonomous, it is not
+# a config field):
+#   nohup ./.venv/bin/python examples/run_campaign.py \
+#       --config examples/campaigns/rq1_s075_5seed.yaml \
+#       --campaign runs/rq1_s075_5seed --converge_require_autonomous \
+#       > runs/rq1_s075_5seed.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid                # HEADROOM. cylinder saturates the baseline to
+                                   # 100% (ICC uncomputable); cuboid keeps a real
+                                   # unsaturated gradient (novice ~30% vs expert 100%).
+
+operators:                         # 1 operator/tier = the tier representative
+  expert: 1                        # (exp00/int00/nov00, deterministic at sample_seed 0).
+  intermediate: 1                  # operator == tier -> ICC is a tier-dependency test.
+  novice: 1                        # raise to >=3-5/tier for within-tier operator variance.
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 20                 # strong demo prior for the ONLINE buffer only
+  filtered: true                   # (no pretrain now -> demos feed the learner's demo
+  max_attempts: 300                # buffer + online interventions, not a warm-start).
+
+methods:
+  - hilserl                        # THE baseline whose operator-dependence we prove.
+
+replicates:
+  seeds: 5                         # >=5 within-operator repeats = the noise floor that
+  seed_base: 0                     # makes sigma2_within / ICC estimable and averages the
+                                   # 0<->100% training oscillation (n=3 was too few).
+
+budget:
+  mode: steps                      # EQUAL training/cell: ENV-STEP budget, not wall-clock
+                                   # (a time budget gave heavily-intervened cells fewer
+                                   # gradient steps -> confounded skill with training amount).
+  steps_cap: 50000                 # env steps/cell; convergence-stop ends fast cells early.
+  minutes_per_cell: 300            # SAFETY wall-clock cap only (anti-hang), NOT the budget.
+  converge_success: 0.9            # early-STOP + checkpoint a policy that reliably solves
+  converge_window: 20              # AUTONOMOUSLY (>=90% over 20 episodes) -> stable eval
+  converge_min_steps: 3000         # checkpoint + steps-to-converge axis.
+  converge_eval_threshold: 0.6     # ruler-aligned mini-eval gate: avoid 'converged on easy
+                                   # randomized resets' when fixed-pose skill is still poor.
+  converge_eval_max_steps: 300
+  converge_eval_poses:             # [dx_m, dyaw_rad] MIRROR the frozen ruler (dx -16..16mm,
+                                   # yaw 0) so the gate is a true SUBSET of the eval grid.
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0                   # campaign-wide cap (0 = unlimited, resumable)
+  learner_max_steps: 1000000
+  demo_pretrain: false             # OFF (evidence: pretrain flattened operator spread and
+  demo_pretrain_steps: 0           # lowered SR). The learner still loads demos into its
+  demo_pretrain_batch_size: 0      # demo buffer at startup; it just does not warm-start.
+
+aqi:
+  synthetic_intervention_mode: signal   # SDT-gate handback (NOT latch): operator hands
+                                        # control back so the policy practices finishing
+                                        # -> autonomous SR is meaningful, convergence fires.
+
+eval:                              # frozen, hash-locked ruler (operator-independent)
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window              # best mean over `window_k` CONSECUTIVE checkpoints
+  window_k: 3                      # (sustained competence) -> kills last-K trough artifact
+                                   # AND best-of-1 selection bias. Scores ALL checkpoints.
+
+gpu:
+  jax_platform: cuda               # hilserl is 2-critic + no counterfactual -> GPU is safe.
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # off = disabled; offline stores under each
+                                   # checkpoint without requiring an API key.
+
+analysis:
+  baseline: hilserl                # single method -> delta is vs itself (harmless)
+  plots: true                      # report/plots/*.png (+ intervention_curves.png auto)

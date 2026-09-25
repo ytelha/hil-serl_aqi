@@ -1,0 +1,77 @@
+# =====================================================================
+# e1_cylinder.yaml — the thesis E1 operator-dependency campaign.
+#
+# The full ablation ladder (hilserl -> logged -> active -> quality -> aqi)
+# on the cylinder task, with jittered operator POPULATIONS so between-operator
+# variance (ICC / RG_rel) is measurable.
+#
+#   Preview:  ./.venv/bin/python examples/run_campaign.py \
+#                 --config examples/campaigns/e1_cylinder.yaml \
+#                 --campaign runs/e1_cylinder --plan
+#   Run:      nohup ./.venv/bin/python examples/run_campaign.py \
+#                 --config examples/campaigns/e1_cylinder.yaml \
+#                 --campaign runs/e1_cylinder > runs/e1_cylinder.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here. See docs/thesis/ for the plan
+# and the exact run/analyse/plot protocol.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion      # the task
+  peg_shape: cylinder              # geometric-oracle (translation-only) shape
+
+operators:                         # jittered POPULATION per tier (RQ1 needs >1/tier)
+  expert: 5
+  intermediate: 5
+  novice: 5
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 6                  # keep MODEST so ONLINE interventions matter
+  filtered: true                   # keep only successful demos
+  max_attempts: 300
+
+methods:                           # the full ablation ladder
+  - hilserl                        # plain baseline (2 critics)
+  - logged                         # same-arch vanilla control (ensemble only)
+  - active                         # + trigger only            (RQ3 contribution)
+  - quality                        # + quality usage only      (RQ2 contribution)
+  - aqi                            # full system               (active + quality)
+
+replicates:
+  seeds: 3                         # within-operator repeats (noise floor)
+  seed_base: 0
+
+budget:                            # stop each cell on convergence, capped
+  converge_success: 0.9            # 90% rolling AUTONOMOUS success
+  converge_window: 20
+  converge_min_steps: 500
+  steps_cap: 20000                 # hard cap per cell
+  minutes_per_cell: 60             # wall-clock cap per cell (0 = none)
+  total_hours: 0                   # campaign-wide cap (0 = unlimited, resumable)
+  learner_max_steps: 1000000
+
+eval:                              # the fixed, hash-locked ruler
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+
+gpu:
+  jax_platform: cuda               # 'cuda' or 'cpu' (cpu = OOM-safe actor)
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "offline"                 # off | offline | online (offline stores locally)
+
+analysis:
+  baseline: hilserl                # arm the others are compared against
+  plots: true                      # render report/plots/*.png
+
+# aqi:                             # OPTIONAL composition for E2 ablations:
+#   trigger_terms: [uncertainty]   #   subset of {uncertainty,failure,force,ood,cost}
+#   trigger_combiner: max          #   weighted_sum | max
+#   quality_filters: [outcome_filter]
+#   quality_disagreement_gate: true

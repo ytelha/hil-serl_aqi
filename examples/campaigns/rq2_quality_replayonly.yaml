@@ -1,0 +1,114 @@
+# =====================================================================
+# rq2_quality_replayonly.yaml — "does the intervention QUALITY score help
+# when it is used for REPLAY PRIORITY ONLY (no imitation loss)?"
+#
+# A/B against the RQ1 baseline, SAME geometric-operator setup as
+# runs/rq1_3seed_nopretrain (cuboid, 3 tiers x 3 seeds x 1 op/tier, 6
+# filtered demos, NO demo-pretrain, convergence-stop, signal-mode
+# interventions, best_window(3) on the frozen +/-16 mm ruler). Only the
+# method axis changes.
+#
+# Methods (the comparison):
+#   hilserl  RQ1 baseline: 2-critic RLPD, no AQI. The original reference.
+#   quality  K-critic ensemble + quality-PRIORITISED replay, but
+#            bc_loss_weight = 0.0 -> the counterfactual score q_int drives
+#            ONLY the replay probability p_i = (eps+|delta|+eta*max(q,0))^alpha
+#            and nothing else (no weighted imitation loss). The outcome
+#            filter is OFF so the policy still learns from failed-episode
+#            interventions (they stay in the intervention buffer).
+#
+# Endpoint: mean autonomous SR (and steps-to-convergence) of `quality` vs
+# `hilserl` on the frozen ruler.
+#
+# Launch (from repo root; --converge_require_autonomous is NOT a config
+# field and MUST be passed on the CLI):
+#   nohup ./.venv/bin/python examples/run_campaign.py \
+#       --config examples/campaigns/rq2_quality_replayonly.yaml \
+#       --campaign runs/rq2_quality_replayonly --converge_require_autonomous \
+#       > runs/rq2_quality_replayonly.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid                # HEADROOM: cylinder saturates to 100% (ICC
+                                   # uncomputable); cuboid keeps the unsaturated
+                                   # gradient the RQ1 signal lives on.
+
+operators:                         # 1 jittered operator/tier = the tier
+  expert: 1                        # representative (exp00/int00/nov00), exactly
+  intermediate: 1                  # as runs/rq1_3seed_nopretrain. operator == tier.
+  novice: 1
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 6                  # SAME 6 filtered geometric demos as the RQ1
+  filtered: true                   # nopretrain campaign (fed to the demo/intervention
+  max_attempts: 300                # buffer; no warm-start).
+
+methods:
+  - hilserl                        # RQ1 baseline (2-critic, no AQI)
+  - quality                        # K-critic + quality-prioritised replay, bc=0
+
+replicates:
+  seeds: 3                         # within-operator repeats = the noise floor
+  seed_base: 0                     # (mirrors rq1_3seed_nopretrain).
+
+budget:
+  mode: steps                      # EQUAL env-step budget/cell (not wall-clock).
+  steps_cap: 50000                 # convergence-stop ends fast cells early.
+  minutes_per_cell: 300            # SAFETY wall-clock cap only (anti-hang).
+  converge_success: 0.9            # early-STOP + checkpoint a policy that solves
+  converge_window: 20              # AUTONOMOUSLY (>=90% over 20 episodes).
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6     # ruler-aligned mini-eval gate.
+  converge_eval_max_steps: 300
+  converge_eval_poses:             # [dx_m, dyaw_rad] MIRROR the frozen ruler.
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0                   # campaign-wide cap (0 = unlimited, resumable)
+  learner_max_steps: 1000000
+  demo_pretrain: false             # OFF (pretrain flattens the operator signal).
+  demo_pretrain_steps: 0
+  demo_pretrain_batch_size: 0
+
+aqi:
+  synthetic_intervention_mode: signal   # SDT-gate handback (NOT latch): the policy
+                                        # practises finishing -> autonomous SR is
+                                        # meaningful and convergence can fire.
+  bc_loss_weight: 0.0                   # <-- the whole point: quality score drives
+                                        # ONLY the replay priority, no imitation loss.
+  quality_filters:                      # outcome_filter DELIBERATELY OFF: the policy
+    - safety_veto                       # must still learn from FAILED-episode
+    - jerk_veto                         # interventions (they stay in the buffer).
+                                        # Only the safety/jerk vetoes remain (both
+                                        # inert no-ops in this sim: jerk_hard=None, no
+                                        # hard F/tau breach). `unsolicited` is omitted
+                                        # (it only acts when the active gate is on).
+
+eval:                              # frozen, hash-locked ruler (operator-independent)
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window              # best mean over `window_k` CONSECUTIVE checkpoints
+  window_k: 3                      # (sustained competence); scores ALL checkpoints.
+
+gpu:
+  jax_platform: cuda               # `quality` is K-critic + counterfactual scoring;
+  mem_learner: 0.6                 # cuda recommended. Use cpu only if GPU memory is
+  mem_actor: 0.2                   # tight (much slower).
+
+logging:
+  wandb: "off"                     # off = disabled; offline stores under each
+                                   # checkpoint without requiring an API key.
+
+analysis:
+  baseline: hilserl                # quality is compared against the RQ1 baseline.
+  plots: true                      # report/plots/*.png (+ q_analysis/ for q_int).

@@ -1,0 +1,1058 @@
+{
+  // ------------------------------------------------------------------------
+  // Click-to-run launcher for the MuJoCo `sim_peg_insertion` task.
+  //
+  // Terminal > Run Task...  (or Ctrl/Cmd+Shift+P -> "Tasks: Run Task").
+  // Only the options relevant to each mode are prompted.
+  //
+  //   sim:     Record demos (SpaceMouse or Synthetic) / Evaluate checkpoint
+  //   learner: Baseline | Active | Quality | AQI  x  Human | Synthetic demos
+  //   actor:   Baseline | Active | Quality | AQI  x  Human (SpaceMouse) | Synthetic
+  //
+  // Workflow: run a learner task first (it prints "LEARNER READY"), then run
+  // the matching actor task — each opens in its own dedicated terminal.
+  // All tasks call examples/experiments/sim_peg_insertion/run.sh via SIM_* vars.
+  // ------------------------------------------------------------------------
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Record demos (SpaceMouse)",
+      "detail": "Collect demos with the SpaceMouse. Filtered = keep only successes.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "record",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_SUCCESSES": "${input:successesNeeded}",
+          "SIM_RECORD_FILTERED": "${input:demoFiltered}",
+          "SIM_RENDER": "1"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "learner: Baseline — Human",
+      "detail": "HIL-SERL baseline learner (no active gate, no quality). Uses HUMAN-collected demos. Pair with 'actor: Baseline — Human'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Active — Human",
+      "detail": "Active-query learner (critic ensemble + trigger gate). Uses HUMAN-collected demos. Pair with 'actor: Active — Human'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Quality — Human",
+      "detail": "Quality-aware learner (quality replay + loss, no active gate). Uses HUMAN-collected demos. Pair with 'actor: Quality — Human'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: AQI — Human",
+      "detail": "Full AQI learner (active gate + quality). Uses HUMAN-collected demos. Pair with 'actor: AQI — Human'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Baseline — Synthetic (Geometric Oracle)",
+      "detail": "HIL-SERL baseline learner using GEOMETRIC-oracle demos (collect via 'Record demos (Synthetic operator — Geometric Oracle)'). Pair with 'actor: Baseline — Synthetic (Geometric Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Active — Synthetic (Geometric Oracle)",
+      "detail": "Active-query learner using GEOMETRIC-oracle demos (collect via 'Record demos (Synthetic operator — Geometric Oracle)'). Pair with 'actor: Active — Synthetic (Geometric Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Quality — Synthetic (Geometric Oracle)",
+      "detail": "Quality-aware learner using GEOMETRIC-oracle demos (collect via 'Record demos (Synthetic operator — Geometric Oracle)'). Pair with 'actor: Quality — Synthetic (Geometric Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: AQI — Synthetic (Geometric Oracle)",
+      "detail": "Full AQI learner using GEOMETRIC-oracle demos (collect via 'Record demos (Synthetic operator — Geometric Oracle)'). Pair with 'actor: AQI — Synthetic (Geometric Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Baseline — Human (SpaceMouse)",
+      "detail": "Baseline actor. Human takes over with SpaceMouse. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Active — Human (SpaceMouse)",
+      "detail": "Active-query actor. Robot requests intervention; human responds via SpaceMouse. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUERY_BEHAVIOR": "${input:queryBehavior}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Quality — Human (SpaceMouse)",
+      "detail": "Quality actor. Intervention quality weighted; human takes over via SpaceMouse. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: AQI — Human (SpaceMouse)",
+      "detail": "Full AQI actor. Active gate + quality; human responds via SpaceMouse. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_QUERY_BEHAVIOR": "${input:queryBehavior}",
+          "SIM_OPERATOR": "${input:operatorId}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Baseline — Synthetic (Geometric Oracle)",
+      "detail": "Baseline actor. Synthetic operator with GEOMETRIC oracle takes over (no SpaceMouse). Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Active — Synthetic (Geometric Oracle)",
+      "detail": "Active-query actor. Robot requests intervention; synthetic operator with GEOMETRIC oracle responds. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUERY_BEHAVIOR": "${input:queryBehavior}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Quality — Synthetic (Geometric Oracle)",
+      "detail": "Quality actor. Intervention quality weighted; synthetic operator with GEOMETRIC oracle takes over. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: AQI — Synthetic (Geometric Oracle)",
+      "detail": "Full AQI actor. Active gate + quality; synthetic operator with GEOMETRIC oracle responds to requests. Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_QUERY_BEHAVIOR": "${input:queryBehavior}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "eval: Baseline",
+      "detail": "Evaluate the latest Baseline (hilserl) checkpoint. Picks the most recent checkpoint automatically.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "eval",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:evalOperator}",
+          "SIM_EVAL_STEP": "auto",
+          "SIM_EVAL_TRAJS": "${input:evalTrajs}",
+          "SIM_SEED": "${input:seed}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "eval" }
+    },
+    {
+      "label": "eval: Active",
+      "detail": "Evaluate the latest Active checkpoint. Picks the most recent checkpoint automatically.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "eval",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:evalOperator}",
+          "SIM_EVAL_STEP": "auto",
+          "SIM_EVAL_TRAJS": "${input:evalTrajs}",
+          "SIM_SEED": "${input:seed}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "eval" }
+    },
+    {
+      "label": "eval: Quality",
+      "detail": "Evaluate the latest Quality checkpoint. Picks the most recent checkpoint automatically.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "eval",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:evalOperator}",
+          "SIM_EVAL_STEP": "auto",
+          "SIM_EVAL_TRAJS": "${input:evalTrajs}",
+          "SIM_SEED": "${input:seed}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "eval" }
+    },
+    {
+      "label": "eval: AQI",
+      "detail": "Evaluate the latest AQI checkpoint. Picks the most recent checkpoint automatically.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "eval",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:evalOperator}",
+          "SIM_EVAL_STEP": "auto",
+          "SIM_EVAL_TRAJS": "${input:evalTrajs}",
+          "SIM_SEED": "${input:seed}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "eval" }
+    },
+    {
+      "label": "Record demos (Synthetic operator — Geometric Oracle)",
+      "detail": "Collect demos via the GEOMETRIC oracle (no SpaceMouse). Choose skill level, count, and filter.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "collect-synth",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_SYN_PROFILE": "${input:synProfile}",
+          "SIM_SYN_EPISODES": "${input:synEpisodes}",
+          "SIM_SYN_FILTERED": "${input:demoFiltered}",
+          "SIM_SYN_OUT": "${input:geometricDemoOut}",
+          "SIM_RENDER": "1",
+          "SIM_SEED": "${input:seed}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "sim" }
+    },
+    {
+      "label": "Record demos (Synthetic operator — Policy Oracle)",
+      "detail": "Collect demos via a FROZEN POLICY oracle (no SpaceMouse). Distinct pipeline from geometric synthetic demos.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "collect-policy",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_SYN_PROFILE": "${input:synProfile}",
+          "SIM_SYN_EPISODES": "${input:synEpisodes}",
+          "SIM_SYN_FILTERED": "${input:demoFiltered}",
+          "SIM_POLICY_ORACLE_CHECKPOINT": "${input:policyOracleCheckpoint}",
+          "SIM_POLICY_ORACLE_MODE": "${input:policyOracleMode}",
+          "SIM_POLICY_ORACLE_STEP": "${input:policyOracleStep}",
+          "SIM_POLICY_MM_PER_UNIT": "${input:policyOracleMmPerUnit}",
+          "SIM_SYN_OUT": "${input:policyDemoOut}",
+          "SIM_RENDER": "1",
+          "SIM_SEED": "${input:seed}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "sim" }
+    },
+    {
+      "label": "learner: Baseline — Synthetic (Policy Oracle demos)",
+      "detail": "Baseline learner using POLICY-oracle synthetic demos. Pair with 'actor: Baseline — Synthetic (Policy Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Active — Synthetic (Policy Oracle demos)",
+      "detail": "Active-query learner using POLICY-oracle synthetic demos. Pair with 'actor: Active — Synthetic (Policy Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: Quality — Synthetic (Policy Oracle demos)",
+      "detail": "Quality learner using POLICY-oracle synthetic demos. Pair with 'actor: Quality — Synthetic (Policy Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "learner: AQI — Synthetic (Policy Oracle demos)",
+      "detail": "Full AQI learner using POLICY-oracle synthetic demos. Pair with 'actor: AQI — Synthetic (Policy Oracle)'.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "learner",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_DEMO_PATH": "${input:demoPath}",
+          "SIM_RESUME": "scratch",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Baseline — Synthetic (Policy Oracle)",
+      "detail": "Baseline actor. Synthetic operator uses POLICY oracle (checkpoint required). Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "logged",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_ORACLE_CHECKPOINT": "${input:policyOracleCheckpoint}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Active — Synthetic (Policy Oracle)",
+      "detail": "Active actor. Synthetic operator uses POLICY oracle (checkpoint required). Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "active",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUERY_BEHAVIOR": "${input:queryBehavior}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_ORACLE_CHECKPOINT": "${input:policyOracleCheckpoint}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: Quality — Synthetic (Policy Oracle)",
+      "detail": "Quality actor. Synthetic operator uses POLICY oracle (checkpoint required). Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "quality",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_ORACLE_CHECKPOINT": "${input:policyOracleCheckpoint}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    },
+    {
+      "label": "actor: AQI — Synthetic (Policy Oracle)",
+      "detail": "Full AQI actor. Synthetic operator uses POLICY oracle (checkpoint required). Learner must be running.",
+      "type": "shell",
+      "command": "bash \"${workspaceFolder}/examples/experiments/sim_peg_insertion/run.sh\"",
+      "options": {
+        "env": {
+          "SIM_ACTION": "actor",
+          "SIM_MODE": "aqi",
+          "SIM_TASK": "${input:pegShape}",
+          "SIM_OPERATOR": "${input:syntheticSkill}",
+          "SIM_ENSEMBLE_SIZE": "${input:ensembleSize}",
+          "SIM_TRIGGER_TERMS": "${input:triggerTerms}",
+          "SIM_TRIGGER_COMBINER": "${input:triggerCombiner}",
+          "SIM_QUALITY_GATE": "${input:qualityGate}",
+          "SIM_QUALITY_FILTERS": "${input:qualityFilters}",
+          "SIM_QUERY_BEHAVIOR": "${input:queryBehavior}",
+          "SIM_SYNTHETIC_OPERATOR": "${input:syntheticSkill}",
+          "SIM_SYNTHETIC_SEED": "${input:syntheticSeed}",
+          "SIM_ORACLE_CHECKPOINT": "${input:policyOracleCheckpoint}",
+          "SIM_SYNTHETIC_INTERVENTION_MODE": "${input:syntheticInterventionMode}",
+          "SIM_RENDER": "${input:actorWindow}",
+          "SIM_SEED": "${input:seed}",
+          "SIM_DEBUG": "${input:wandb}",
+          "SIM_JAX_PLATFORM": "${input:jaxPlatform}"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "training" }
+    }
+  ],
+
+  "inputs": [
+    {
+      "id": "pegShape",
+      "type": "pickString",
+      "description": "Insertion task geometry",
+      "default": "cylinder",
+      "options": [
+        { "label": "Cylinder peg - easy (round, no yaw alignment, 8 mm clearance)", "value": "cylinder" },
+        { "label": "Cuboid peg - medium (square, needs yaw to +/-45 deg, 5 mm clearance)", "value": "cuboid" },
+        { "label": "Hexagon peg - exact/hard (tight fit, needs xy + yaw)", "value": "hex" }
+      ]
+    },
+    {
+      "id": "jaxPlatform",
+      "type": "pickString",
+      "description": "Compute device (JAX): CPU or GPU",
+      "default": "",
+      "options": [
+        { "label": "auto - GPU if one is present, else CPU (default)", "value": "" },
+        { "label": "GPU (cuda)", "value": "cuda" },
+        { "label": "CPU - recommended for the actor in active/aqi modes on a small/shared GPU", "value": "cpu" }
+      ]
+    },
+    {
+      "id": "ensembleSize",
+      "type": "pickString",
+      "description": "Number of critic networks K (ensemble disagreement sigma_Q). More = better uncertainty but more GPU memory. Ignored for baseline (hilserl).",
+      "default": "",
+      "options": [
+        { "label": "default (10)", "value": "" },
+        { "label": "2", "value": "2" },
+        { "label": "4 - lighter (less GPU memory)", "value": "4" },
+        { "label": "6", "value": "6" },
+        { "label": "10", "value": "10" },
+        { "label": "16 - stronger uncertainty (more memory)", "value": "16" }
+      ]
+    },
+    {
+      "id": "triggerCombiner",
+      "type": "pickString",
+      "description": "Trigger logic: how the terms combine into A(s_t) (active/aqi only)",
+      "default": "weighted_sum",
+      "options": [
+        { "label": "weighted_sum - proposal default (sum of z-scored terms)", "value": "weighted_sum" },
+        { "label": "max - OR-logic (request when ANY single term exceeds the threshold)", "value": "max" }
+      ]
+    },
+    {
+      "id": "triggerTerms",
+      "type": "pickString",
+      "description": "Which trigger sections feed the query gate (active/aqi only)",
+      "default": "uncertainty,failure,force,ood",
+      "options": [
+        { "label": "all terms - uncertainty + failure + force + ood (default, no cost penalty)", "value": "uncertainty,failure,force,ood" },
+        { "label": "all terms with cost - includes human workload penalty", "value": "uncertainty,failure,force,ood,cost" },
+        { "label": "uncertainty only - pure critic-ensemble epistemic trigger", "value": "uncertainty" },
+        { "label": "uncertainty + failure", "value": "uncertainty,failure" },
+        { "label": "uncertainty + force", "value": "uncertainty,force" },
+        { "label": "uncertainty + failure + force + ood (no cost)", "value": "uncertainty,failure,force,ood" }
+      ]
+    },
+    {
+      "id": "qualityGate",
+      "type": "pickString",
+      "description": "Quality score: apply the disagreement gate g(sigma_Q)? (quality/aqi only)",
+      "default": "true",
+      "options": [
+        { "label": "on - quality = counterfactual advantage x g(sigma_Q) (default)", "value": "true" },
+        { "label": "off - quality = counterfactual advantage A_hat alone", "value": "false" }
+      ]
+    },
+    {
+      "id": "qualityFilters",
+      "type": "pickString",
+      "description": "Quality score: keep/drop filters on interventions (quality/aqi only)",
+      "default": "safety_veto,jerk_veto,outcome_filter,unsolicited",
+      "options": [
+        { "label": "all filters - safety_veto + jerk_veto + outcome_filter + unsolicited (default)", "value": "safety_veto,jerk_veto,outcome_filter,unsolicited" },
+        { "label": "none - keep every intervention", "value": "none" },
+        { "label": "safety_veto only", "value": "safety_veto" },
+        { "label": "safety_veto + outcome_filter", "value": "safety_veto,outcome_filter" }
+      ]
+    },
+    {
+      "id": "wandb",
+      "type": "pickString",
+      "description": "Weights & Biases logging",
+      "default": "1",
+      "options": [
+        { "label": "off - no W&B (default, --debug, nothing to configure)", "value": "1" },
+        { "label": "on - log to W&B (requires `wandb login` first)", "value": "0" }
+      ]
+    },
+    {
+      "id": "demoFiltered",
+      "type": "pickString",
+      "description": "Keep only successful episodes (filtered) or keep every episode including failures",
+      "default": "filtered",
+      "options": [
+        { "label": "filtered - keep only successes (default)", "value": "filtered" },
+        { "label": "nofiltered - keep every episode including failures", "value": "nofiltered" }
+      ]
+    },
+    {
+      "id": "actorWindow",
+      "type": "pickString",
+      "description": "Actor: live window with the AQI request/intervention banner + bell",
+      "default": "1",
+      "options": [
+        { "label": "on - show the live status window (default)", "value": "1" },
+        { "label": "off - headless (terminal cue + bell only)", "value": "0" }
+      ]
+    },
+    {
+      "id": "queryBehavior",
+      "type": "pickString",
+      "description": "Actor: what the policy does when the gate requests a takeover (active/aqi only; ignored for baseline/logged/quality)",
+      "default": "continue",
+      "options": [
+        { "label": "continue - keep sampling actions; the request is only a cue (default)", "value": "continue" },
+        { "label": "pause - hold and wait for the operator; resume when the trigger clears", "value": "pause" }
+      ]
+    },
+    {
+      "id": "operatorId",
+      "type": "pickString",
+      "description": "Operator id (tags every logged record for the multi-operator study)",
+      "default": "op0",
+      "options": [
+        { "label": "op0", "value": "op0" },
+        { "label": "op1", "value": "op1" },
+        { "label": "op2", "value": "op2" },
+        { "label": "op3", "value": "op3" }
+      ]
+    },
+    {
+      "id": "evalOperator",
+      "type": "pickString",
+      "description": "Operator / skill tier to evaluate (must match the one used when training)",
+      "default": "op0",
+      "options": [
+        { "label": "op0 (human, default)", "value": "op0" },
+        { "label": "op1 (human)", "value": "op1" },
+        { "label": "op2 (human)", "value": "op2" },
+        { "label": "op3 (human)", "value": "op3" },
+        { "label": "expert (synthetic)", "value": "expert" },
+        { "label": "intermediate (synthetic)", "value": "intermediate" },
+        { "label": "novice (synthetic)", "value": "novice" },
+        { "label": "op4 (synthetic, skilled-but-jumpy)", "value": "op4" }
+      ]
+    },
+    {
+      "id": "seed",
+      "type": "pickString",
+      "description": "Random seed",
+      "default": "42",
+      "options": [
+        { "label": "42", "value": "42" },
+        { "label": "0", "value": "0" },
+        { "label": "1", "value": "1" },
+        { "label": "2", "value": "2" }
+      ]
+    },
+    {
+      "id": "successesNeeded",
+      "type": "pickString",
+      "description": "How many successful demos to record",
+      "default": "20",
+      "options": [
+        { "label": "3 (quick smoke test)", "value": "3" },
+        { "label": "5", "value": "5" },
+        { "label": "10", "value": "10" },
+        { "label": "20 (default)", "value": "20" },
+        { "label": "50", "value": "50" }
+      ]
+    },
+    {
+      "id": "demoPath",
+      "type": "promptString",
+      "description": "Learner demo .pkl ('auto' = newest in demo_data/<task>/human/ then demo_data/). Human: demo_data/cylinder/human/<N>_demos_<ts>.pkl | Synthetic: demo_data/cylinder/synthetic/<profile>_s<seed>_demos.pkl",
+      "default": "auto"
+    },
+    {
+      "id": "evalTrajs",
+      "type": "pickString",
+      "description": "Number of evaluation episodes",
+      "default": "10",
+      "options": [
+        { "label": "10 (default)", "value": "10" },
+        { "label": "20", "value": "20" },
+        { "label": "50", "value": "50" }
+      ]
+    },
+    {
+      "id": "syntheticSkill",
+      "type": "pickString",
+      "description": "Synthetic operator skill level (execution + monitoring)",
+      "default": "expert",
+      "options": [
+        { "label": "expert - skilled hands + good supervision", "value": "expert" },
+        { "label": "intermediate - average hands + supervision", "value": "intermediate" },
+        { "label": "novice - poor hands + poor supervision", "value": "novice" },
+        { "label": "op4 - skilled-but-jumpy (expert hands, over-eager takeovers)", "value": "op4" }
+      ]
+    },
+    {
+      "id": "syntheticSeed",
+      "type": "pickString",
+      "description": "Synthetic operator RNG seed (intervention timing + execution stochasticity)",
+      "default": "42",
+      "options": [
+        { "label": "42", "value": "42" },
+        { "label": "0", "value": "0" },
+        { "label": "1", "value": "1" },
+        { "label": "2", "value": "2" }
+      ]
+    },
+    {
+      "id": "syntheticInterventionMode",
+      "type": "pickString",
+      "description": "Synthetic intervention behavior",
+      "default": "always_latch",
+      "options": [
+        { "label": "always_latch - once takeover starts, keep intervening until success", "value": "always_latch" },
+        { "label": "latch_until_autonomous_success - latch until first successful fully autonomous episode, then signal-only", "value": "latch_until_autonomous_success" },
+        { "label": "signal - intervene on signal and hand back by normal hysteresis/d_max", "value": "signal" }
+      ]
+    },
+    {
+      "id": "policyOracleCheckpoint",
+      "type": "promptString",
+      "description": "Policy Oracle checkpoint directory (required for policy-oracle demo/actor tasks)",
+      "default": "./examples/runs/cylinder_logged_op0_s42"
+    },
+    {
+      "id": "policyOracleMode",
+      "type": "pickString",
+      "description": "Architecture mode of the Policy Oracle checkpoint",
+      "default": "logged",
+      "options": [
+        { "label": "hilserl (2-critic baseline)", "value": "hilserl" },
+        { "label": "logged", "value": "logged" },
+        { "label": "active", "value": "active" },
+        { "label": "quality", "value": "quality" },
+        { "label": "aqi", "value": "aqi" }
+      ]
+    },
+    {
+      "id": "policyOracleStep",
+      "type": "promptString",
+      "description": "Policy Oracle checkpoint step (0 = latest)",
+      "default": "0"
+    },
+    {
+      "id": "policyOracleMmPerUnit",
+      "type": "promptString",
+      "description": "Policy Oracle action scaling (mm/s per env action unit)",
+      "default": "100"
+    },
+    {
+      "id": "geometricDemoOut",
+      "type": "promptString",
+      "description": "Geometric synthetic demo output pkl ('auto' = default naming) ",
+      "default": "auto"
+    },
+    {
+      "id": "policyDemoOut",
+      "type": "promptString",
+      "description": "Policy-oracle synthetic demo output pkl ('auto' = default naming)",
+      "default": "auto"
+    },
+    {
+      "id": "synProfile",
+      "type": "pickString",
+      "description": "Synthetic demo skill level. Demos exercise EXECUTION only, so just the three tiers (op1-op4 would be redundant here).",
+      "default": "expert",
+      "options": [
+        { "label": "expert - skilled hands: fast, precise, good recovery", "value": "expert" },
+        { "label": "intermediate - average execution", "value": "intermediate" },
+        { "label": "novice - poor hands: noisy, slow, premature commits, more jams", "value": "novice" }
+      ]
+    },
+    {
+      "id": "synEpisodes",
+      "type": "pickString",
+      "description": "Synthetic demos: episodes to keep (filtered) or run (unfiltered)",
+      "default": "20",
+      "options": [
+        { "label": "5", "value": "5" },
+        { "label": "10", "value": "10" },
+        { "label": "20 (default)", "value": "20" },
+        { "label": "50", "value": "50" }
+      ]
+    }
+  ]
+}

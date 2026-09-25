@@ -1,0 +1,168 @@
+# =====================================================================
+# rq2_quality_replayonly_policyoracle.yaml — the POLICY-ORACLE variant of
+# rq2_quality_replayonly.yaml.
+#
+# Same question ("does the intervention QUALITY score help when used for
+# REPLAY PRIORITY ONLY, bc_loss_weight=0?") and the same A/B (hilserl vs
+# quality, cuboid, 3 tiers x 3 seeds, 6 filtered demos, no pretrain,
+# convergence-stop, best_window(3) on the frozen +/-16 mm ruler), but the
+# SYNTHETIC OPERATOR is the POLICY ORACLE: a frozen, competent pixel policy
+# that acts on the same wrist-camera observations the learner sees, degraded
+# per tier into temporally-correlated wrong-intent takeovers (a more
+# human-realistic operator than the geometric P-controller).
+#
+# Two oracle channels, set independently below:
+#   demos      -> policy_oracle.demo_source: `synthetic` (GEOMETRIC oracle
+#                 demos, fast, no checkpoint) OR `policy` (the frozen policy
+#                 oracle records the demos). Either is valid; pick one.
+#   training   -> policy_oracle.training_oracle: `policy` makes the ACTOR's
+#                 interventions come from the frozen policy oracle (this is
+#                 the point of this file). It REQUIRES a checkpoint dir
+#                 (policy_oracle.checkpoint_path). The geometric monitor still
+#                 TIMES the takeovers; only the corrective ACTION is the
+#                 policy's.
+#
+# NOTE on how this differs from runs/po_rq1_campaign: that campaign used the
+# policy oracle for DEMOS only -- its actor interventions were still the
+# geometric oracle (the sim attaches one and the trainer preferred it). The
+# new `training_oracle: policy` switch (added to train_aqi_rlpd.py /
+# run_campaign.py) is what forces the ACTION to be the policy oracle too.
+#
+# ---------------------------------------------------------------------------
+# DEFAULT POLICY ORACLE (the checkpoint behind runs/po_rq1_campaign/report/
+# dependency.md):
+#   runs/rq1_3seed_nopretrain/checkpoints/hilserl_exp00_s0/certified
+#     (checkpoint_22026) -- a certified EXPERT hilserl policy that scored
+#     SR = 1.00 on the cuboid +/-16 mm ruler. It is a 2-critic `hilserl`
+#     checkpoint; only its ACTOR (policy) network is used by the oracle, so it
+#     loads fine even into the 10-critic `quality` agent.
+#
+# HOW TO TRAIN / PICK A POLICY ORACLE:
+#   1. Train (or reuse) a strong policy on the SAME task/peg_shape. The
+#      simplest source is a converged expert cell from an RQ1 hilserl run;
+#      its <cell>/certified/ snapshot is the exact weights that passed the
+#      convergence mini-eval.
+#   2. VALIDATE it on the correct ruler BEFORE using it (an un-validated /
+#      mid-training checkpoint can be a do-nothing policy -> a 0.07 student):
+#        SIM_DISABLE_SPACEMOUSE=1 python examples/eval_ruler.py \
+#          --exp_name sim_peg_insertion --peg_shape cuboid \
+#          --checkpoint_path runs/rq1_3seed_nopretrain/checkpoints/hilserl_exp00_s0 \
+#          --grid_file runs/rq1_3seed_nopretrain/eval_grid.json \
+#          --out /tmp/oracle_verify --prefer_certified --select pooled \
+#          --no_realtime --argmax
+#        # expect SR ~= 1.00 on the cuboid ruler
+#   3. Point checkpoint_path at that directory (prefer its `certified/`
+#      snapshot). Set `aqi_mode` to the checkpoint's TRAINING mode (hilserl =
+#      2 critics) and `checkpoint_step` to 0 (latest) or the exact step.
+#      `mm_per_unit` converts the policy's env action to the operator motor
+#      scale (100 for sim_peg_insertion; leave as-is unless you recalibrate).
+#
+# Launch (from repo root; --converge_require_autonomous is NOT a config field
+# and MUST be passed on the CLI):
+#   nohup ./.venv/bin/python examples/run_campaign.py \
+#       --config examples/campaigns/rq2_quality_replayonly_policyoracle.yaml \
+#       --campaign runs/rq2_quality_replayonly_po --converge_require_autonomous \
+#       > runs/rq2_quality_replayonly_po.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid                # HEADROOM: cylinder saturates to 100% (ICC
+                                   # uncomputable); cuboid keeps the unsaturated
+                                   # gradient the RQ1 signal lives on.
+
+operators:                         # 1 jittered operator/tier = the tier
+  expert: 1                        # representative (exp00/int00/nov00), exactly
+  intermediate: 1                  # as runs/rq1_3seed_nopretrain. operator == tier.
+  novice: 1
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 6                  # SAME 6 filtered demos as the RQ1 nopretrain
+  filtered: true                   # campaign (fed to the demo/intervention buffer;
+  max_attempts: 300                # no warm-start).
+
+methods:
+  - hilserl                        # RQ1 baseline (2-critic, no AQI)
+  - quality                        # K-critic + quality-prioritised replay, bc=0
+
+replicates:
+  seeds: 3                         # within-operator repeats = the noise floor
+  seed_base: 0                     # (mirrors rq1_3seed_nopretrain).
+
+budget:
+  mode: steps                      # EQUAL env-step budget/cell (not wall-clock).
+  steps_cap: 50000                 # convergence-stop ends fast cells early.
+  minutes_per_cell: 300            # SAFETY wall-clock cap only (anti-hang).
+  converge_success: 0.9            # early-STOP + checkpoint a policy that solves
+  converge_window: 20              # AUTONOMOUSLY (>=90% over 20 episodes).
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6     # ruler-aligned mini-eval gate.
+  converge_eval_max_steps: 300
+  converge_eval_poses:             # [dx_m, dyaw_rad] MIRROR the frozen ruler.
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0                   # campaign-wide cap (0 = unlimited, resumable)
+  learner_max_steps: 1000000
+  demo_pretrain: false             # OFF (pretrain flattens the operator signal).
+  demo_pretrain_steps: 0
+  demo_pretrain_batch_size: 0
+
+aqi:
+  synthetic_intervention_mode: signal   # SDT-gate handback (NOT latch): the policy
+                                        # practises finishing -> autonomous SR is
+                                        # meaningful and convergence can fire.
+  bc_loss_weight: 0.0                   # quality score drives ONLY the replay
+                                        # priority, no imitation loss.
+  quality_filters:                      # outcome_filter DELIBERATELY OFF: the policy
+    - safety_veto                       # must still learn from FAILED-episode
+    - jerk_veto                         # interventions (they stay in the buffer).
+
+policy_oracle:
+  # ---- training interventions: the POLICY ORACLE (the point of this file) ----
+  training_oracle: policy               # ACTOR interventions = the frozen policy
+                                        # oracle (needs checkpoint_path). The
+                                        # geometric monitor still times takeovers.
+  checkpoint_path: runs/rq1_3seed_nopretrain/checkpoints/hilserl_exp00_s0/certified
+                                        # DEFAULT = the certified expert that
+                                        # produced po_rq1_campaign/report/
+                                        # dependency.md (SR 1.00 on the cuboid
+                                        # ruler). VALIDATE any replacement first.
+  aqi_mode: hilserl                     # the checkpoint's architecture (2-critic);
+                                        # only its actor is used by the oracle.
+  checkpoint_step: 0                    # 0 = latest in the dir.
+  mm_per_unit: 100                      # env-action -> operator motor scale (sim).
+  # ---- demo channel: choose GEOMETRIC or POLICY demos ----
+  demo_source: synthetic                # `synthetic` = GEOMETRIC-oracle demos
+                                        # (fast, no checkpoint). Switch to
+                                        # `policy` to record demos with the same
+                                        # frozen policy oracle (slower: ResNet-10
+                                        # CPU inference + filtered retries).
+
+eval:                              # frozen, hash-locked ruler (operator-independent)
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window              # best mean over `window_k` CONSECUTIVE checkpoints
+  window_k: 3                      # (sustained competence); scores ALL checkpoints.
+
+gpu:
+  jax_platform: cuda               # `quality` is K-critic + counterfactual scoring;
+  mem_learner: 0.6                 # cuda recommended. Use cpu only if GPU memory is
+  mem_actor: 0.2                   # tight (much slower).
+
+logging:
+  wandb: "off"                     # off = disabled; offline stores under each
+                                   # checkpoint without requiring an API key.
+
+analysis:
+  baseline: hilserl                # quality is compared against the RQ1 baseline.
+  plots: true                      # report/plots/*.png (+ q_analysis/ for q_int).

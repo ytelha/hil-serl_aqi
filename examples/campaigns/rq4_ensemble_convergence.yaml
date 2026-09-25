@@ -1,0 +1,127 @@
+# =====================================================================
+# rq4_ensemble_convergence.yaml — ensemble trade-off & convergence study.
+#
+# RQ3 showed the 10-critic ensemble (logged) COSTS SR and OPERATOR-INDEPENDENCE
+# vs plain 2-critic HIL-SERL, and 5/12 logged cells did not converge -- part
+# genuine ensemble under-performance (REDQ min-Q pessimism suppresses the
+# risky "press" action), part convergence-metric artifact.
+#
+# This campaign applies the "B" training fixes to the ensemble and asks whether
+# they recover convergence toward plain HIL-SERL, i.e. whether the ensemble's
+# operator-dependence / non-convergence is fixable rather than intrinsic.
+#
+# ARMS (2 aqi-modes; campaign knobs are per-mode, not per-fix):
+#   hilserl  plain 2-critic RLPD. critic_* are mode-gated OFF, and
+#            `method_overrides` below turns demo_pretrain OFF + restores the
+#            default LR, so this hilserl is TRULY PLAIN -- identical to RQ3's
+#            2-critic baseline. It is the genuine "plain HIL-SERL" reference.
+#   logged   K=8-critic ensemble with the B fixes: LESS-pessimistic target
+#            (subsample M=1, a single random critic -> no min-Q pessimism),
+#            per-member decorrelated targets, demo-pretrain warm start, and a
+#            lower LR. All fixes land ONLY here.
+#
+# The fix's effect on convergence is read TWO ways: (a) within-campaign
+# hilserl-vs-logged, and (b) this logged vs RQ3's logged (K=10, M=2, no
+# pretrain, LR 3e-4) offline.
+#
+# Design: 2 methods x 3 tiers x 3 operators x 2 seeds = 36 cells.
+#
+# Launch as an OOM-protected systemd user service (RQ3 incident lessons):
+#   WANDB_RUN_GROUP=rq4_ensemble_convergence \
+#   systemd-run --user --unit=rq4_campaign --collect \
+#     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/rq4_ensemble_convergence.yaml \
+#          --campaign runs/rq4_ensemble_convergence \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/rq4_ensemble_convergence.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3                        # 3 jittered operators per tier -> operator
+  intermediate: 3                  # variance AND seed variance both estimable.
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl                        # 2-critic baseline (matched control)
+  - logged                         # K=8 ensemble + B fixes
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000                 # per-cell ACTOR env-step cap
+  minutes_per_cell: 300            # WALL-CLOCK safety cap only (anti-hang)
+  converge_success: 0.9            # convergence metric kept EXACTLY as RQ3
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0                 # DISK: no ~9GB/cell replay dumps
+  checkpoint_keep: 25              # DISK: keep 25 checkpoints/cell
+  # ---- B fixes (warm start + lower LR); applied to logged ONLY via
+  #      method_overrides below (hilserl opts out -> stays truly plain) ----
+  demo_pretrain: true              # warm start the policy on demos first
+  demo_pretrain_steps: 5000        # demo-only gradient steps before online RL
+  demo_pretrain_batch_size: 0      # 0 = config.batch_size
+  learning_rate: 0.00015           # 1.5e-4 (halved) to damp 0<->100% oscillation
+
+aqi:
+  synthetic_intervention_mode: signal
+  # ---- B fixes for the ENSEMBLE arm only (critic_* are hilserl-gated off) ----
+  critic_ensemble_size: 8          # K=8 critics
+  critic_subsample_size: 1         # M=1: single random critic target, NO min-Q
+                                   # pessimism (the main convergence fix).
+  per_member_targets: true         # each member draws its own target (keeps
+                                   # ensemble diversity while M=1).
+
+# Per-arm overrides: keep the hilserl baseline TRULY PLAIN (the ensemble fixes
+# demo_pretrain + learning_rate land only on the logged arm). critic_* are
+# already mode-gated off for hilserl.
+method_overrides:
+  hilserl:
+    demo_pretrain: false           # no warm start -> plain 2-critic HIL-SERL
+    demo_pretrain_steps: 0
+    learning_rate: 0               # 0 = built-in default LR (3e-4)
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI for this run.
+
+analysis:
+  baseline: hilserl
+  plots: true

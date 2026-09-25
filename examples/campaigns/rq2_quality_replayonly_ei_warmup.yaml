@@ -1,0 +1,135 @@
+# =====================================================================
+# rq2_quality_replayonly_ei_warmup.yaml — the ei fixed-signal run PLUS a
+# quality WARM-UP (immature-ensemble gate).
+#
+# Motivation (docs/thesis/rq2_quality_replay_and_qa_log.md Section 15-16):
+# with the priority fix ON, `quality` still hurt, collapsing the intermediate
+# tier (73% -> 6%). The likely mechanism: the counterfactual q is derived from
+# the critic ensemble, which is NOISE early in training, and the disagreement
+# gate g(sigma_Q) is RELATIVE (sigma_ref = running mean of sigma_Q), so it does
+# NOT suppress the score while the whole ensemble is globally unreliable. There
+# is also no warm-up on the quality path today. So early, aggressive
+# prioritisation of noisy intermediate interventions destabilises training.
+#
+# This config adds `quality_warmup_steps`: until that many env steps, every
+# intervention ships with BASELINE replay priority (q_int -> 0 contribution,
+# zero BC weight) -- i.e. treated like a demo -- so the quality score only
+# starts steering replay once the critic is past its random-init phase. The raw
+# q_int is still logged, so the offline analysis / plots are unchanged.
+#
+# Everything else is IDENTICAL to rq2_quality_replayonly_ei.yaml (expert +
+# intermediate, hilserl vs quality, 3 seeds = 12 cells, geometric operator,
+# per_standardize priority fix). This isolates the WARM-UP effect.
+#
+# Launch (DO NOT run yet -- prepared only; --converge_require_autonomous is NOT
+# a config field and MUST be on the CLI):
+#   nohup ./.venv/bin/python examples/run_campaign.py \
+#       --config examples/campaigns/rq2_quality_replayonly_ei_warmup.yaml \
+#       --campaign runs/rq2_quality_replayonly_ei_warmup \
+#       --converge_require_autonomous \
+#       > runs/rq2_quality_replayonly_ei_warmup.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 1
+  intermediate: 1
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl
+  - quality
+
+replicates:
+  seeds: 3
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 50000
+  minutes_per_cell: 300
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  demo_pretrain: false
+  demo_pretrain_steps: 0
+  demo_pretrain_batch_size: 0
+
+aqi:
+  synthetic_intervention_mode: signal
+  bc_loss_weight: 0.0                   # replay-priority only.
+  quality_filters:
+    - safety_veto
+    - jerk_veto
+  # ---- q-priority fix (as in the ei run) ----
+  per_standardize: true
+  per_delta_init: 0.1
+  per_eps: 0.05
+  per_eta: 1.0
+  # ---- NEW: quality warm-up ----
+  quality_warmup_steps: 5000            # interventions get BASELINE priority for
+                                        # the first 5000 env steps (past the
+                                        # converge_min_steps=3000 random-init
+                                        # phase), then the standardized quality
+                                        # priority engages. Main tunable: raise
+                                        # it if intermediate still destabilises,
+                                        # lower it if the signal barely acts.
+                                        # (Diagnostic: AUROC(q_int, success)
+                                        # early-vs-late tells you the right value.)
+  # ---- NEW: stationary scale + IS de-biasing ----
+  per_scale_decay: 0.01                 # forgetting EMA for the q-scale (was a
+                                        # cumulative, never-forget mean) so the
+                                        # scale stays stationary as the critic
+                                        # drifts.
+  per_refresh_period: 2000              # recompute ALL stored priorities every
+                                        # 2000 inserts against the current EMA
+                                        # scale, so old and new interventions are
+                                        # priced consistently.
+  per_is_beta: 0.5                      # importance-sampling correction for the
+                                        # prioritised replay: de-biases the
+                                        # critic target so the aggressive
+                                        # priorities do not skew the value
+                                        # estimate (0 = off; 0.5 is a standard
+                                        # PER value).
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: hilserl
+  plots: true

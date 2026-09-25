@@ -1,0 +1,2468 @@
+--- a/examples/train_aqi_rlpd.py
++++ b/examples/train_aqi_rlpd.py
+@@ -88,6 +88,20 @@
+ flags.DEFINE_string("operator_id", "op0",
+                     "Identifier of the human operator for this run; stored "
+                     "with every logged step/segment/episode (RQ1/RQ2).")
++flags.DEFINE_string("synthetic_operator", "",
++                    "run the actor with a synthetic operator instead of "
++                    "a human: tier name, 'op1'..'op4', 's=0.7', or "
++                    "'exec=expert,mon=novice' (methodology doc Part A)")
++flags.DEFINE_integer("synthetic_seed", 0,
++                     "seed for the synthetic operator (R6 determinism)")
++flags.DEFINE_string("oracle_checkpoint", "",
++                    "frozen policy checkpoint used as the competent core "
++                    "pi_or when the env has no phase_oracle attribute "
++                    "(doc S4 option B)")
++flags.DEFINE_float("synthetic_env_mm_per_unit", 70.0,
++                   "mm/s of tool motion per env action unit; converts the "
++                   "operator's Table-2 motor parameters (mm/s) to the "
++                   "env's action scale")
+ flags.DEFINE_string("run_name", None,
+                     "Log-directory name under <aqi log_dir>/. Defaults to "
+                     "<exp_name>_<mode>_<operator>_s<seed>_<timestamp>.")
+@@ -135,6 +149,58 @@
+ ##############################################################################
+ 
+ 
++def _wrap_synthetic_operator(env, agent):
++    """Wrap the actor env with the document's synthetic operator (Part
++    A): the SpaceMouse-equivalent SyntheticOperatorWrapper. Oracle
++    resolution: an env-provided `phase_oracle` attribute (sim, doc S4
++    option A) wins; else --oracle_checkpoint loads a frozen policy as
++    pi_or (option B) and the decision block degrades it with
++    wrong-intent segments."""
++    from serl_launcher.aqi.operator_gate import (MonitoringSignal,
++                                                 SyntheticOperatorWrapper)
++    from serl_launcher.aqi.operator_model import (PhaseOracle,
++                                                  PolicyOracle,
++                                                  SyntheticOperator,
++                                                  make_operator_theta)
++    rng = np.random.default_rng(FLAGS.synthetic_seed)
++    theta = make_operator_theta(FLAGS.synthetic_operator, rng=rng,
++                                operator_id=FLAGS.operator_id)
++    oracle = getattr(env, "phase_oracle", None) \
++        or getattr(getattr(env, "unwrapped", env), "phase_oracle", None)
++    mm_per_unit = 1.0
++    if oracle is None:
++        if not FLAGS.oracle_checkpoint:
++            raise ValueError(
++                "--synthetic_operator needs either an env with a "
++                "phase_oracle attribute or --oracle_checkpoint")
++        ckpt = checkpoints.restore_checkpoint(
++            os.path.abspath(FLAGS.oracle_checkpoint), agent.state)
++        oracle_agent = agent.replace(state=ckpt)
++        okey = jax.random.PRNGKey(FLAGS.synthetic_seed)
++
++        def policy_fn(obs):
++            a = oracle_agent.sample_actions(
++                observations=jax.device_put(obs), argmax=True, seed=okey)
++            return np.asarray(jax.device_get(a))
++        mm_per_unit = FLAGS.synthetic_env_mm_per_unit
++        oracle = PolicyOracle(policy_fn,
++                              action_dim=env.action_space.shape[0],
++                              action_scale=mm_per_unit)
++    monitor = MonitoringSignal(
++        oracle if isinstance(oracle, PhaseOracle) else None,
++        budget_steps=config.max_traj_length)
++    op = SyntheticOperator(
++        oracle, theta,
++        rng=np.random.default_rng(FLAGS.synthetic_seed + 17),
++        action_scale=1.0 / mm_per_unit)
++    print_green(f"synthetic operator '{FLAGS.synthetic_operator}' "
++                f"(exec s={theta.s_exec:.2f}, mon s={theta.s_mon:.2f}) "
++                f"wrapping the env; ground-truth theta -> meta.json")
++    return SyntheticOperatorWrapper(
++        env, op, monitor,
++        rng=np.random.default_rng(FLAGS.synthetic_seed + 31)), theta
++
++
+ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
+     """
+     This is the actor loop, which runs when "--actor" is set to True.
+@@ -209,6 +275,12 @@
+ 
+     client.recv_network_callback(update_params)
+ 
++    # ---- synthetic operator (methodology doc Part A): wrap the env at
++    # the SpaceMouse integration point before the runtime sees it -------
++    synthetic_theta = None
++    if FLAGS.synthetic_operator:
++        env, synthetic_theta = _wrap_synthetic_operator(env, agent)
++
+     # ---- AQI runtime (S5): gate, force monitor, OOD, P_fail, quality ------
+     run_name = FLAGS.run_name or "{}_{}_{}_s{}_{}".format(
+         FLAGS.exp_name, aqi_cfg.mode, FLAGS.operator_id, FLAGS.seed,
+@@ -218,7 +290,10 @@
+         operator_id=FLAGS.operator_id,
+         run_name=run_name,
+         max_episode_length=config.max_traj_length,
+-        config_dict_for_log=vars(aqi_cfg),
++        config_dict_for_log={**vars(aqi_cfg),
++                             **({"synthetic_operator":
++                                 synthetic_theta.as_dict()}
++                                if synthetic_theta else {})},
+     )
+     if aqi.enabled:
+         print_green(f"AQI mode={aqi_cfg.mode}; logs -> {aqi.logger.dir}")
+--- a/examples/experiment_pipeline.py
++++ b/examples/experiment_pipeline.py
+@@ -840,6 +840,84 @@
+                          + 0.03 * rng.standard_normal(), 0.02, 0.98))
+ 
+ 
++def cmd_assess(args):
++    """Operator skill assessment (methodology doc Part B) over the
++    campaign's aqi_logs: cells are grouped by operator, each operator's
++    runs feed the Table-7 feature pipeline, and Methods A (composite) +
++    D (Beta-Bernoulli) - plus B (clustering) when the cohort is large
++    enough - type every operator. Writes report/skill.md + skill.json
++    and adds an assessed_tier column to operators.csv."""
++    import numpy as np
++    from serl_launcher.aqi import skill as SK
++    camp = args.campaign
++    log_root = os.path.join(camp, "aqi_logs")
++    by_op = {}
++    for cid in sorted(os.listdir(log_root)) if os.path.isdir(log_root) \
++            else []:
++        run = os.path.join(log_root, cid)
++        if not os.path.isdir(run):
++            continue
++        r = SK.features_from_aqi_logs(run, budget_s=args.budget_s)
++        if not r["episode_rows"]:
++            continue
++        op = (r["meta"].get("operator_id")
++              or cid.split("_")[1] if "_" in cid else cid)
++        d = by_op.setdefault(op, dict(rows=[], segs=[]))
++        d["rows"].extend(r["episode_rows"])
++        d["ivs"] = r["interventions"]      # last run's aggregate basis
++    if not by_op:
++        print("no aqi_logs found under", log_root)
++        return
++    vecs = {o: SK.aggregate_operator(d["rows"], args.budget_s,
++                                     d.get("ivs"))
++            for o, d in by_op.items()}
++    feats = [f for f in SK.CORE7
++             if any(np.isfinite(v.get(f, np.nan)) for v in vecs.values())]
++    Z = SK.normalize_features(vecs, feats)
++    S = {o: SK.composite_score(Z[o], feats) for o in Z}
++    comp = SK.composite_tiers(S)
++    lines = ["# Operator skill (campaign assessment)", "",
++             f"features: {', '.join(feats)}; cuts "
++             f"{np.round(comp['cuts'], 3).tolist()}", "",
++             "| operator | episodes | SR | composite S | tier |",
++             "|---|---|---|---|---|"]
++    for o in sorted(vecs):
++        lines.append(f"| {o} | {vecs[o]['n_episodes']} | "
++                     f"{vecs[o]['sr']:.2f} | {S[o]:+.2f} | "
++                     f"{comp['tiers'][o]} |")
++    if len(vecs) >= 8:
++        cl = SK.cluster_operators(Z, feats,
++                                  sr={o: vecs[o]["sr"] for o in vecs})
++        lines += ["", f"k-means (stability {cl['stability']:.2f}"
++                  + (", <15-operator warning"
++                     if cl["small_cohort_warning"] else "") + "): "
++                  + json.dumps(cl["tiers"])]
++    os.makedirs(os.path.join(camp, "report"), exist_ok=True)
++    with open(os.path.join(camp, "report", "skill.md"), "w") as f:
++        f.write("\n".join(lines) + "\n")
++    with open(os.path.join(camp, "report", "skill.json"), "w") as f:
++        json.dump(dict(features=feats, composite=comp,
++                       scores=S, vectors={o: {k: v for k, v in
++                                              vecs[o].items()
++                                              if np.isscalar(v)}
++                                          for o in vecs}),
++                  f, indent=1, default=float)
++    # annotate operators.csv
++    ops_csv = os.path.join(camp, "operators.csv")
++    if os.path.exists(ops_csv):
++        with open(ops_csv) as f:
++            rows = [l.rstrip("\n") for l in f]
++        if rows and "assessed_tier" not in rows[0]:
++            rows[0] += ",assessed_tier"
++            for i in range(1, len(rows)):
++                oid = rows[i].split(",")[0]
++                rows[i] += "," + comp["tiers"].get(oid, "")
++            with open(ops_csv, "w") as f:
++                f.write("\n".join(rows) + "\n")
++    print("skill assessment -> report/skill.md "
++          f"({len(vecs)} operators)")
++
++
+ def cmd_simulate(args):
+     camp = args.campaign
+     manifest = _load(os.path.join(camp, "campaign.json"))
+@@ -972,6 +1050,11 @@
+     p.add_argument("--stat_seed", type=int, default=0)
+     p.set_defaults(func=cmd_evaluate)
+ 
++    p = sub.add_parser("assess", help="operator skill typing (doc Part B)")
++    p.add_argument("--campaign", required=True)
++    p.add_argument("--budget_s", type=float, default=15.0)
++    p.set_defaults(func=cmd_assess)
++
+     p = sub.add_parser("simulate", help="synthetic campaign dry-run")
+     p.add_argument("--campaign", required=True)
+     p.add_argument("--preset", default="realistic",
+--- a/serl_launcher/serl_launcher/aqi/__init__.py
++++ b/serl_launcher/serl_launcher/aqi/__init__.py
+@@ -70,3 +70,11 @@
+     "segment_features",
+     "stack_obs",
+ ]
++
++from serl_launcher.aqi.operator_model import (  # noqa: F401
++    EXEC_ANCHORS, MON_ANCHORS, OperatorTheta, PhaseOracle, PolicyOracle,
++    SyntheticOperator, jitter_theta, make_operator_theta,
++    theta_from_scale)
++from serl_launcher.aqi.operator_gate import (  # noqa: F401
++    MonitoringSignal, SyntheticInterventionGate, SyntheticOperatorWrapper)
++from serl_launcher.aqi import skill  # noqa: F401
+--- a/README.md
++++ b/README.md
+@@ -90,6 +90,7 @@
+ `examples/train_aqi_rlpd.py --aqi_mode={hilserl,logged,active,quality,aqi}`;
+ `hilserl` reproduces the unmodified baseline. See
+ [docs/aqi_walkthrough.md](./docs/aqi_walkthrough.md) for the method-to-code
++- Synthetic operators and automatic operator-skill assessment (methodology docs, Jul 2026): `docs/synthetic_operators_and_skill.md` -- operator model, SDT intervention gate, toy calibration study, Table-7 feature pipeline and Methods A-D.
+ map, run recipes, and the offline multi-operator analysis
+ (`examples/aqi_analysis.py`), and
+ [docs/experimental_protocol.md](./docs/experimental_protocol.md) for the
+--- a/docs/aqi_walkthrough.md
++++ b/docs/aqi_walkthrough.md
+@@ -273,3 +273,7 @@
+   request counts, peak force/torque, hard-violation count.
+ * `meta.json`, `gate_state.json` — run metadata and final gate /
+   P_fail-model state.
++
++## Synthetic operators and skill assessment
++
++The synthetic-operator generator (perception -> decision -> motor model, tier anchors, theta(s), the SDT intervention gate and the SpaceMouse-equivalent wrapper) and the Part-B skill-assessment pipeline (Table-7 features, Methods A-D, S11 validation) are documented in `synthetic_operators_and_skill.md`; the wrapper plugs in via `--synthetic_operator` in `train_aqi_rlpd.py` and produces logs this walkthrough's schema already covers.
+--- a/docs/experimental_protocol.md
++++ b/docs/experimental_protocol.md
+@@ -130,3 +130,7 @@
+ tests the ICC point estimate together with the permutation p, not the CI
+ bound. Likewise the paired Wilcoxon's smallest attainable two-sided p at
+ n=4 is 0.125; per D.2 it is secondary and effect sizes carry the weight.
++
++## Operator instruments (synthetic operators, skill typing)
++
++Experiment-1 synthetic operators (op1-op4 incl. the skilled-but-jumpy off-diagonal profile) and the automatic operator typing that annotates `operators.csv` are specified in `synthetic_operators_and_skill.md`; the generator's S8 calibration check is the Milestone-1.2 exit criterion stated as a generator property, and `experiment_pipeline.py assess` runs the Part-B typing over a campaign's aqi_logs.
+--- /dev/null
++++ b/serl_launcher/serl_launcher/aqi/operator_model.py
+@@ -0,0 +1,506 @@
++"""Synthetic operator model for HIL-SERL (methodology doc Part A / S3-S6).
++
++Implements the perception -> decision -> motor operator of the thesis
++document "Synthetic Operator Behaviour and Automatic Skill
++Classification" on top of AQI-HIL-SERL. Design requirements R1-R6 of
++that document govern this module:
++
++    R1 ordinal validity    higher skill s => stochastically better
++                           outcomes (validated by the calibration test
++                           against the document's Table-5 pattern);
++    R2 ground truth        every operator carries its true s and theta;
++    R3 human-plausible     errors enter through delayed perception,
++                           per-approach misalignment, signal-dependent
++                           motor noise, OU tremor, hesitation, recovery
++                           style and lapses - never i.i.d. action noise;
++    R4 both roles          the same theta drives demonstrations (Role 1)
++                           and interventions (Role 2, operator_gate.py);
++    R5 non-invasiveness    integration point == the SpaceMouse wrapper
++                           (info["intervene_action"]), nothing
++                           downstream can tell it from a human;
++    R6 determinism         same seed => byte-identical episodes.
++
++Two skill axes are kept separate throughout (doc S1.2): execution
++(motor) parameters and monitoring (supervisory) parameters; mixed
++profiles such as "skilled-but-jumpy" compose them independently.
++
++Units follow the document's tables: millimetres, mm/s, control steps at
++10 Hz, seconds. Environments in other units supply an `action_scale`
++(env action units per mm/s) at the wrapper.
++"""
++
++import dataclasses
++import math
++from collections import deque
++from typing import Optional
++
++import numpy as np
++
++CONTROL_HZ = 10.0
++LAPSE_NOISE_MULT = 2.5      # doc S3.3: lapse episodes inflate noise x2.5
++JITTER_STD = 0.15           # doc S3.5: per-operator log-normal jitter
++
++
++# ===========================================================================
++# theta: all knobs of both skill axes in one place (doc Tables 2 + 4)
++# ===========================================================================
++@dataclasses.dataclass
++class OperatorTheta:
++    # ---- execution (motor/perception) skill, doc Table 2 -----------------
++    sigma0: float = 5.0        # baseline motor noise (mm/s)
++    k_sdn: float = 0.05        # signal-dependent noise gain (-)
++    sigma_tr: float = 5.0      # OU tremor intensity (mm/s)
++    latency: int = 2           # perception-action delay (steps @10 Hz)
++    lag: float = 0.55          # first-order motor lag gamma (-)
++    v_max: float = 70.0        # speed cap (mm/s)
++    sigma_perc: float = 1.0    # per-APPROACH perceptual bias std (mm)
++    p_pause: float = 0.04      # hesitation probability (/step)
++    pause_len_mean: float = 0.6  # mean pause duration (s)
++    q_rec: float = 0.30        # retract-and-realign prob. (/jam step)
++    p_early: float = 0.05      # premature-commit prob. (/attempt, doc-2 M3)
++    p_lapse: float = 0.06      # lapse probability (/episode)
++    # ---- monitoring (supervisory) skill, doc Table 4 ---------------------
++    sigma_mon: float = 0.12    # monitor noise on z in [0,1]
++    delta_in: float = 0.60     # takeover trigger criterion
++    m_in: int = 3              # consecutive steps above delta_in
++    l_react: int = 5           # reaction delay after detection (steps)
++    p_miss: float = 0.15       # per-true-event miss probability
++    rho_fa: float = 0.5        # false alarms (/minute)
++    delta_out: float = 0.25    # handback threshold
++    k_out: int = 5             # consecutive steps below delta_out
++    d_max: float = 5.0         # max takeover duration (s)
++    # ---- ground truth (R2) ------------------------------------------------
++    s_exec: float = 0.5
++    s_mon: float = 0.5
++    tier: str = "intermediate"
++    operator_id: str = "op"
++
++    def as_dict(self):
++        return dataclasses.asdict(self)
++
++
++# Tier anchors: doc Table 2 (execution) and Table 4 (monitoring) point
++# values; expert == s=1, novice == s=0.
++EXEC_ANCHORS = dict(
++    expert=dict(sigma0=1.5, k_sdn=0.02, sigma_tr=2.0, latency=1, lag=0.75,
++                v_max=90.0, sigma_perc=0.30, p_pause=0.01, p_early=0.01,
++                pause_len_mean=0.3, q_rec=0.60, p_lapse=0.03),
++    intermediate=dict(sigma0=5.0, k_sdn=0.05, sigma_tr=5.0, latency=2,
++                      lag=0.55, v_max=70.0, sigma_perc=1.0, p_pause=0.04, p_early=0.05,
++                      pause_len_mean=0.6, q_rec=0.30, p_lapse=0.06),
++    novice=dict(sigma0=10.0, k_sdn=0.10, sigma_tr=9.0, latency=4, lag=0.40,
++                v_max=55.0, sigma_perc=2.2, p_pause=0.08, p_early=0.18,
++                pause_len_mean=1.2, q_rec=0.08, p_lapse=0.15),
++)
++MON_ANCHORS = dict(
++    expert=dict(sigma_mon=0.05, delta_in=0.45, m_in=2, l_react=3,
++                p_miss=0.05, rho_fa=0.2, delta_out=0.15, k_out=3,
++                d_max=3.0),
++    intermediate=dict(sigma_mon=0.12, delta_in=0.60, m_in=3, l_react=5,
++                      p_miss=0.15, rho_fa=0.5, delta_out=0.25, k_out=5,
++                      d_max=5.0),
++    novice=dict(sigma_mon=0.22, delta_in=0.80, m_in=4, l_react=8,
++                p_miss=0.35, rho_fa=1.2, delta_out=0.35, k_out=8,
++                d_max=8.0),
++)
++
++# interpolation classes (doc S3.5): geometric keeps scale-like params
++# positive and makes equal steps in s equal RATIOS; probabilities and
++# criterion placements interpolate linearly; integers are rounded.
++_GEOMETRIC = {"sigma0", "k_sdn", "sigma_tr", "v_max", "sigma_perc",
++              "pause_len_mean", "lag", "sigma_mon", "rho_fa", "d_max",
++              "latency", "l_react"}
++_LINEAR = {"p_pause", "q_rec", "p_lapse", "p_early", "p_miss", "delta_in",
++           "delta_out", "m_in", "k_out"}
++_INTEGER = {"latency", "m_in", "l_react", "k_out"}
++_SCALE_JITTERED = {"sigma0", "k_sdn", "sigma_tr", "sigma_perc",
++                   "sigma_mon", "rho_fa", "pause_len_mean"}
++
++TIER_S = dict(novice=0.0, intermediate=0.5, expert=1.0)
++
++
++def _interp(name, lo, hi, s):
++    if name in _GEOMETRIC:
++        v = (lo ** (1.0 - s)) * (hi ** s)
++    else:
++        v = (1.0 - s) * lo + s * hi
++    if name in _INTEGER:
++        v = int(round(v))
++    return v
++
++
++def theta_from_scale(s_exec: float, s_mon: Optional[float] = None
++                     ) -> OperatorTheta:
++    """Continuous skill scale theta(s) (doc S3.5): s=0 at the novice
++    anchor, s=1 at the expert anchor; geometric interpolation for
++    scale-like parameters, linear for probabilities/criteria."""
++    if s_mon is None:
++        s_mon = s_exec
++    kw = {}
++    for k in EXEC_ANCHORS["novice"]:
++        kw[k] = _interp(k, EXEC_ANCHORS["novice"][k],
++                        EXEC_ANCHORS["expert"][k], float(s_exec))
++    for k in MON_ANCHORS["novice"]:
++        kw[k] = _interp(k, MON_ANCHORS["novice"][k],
++                        MON_ANCHORS["expert"][k], float(s_mon))
++    tier = min(TIER_S, key=lambda t: abs(TIER_S[t] - s_exec))
++    return OperatorTheta(s_exec=float(s_exec), s_mon=float(s_mon),
++                         tier=tier, **kw)
++
++
++def jitter_theta(theta: OperatorTheta, rng: np.random.Generator,
++                 strength: float = JITTER_STD) -> OperatorTheta:
++    """Per-operator jitter (doc S3.5): multiply each scale-like parameter
++    by exp(N(0, strength^2)) so tiers become overlapping clouds rather
++    than three identical robots."""
++    kw = theta.as_dict()
++    for k in _SCALE_JITTERED:
++        kw[k] = kw[k] * float(np.exp(rng.normal(0.0, strength)))
++    return OperatorTheta(**kw)
++
++
++def make_operator_theta(profile: str, rng: Optional[np.random.Generator]
++                        = None, jitter: bool = False,
++                        operator_id: Optional[str] = None) -> OperatorTheta:
++    """Build a theta from a profile string. Accepted forms:
++        "expert" | "intermediate" | "novice"           (both axes)
++        "s=0.7" | "s_exec=0.9,s_mon=0.2"               (continuous)
++        "exec=expert,mon=novice"                        (mixed tiers)
++        "op1".."op4"                                    (Exp-1 set, doc
++                                                         Table 4 of the
++                                                         assessment doc)
++    op4 is the skilled-but-jumpy profile: expert hands, trigger-happy
++    supervision (low delta_in, high rho_fa, short reaction)."""
++    rng = rng or np.random.default_rng(0)
++    p = profile.strip().lower()
++    if p in ("op1", "op2", "op3"):
++        tier = {"op1": "expert", "op2": "intermediate", "op3": "novice"}[p]
++        th = theta_from_scale(TIER_S[tier], TIER_S[tier])
++    elif p == "op4":  # skilled-but-jumpy
++        th = theta_from_scale(TIER_S["expert"], TIER_S["expert"])
++        th = dataclasses.replace(
++            th, delta_in=0.35, rho_fa=1.4, p_miss=0.05, l_react=3,
++            delta_out=0.30, k_out=8, d_max=6.0, s_mon=0.15,
++            sigma_mon=0.15)
++    elif p in TIER_S:
++        th = theta_from_scale(TIER_S[p], TIER_S[p])
++    elif "=" in p:
++        kv = dict(item.split("=") for item in p.split(","))
++        if "exec" in kv or "mon" in kv:
++            se = TIER_S[kv.get("exec", "intermediate")]
++            sm = TIER_S[kv.get("mon", kv.get("exec", "intermediate"))]
++        else:
++            se = float(kv.get("s_exec", kv.get("s", 0.5)))
++            sm = float(kv.get("s_mon", kv.get("s", se)))
++        th = theta_from_scale(se, sm)
++    else:
++        raise ValueError(f"unknown operator profile '{profile}'")
++    if jitter:
++        th = jitter_theta(th, rng)
++    th.tier = (p if p.startswith("op") else th.tier)
++    th.operator_id = operator_id or p
++    return th
++
++
++# ===========================================================================
++# Oracle interfaces: the competent core pi_or the model degrades (doc S4)
++# ===========================================================================
++class PhaseOracle:
++    """Task-primitive oracle (doc S4 Option A): exposes the geometric
++    primitives the operator's generic phase machine consumes. Implement
++    per environment (the toy env ships one; a real cell would supply the
++    known hole pose)."""
++
++    lateral_dims = (0,)      # action dims commanding lateral motion
++    vertical_dim = 1         # action dim commanding descent (+ = up)
++
++    def reset(self):
++        pass
++
++    def lateral_error(self, obs) -> np.ndarray:
++        """True lateral error of the tool w.r.t. the insertion axis (mm);
++        the operator perceives this plus its per-approach bias."""
++        raise NotImplementedError
++
++    def height(self, obs) -> float:
++        """Tool height above the insertion surface (mm)."""
++        raise NotImplementedError
++
++    def in_contact(self, obs) -> bool:
++        raise NotImplementedError
++
++    def jammed(self, obs) -> bool:
++        """Contact without insertion progress (drives q_rec recovery)."""
++        raise NotImplementedError
++
++    def commit_threshold(self) -> float:
++        """Perceived |error| below which the operator commits to
++        descend (mm); ~0.8 x clearance is a sensible default."""
++        raise NotImplementedError
++
++    def approach_height(self) -> float:
++        return 8.0
++
++    def action_dim(self) -> int:
++        return 2
++
++
++class PolicyOracle:
++    """Doc S4 Option B: a trained policy as the competent core; the
++    decision block degrades it with temporally correlated wrong-intent
++    segments (doc S3.2) instead of the phase machine. `policy_fn(obs) ->
++    action (env units)`; `action_scale` converts env action units to
++    mm/s so the motor-channel parameters keep their table meaning."""
++
++    def __init__(self, policy_fn, action_dim: int, action_scale: float = 1.0):
++        self.policy_fn = policy_fn
++        self._action_dim = action_dim
++        self.action_scale = action_scale
++
++    def reset(self):
++        pass
++
++    def action_dim(self) -> int:
++        return self._action_dim
++
++    def intent(self, obs) -> np.ndarray:
++        return np.asarray(self.policy_fn(obs), dtype=np.float64) \
++            * self.action_scale
++
++
++# ===========================================================================
++# the operator itself: perception -> decision -> motor (doc S3)
++# ===========================================================================
++class _OU:
++    """Ornstein-Uhlenbeck tremor: band-limited, temporally correlated
++    wobble (white noise looks wrong in trajectories and smoothness
++    metrics, doc S3.3)."""
++
++    def __init__(self, dim, sigma, rng, tau=0.3, dt=1.0 / CONTROL_HZ):
++        self.x = np.zeros(dim)
++        self.sigma, self.tau, self.dt, self.rng = sigma, tau, dt, rng
++
++    def step(self):
++        a = self.dt / self.tau
++        self.x = (1 - a) * self.x + self.sigma * math.sqrt(2 * a) \
++            * self.rng.standard_normal(self.x.shape)
++        return self.x
++
++
++class SyntheticOperator:
++    """One operator = one frozen theta + one seeded RNG (R6), usable for
++    Role 1 (full-episode teleoperation via `act`) and as the correction
++    engine of Role 2 (operator_gate.SyntheticInterventionGate).
++
++    Perception (doc S3.1): acts on the state delayed by `latency` steps;
++    the alignment estimate carries a per-APPROACH bias eta ~
++    N(0, sigma_perc^2), resampled only when the scene is re-examined
++    (after a retract) - never per step, which would average the
++    mis-estimate away and erase tier separation (the documented
++    pitfall).
++
++    Decision (doc S3.2): with a PhaseOracle, a phase machine
++    approach -> align -> descend, committing when the PERCEIVED |error|
++    is inside the threshold; outright mistakes with p_miss (premature
++    commit); after a jam, retract-and-realign with prob q_rec per step
++    (else push through). With a PolicyOracle, wrong-intent segments of
++    0.5-1.5 s (frozen / scaled / rotated intent) at rate p_miss,
++    preferentially triggered at contact.
++
++    Motor (doc S3.3):  a_t = (1-lag)a_{t-1} + lag (u + eps + tremor),
++    eps ~ N(0, (sigma0 + k_sdn ||u||)^2), ||a|| <= v_max, geometric
++    pauses with prob p_pause, whole-episode lapses with prob p_lapse
++    inflating all noise x2.5.
++    """
++
++    RETRACT_SPEED = 40.0  # mm/s used by the recovery macro
++
++    def __init__(self, oracle, theta: OperatorTheta,
++                 rng: Optional[np.random.Generator] = None,
++                 action_scale: float = 1.0, dt: float = 1.0 / CONTROL_HZ):
++        self.oracle = oracle
++        self.th = theta
++        self.rng = rng or np.random.default_rng(0)
++        self.action_scale = action_scale  # env units per mm/s
++        self.dt = dt
++        self.phase_based = isinstance(oracle, PhaseOracle)
++        self.reset()
++
++    # ------------------------------------------------------------------
++    def reset(self):
++        th = self.th
++        self.oracle.reset()
++        self.lapse = self.rng.random() < th.p_lapse
++        self._noise_mult = LAPSE_NOISE_MULT if self.lapse else 1.0
++        self.bias = self._draw_bias()
++        self._delay = deque(maxlen=max(th.latency, 0) + 1)
++        self.a_prev = np.zeros(self.oracle.action_dim())
++        self.ou = _OU(self.oracle.action_dim(),
++                      th.sigma_tr * self._noise_mult, self.rng, dt=self.dt)
++        self.pause_left = 0
++        self.phase = "approach"
++        self.committed = False
++        self.n_approaches = 1
++        self._premature = self.rng.random() < th.p_early
++        self._premature_after = int(self.rng.uniform(0.2, 0.7) / self.dt)
++        self._align_steps = 0
++        self._ehat_s = None
++        self.commit_events = []   # (perceived_err, true_err) at commits
++        # PolicyOracle wrong-intent machinery
++        self._wrong_left = 0
++        self._wrong_mode = None
++
++    def _draw_bias(self):
++        dim = len(getattr(self.oracle, "lateral_dims", (0,))) \
++            if self.phase_based else 1
++        return self.rng.normal(0.0, self.th.sigma_perc, size=dim)
++
++    # ------------------------------------------------------------------
++    def _perceive(self, obs):
++        """Latency: act on the observation from `latency` steps ago."""
++        self._delay.append(obs)
++        return self._delay[0]
++
++    # ---- decision block ----------------------------------------------
++    def _intent_phase(self, obs_d):
++        th, orc = self.th, self.oracle
++        u = np.zeros(orc.action_dim())
++        err_true = np.asarray(orc.lateral_error(obs_d), dtype=np.float64)
++        err_hat = err_true + self.bias           # per-approach mis-estimate
++        h = orc.height(obs_d)
++        appr_h = orc.approach_height()
++
++        if self.phase == "retract":
++            u[orc.vertical_dim] = self.RETRACT_SPEED
++            if h >= appr_h * 0.9:
++                # scene re-examined: resample the bias (doc S3.1)
++                self.bias = self._draw_bias()
++                self.n_approaches += 1
++                self.phase, self.committed = "align", False
++                self._premature = self.rng.random() < th.p_early
++                self._premature_after = int(self.rng.uniform(0.2, 0.7)
++                                            / self.dt)
++                self._align_steps = 0
++                self._ehat_s = None
++            return u
++
++        if orc.jammed(obs_d):
++            if self.rng.random() < th.q_rec:
++                self.phase = "retract"           # expert-style recovery
++                u[orc.vertical_dim] = self.RETRACT_SPEED
++                return u
++            # push through (novice-style): keep pressing, wiggle a bit
++            u[orc.vertical_dim] = -0.6 * th.v_max
++            for i, d in enumerate(orc.lateral_dims):
++                u[d] = np.clip(-4.0 * err_hat[i], -th.v_max, th.v_max)
++            return u
++
++        if self.phase == "approach":
++            u[orc.vertical_dim] = -th.v_max if h > appr_h else 0.0
++            for i, d in enumerate(orc.lateral_dims):
++                u[d] = np.clip(-3.0 * err_hat[i], -th.v_max, th.v_max)
++            if h <= appr_h * 1.1:
++                self.phase = "align"
++            return u
++
++        if self.phase == "align":
++            for i, d in enumerate(orc.lateral_dims):
++                u[d] = np.clip(-4.0 * err_hat[i], -th.v_max, th.v_max)
++            u[orc.vertical_dim] = -0.15 * th.v_max  # slow creep down
++            self._align_steps += 1
++            # commit on a lightly smoothed percept (one clean reading of
++            # the smoothed estimate, not a raw one-sample spike)
++            prev_s = self._ehat_s if self._ehat_s is not None else err_hat
++            self._ehat_s = 0.5 * prev_s + 0.5 * err_hat
++            aligned = (float(np.linalg.norm(self._ehat_s))
++                       < orc.commit_threshold())
++            premature = (self._premature
++                         and self._align_steps >= self._premature_after)
++            if aligned or premature:
++                self.phase, self.committed = "descend", True
++                self.commit_events.append(
++                    (float(np.linalg.norm(err_hat)),
++                     float(np.linalg.norm(err_true))))
++            return u
++
++        # descend / insert
++        u[orc.vertical_dim] = -th.v_max
++        for i, d in enumerate(orc.lateral_dims):
++            u[d] = np.clip(-2.0 * err_hat[i], -th.v_max, th.v_max)
++        return u
++
++    def _intent_policy(self, obs_d, contact=False):
++        u = self.oracle.intent(obs_d)
++        th = self.th
++        if self._wrong_left <= 0:
++            p = th.p_miss * self.dt * 10 * (3.0 if contact else 1.0)
++            if self.rng.random() < p:
++                self._wrong_left = int(self.rng.uniform(0.5, 1.5) / self.dt)
++                self._wrong_mode = self.rng.choice(["freeze", "scale",
++                                                    "rotate"])
++                self._frozen = u.copy()
++        if self._wrong_left > 0:
++            self._wrong_left -= 1
++            if self._wrong_mode == "freeze":
++                u = self._frozen
++            elif self._wrong_mode == "scale":
++                u = 0.2 * u
++            else:  # rotate the first two dims
++                c, s = math.cos(0.8), math.sin(0.8)
++                u = u.copy()
++                if len(u) >= 2:
++                    u[0], u[1] = c * u[0] - s * u[1], s * u[0] + c * u[1]
++        return u
++
++    # ---- motor block --------------------------------------------------
++    def _motor(self, u):
++        th = self.th
++        if self.pause_left > 0:
++            self.pause_left -= 1
++            u = np.zeros_like(u)
++        elif self.rng.random() < th.p_pause:
++            self.pause_left = max(1, int(self.rng.geometric(
++                min(self.dt / max(th.pause_len_mean, 1e-3), 0.999))))
++            u = np.zeros_like(u)
++        sd = (th.sigma0 + th.k_sdn * float(np.linalg.norm(u))) \
++            * self._noise_mult
++        eps = self.rng.normal(0.0, sd, size=u.shape)
++        a = (1 - th.lag) * self.a_prev + th.lag * (u + eps + self.ou.step())
++        n = float(np.linalg.norm(a))
++        if n > th.v_max:
++            a = a * (th.v_max / n)
++        self.a_prev = a
++        return a
++
++    # ------------------------------------------------------------------
++    def begin_takeover(self, obs):
++        """Role-2 entry (doc S6.3): called by the intervention gate at
++        takeover onset. The operator has been WATCHING (latency applies
++        to their reaction via the gate l_react), so the delay queue is
++        seeded with the current scene; they take a fresh look (bias
++        resampled) and run the recovery macro stabilize -> retract ->
++        re-align -> re-attempt through their own motor model -
++        push-through instead of retract emerges from low q_rec exactly
++        as in solo operation."""
++        self._delay.clear()
++        for _ in range(self._delay.maxlen):
++            self._delay.append(obs)
++        self.bias = self._draw_bias()
++        self.n_approaches += 1
++        self.a_prev = np.zeros(self.oracle.action_dim())
++        self._ehat_s = None
++        self._align_steps = 0
++        self.committed = False
++        if self.phase_based:
++            in_trouble = (self.oracle.jammed(obs)
++                          or self.oracle.in_contact(obs))
++            self.phase = "retract" if in_trouble else "align"
++
++    def act(self, obs, contact: bool = False) -> np.ndarray:
++        """One control step: returns the executed action in ENV units."""
++        obs_d = self._perceive(obs)
++        if self.phase_based:
++            u = self._intent_phase(obs_d)
++        else:
++            u = self._intent_policy(obs_d, contact=contact)
++        return self._motor(u) * self.action_scale
+--- /dev/null
++++ b/serl_launcher/serl_launcher/aqi/operator_gate.py
+@@ -0,0 +1,270 @@
++"""Role 2 - synthetic interventions (methodology doc S6).
++
++Three pieces:
++
++  MonitoringSignal    the operator's internal risk estimate z_t in
++                      [0, 1] (doc S6.1): task-error components from the
++                      PhaseOracle (corridor distance, stagnation,
++                      timeout fraction), a contact/force component, and
++                      optional learner-derived hooks (value drop,
++                      sigma_Q) - the same definitions double as
++                      classifier features (skill.py).
++
++  SyntheticInterventionGate
++                      the takeover decision as signal detection (doc
++                      S6.2): zhat = EWMA(z) + N(0, sigma_mon); trigger
++                      when zhat > delta_in for m_in consecutive steps,
++                      react after l_react more, miss whole events with
++                      p_miss, add spontaneous false alarms at Poisson
++                      rate rho_fa; hand back when zhat < delta_out for
++                      k_out steps or after d_max seconds (hysteresis +
++                      over-assistance both expressible, doc S6.3/S6.4).
++
++  SyntheticOperatorWrapper
++                      a gym wrapper at EXACTLY the SpaceMouse
++                      integration point (requirement R5): when the gate
++                      holds control the executed action is the
++                      operator's and info["intervene_action"] carries
++                      it - the actor loop, the AQI runtime, the buffers
++                      and the learner cannot distinguish it from a
++                      human. info["synthetic_operator"] additionally
++                      carries ground truth (z, zhat, event flags, theta
++                      id) for validation and the skill pipeline (R2).
++
++Determinism (R6): all randomness flows through the RNGs handed in.
++"""
++
++from typing import Optional
++
++import numpy as np
++
++try:
++    import gymnasium as gym
++except ImportError:  # pragma: no cover
++    import gym
++
++from serl_launcher.aqi.operator_model import (CONTROL_HZ, OperatorTheta,
++                                              PhaseOracle,
++                                              SyntheticOperator)
++
++
++# ===========================================================================
++class MonitoringSignal:
++    """z_t in [0, 1] (doc S6.1). Components (each normalized, combined
++    by max - trouble on ANY channel is trouble):
++      * corridor: |lateral error| / corridor_mm, only below
++        approach height (misalignment high up is routine);
++      * stagnation: no descent progress for `stall_s` while not yet
++        inserted;
++      * timeout: fraction of the episode budget consumed (weight 0.5 -
++        pressure, not panic);
++      * contact: normalized force magnitude when available;
++      * value_fn / sigma_fn: optional learner hooks returning already-
++        normalized [0, 1] scores (doc note: these make the synthetic
++        supervisor's competence depend on training progress - realistic
++        but confounding; off by default)."""
++
++    def __init__(self, oracle: Optional[PhaseOracle] = None,
++                 corridor_mm: float = 6.0,
++                 stall_s: float = 1.2, force_norm: float = 4.0,
++                 budget_steps: int = 150, dt: float = 1.0 / CONTROL_HZ,
++                 value_fn=None, sigma_fn=None):
++        self.oracle = oracle
++        self.corridor = corridor_mm
++        self.stall_steps = max(1, int(round(stall_s / dt)))
++        self.force_norm = force_norm
++        self.budget = budget_steps
++        self.value_fn, self.sigma_fn = value_fn, sigma_fn
++        self.reset()
++
++    def reset(self):
++        self._best_h = np.inf
++        self._stall = 0
++        self._t = 0
++
++    def __call__(self, obs, info=None) -> float:
++        orc = self.oracle
++        self._t += 1
++        parts = [min(1.0, self._t / self.budget) * 0.5]
++        if orc is not None:
++            h = orc.height(obs)
++            if h < self._best_h - 0.3:
++                self._best_h, self._stall = h, 0
++            else:
++                self._stall += 1
++            if h < orc.approach_height() * 1.5:
++                err = float(np.linalg.norm(orc.lateral_error(obs)))
++                parts.append(min(1.0, err / self.corridor))
++                parts.append(min(1.0, self._stall / self.stall_steps))
++        f = None
++        if info is not None and "f_z" in info:
++            f = abs(float(info["f_z"])) + abs(float(info.get("f_lat", 0.0)))
++        if f is not None:
++            parts.append(min(1.0, f / self.force_norm))
++        if self.value_fn is not None:
++            parts.append(float(np.clip(self.value_fn(obs), 0.0, 1.0)))
++        if self.sigma_fn is not None:
++            parts.append(float(np.clip(self.sigma_fn(obs), 0.0, 1.0)))
++        return float(max(parts))
++
++
++# ===========================================================================
++class SyntheticInterventionGate:
++    """The SDT takeover/handback machine (doc S6.2-S6.3). Consumes the
++    TRUE z_t each step, observes it through EWMA + monitor noise, and
++    exposes `taking_over`; `update()` returns event strings for logs."""
++
++    def __init__(self, theta: OperatorTheta, rng: np.random.Generator,
++                 dt: float = 1.0 / CONTROL_HZ, ewma_lambda: float = 0.4):
++        self.th = theta
++        self.rng = rng
++        self.dt = dt
++        self.lam = ewma_lambda
++        self.reset()
++
++    def reset(self):
++        self.zhat = 0.0
++        self.taking_over = False
++        self._above = 0
++        self._below = 0
++        self._react_left = None
++        self._event_live = False     # a true event currently in progress
++        self._event_missed = False
++        self._hold_steps = 0
++        self.last_z = 0.0
++
++    # ------------------------------------------------------------------
++    def update(self, z: float) -> str:
++        """One control step BEFORE choosing the action. Returns one of
++        '', 'trigger', 'trigger_fa', 'handback', 'handback_dmax'."""
++        th = self.th
++        self.last_z = float(z)
++        self.zhat = ((1 - self.lam) * self.zhat + self.lam * z
++                     + self.rng.normal(0.0, th.sigma_mon))
++        event = ""
++
++        if self.taking_over:
++            self._hold_steps += 1
++            if self.zhat < th.delta_out:
++                self._below += 1
++            else:
++                self._below = 0
++            if self._below >= th.k_out:
++                self.taking_over = False
++                event = "handback"
++            elif self._hold_steps * self.dt >= th.d_max:
++                self.taking_over = False
++                event = "handback_dmax"
++            if not self.taking_over:
++                self._above = 0
++                self._react_left = None
++            return event
++
++        # ---- not in control: detection ---------------------------------
++        if self.zhat > th.delta_in:
++            self._above += 1
++        else:
++            self._above = 0
++            if self.zhat < th.delta_in * 0.7:
++                self._event_live = False      # event over; re-arm p_miss
++                self._event_missed = False
++            if self._react_left is not None and self.zhat < th.delta_in:
++                self._react_left = None       # detection lapsed
++
++        if self._react_left is None and self._above >= th.m_in:
++            if not self._event_live:
++                self._event_live = True
++                self._event_missed = self.rng.random() < th.p_miss
++            if not self._event_missed:
++                self._react_left = th.l_react   # detected; now reacting
++
++        if self._react_left is not None:
++            self._react_left -= 1
++            if self._react_left <= 0:
++                self._start_takeover()
++                return "trigger"
++
++        # ---- spontaneous false alarms (Poisson rho_fa per minute) ------
++        if self.rng.random() < th.rho_fa * self.dt / 60.0:
++            self._start_takeover()
++            return "trigger_fa"
++        return event
++
++    def _start_takeover(self):
++        self.taking_over = True
++        self._hold_steps = 0
++        self._below = 0
++        self._react_left = None
++
++
++# ===========================================================================
++class SyntheticOperatorWrapper(gym.Wrapper):
++    """The gamepad-equivalent wrapper (R5). Wrap the task env with it in
++    the actor when --synthetic_operator is set; everything downstream
++    (train_aqi_rlpd's intervention routing, AQIRuntime, the buffers) is
++    untouched because the contract is byte-compatible with the
++    SpaceMouse path: during a takeover the EXECUTED action is the
++    operator's and info["intervene_action"] carries it.
++
++    `operator` supplies both competences: its monitoring theta drives
++    the gate, its execution theta drives the corrective actions
++    (begin_takeover -> recovery macro)."""
++
++    def __init__(self, env, operator: SyntheticOperator,
++                 monitor: MonitoringSignal,
++                 rng: np.random.Generator = None,
++                 dt: float = 1.0 / CONTROL_HZ):
++        super().__init__(env)
++        self.op = operator
++        self.monitor = monitor
++        self.gate = SyntheticInterventionGate(
++            operator.th, rng or np.random.default_rng(0), dt=dt)
++        self._last_obs = None
++        self._last_info = {}
++        self.episode_events = []
++
++    # ------------------------------------------------------------------
++    def reset(self, **kwargs):
++        obs, info = self.env.reset(**kwargs)
++        self.op.reset()
++        self.monitor.reset()
++        self.gate.reset()
++        self.episode_events = []
++        self._last_obs, self._last_info = obs, info
++        return obs, info
++
++    def step(self, action):
++        was_over = self.gate.taking_over
++        z = self.monitor(self._last_obs, self._last_info)
++        event = self.gate.update(z)
++        if event.startswith("trigger"):
++            self.op.begin_takeover(self._last_obs)
++            self.episode_events.append(
++                dict(t=self.monitor._t, event=event, z=z,
++                     zhat=self.gate.zhat))
++        elif event.startswith("handback"):
++            self.episode_events.append(
++                dict(t=self.monitor._t, event=event, z=z,
++                     zhat=self.gate.zhat))
++
++        if self.gate.taking_over:
++            a_exec = np.asarray(
++                self.op.act(self._last_obs,
++                            contact=bool(self._last_info.get("contact"))),
++                dtype=np.float32)
++        else:
++            a_exec = np.asarray(action, dtype=np.float32)
++
++        obs, rew, terminated, truncated, info = self.env.step(a_exec)
++        if self.gate.taking_over:
++            info["intervene_action"] = a_exec          # the human path
++        info["synthetic_operator"] = dict(
++            operator_id=self.op.th.operator_id, z=z,
++            zhat=float(self.gate.zhat),
++            taking_over=bool(self.gate.taking_over),
++            takeover_started=bool(event.startswith("trigger")),
++            handback=bool(event.startswith("handback")),
++            false_alarm=bool(event == "trigger_fa"),
++        )
++        self._last_obs, self._last_info = obs, info
++        return obs, rew, terminated, truncated, info
+--- /dev/null
++++ b/serl_launcher/serl_launcher/aqi/toy_insertion.py
+@@ -0,0 +1,219 @@
++"""2-D toy insertion environment (methodology doc S7 worked example).
++
++The smallest environment with the right physics of failure: a peg tip
++p = (x, z) under velocity control at 10 Hz; a hole at x = 0 in the
++surface z = 0 with radial clearance 1 mm and insertion depth 20 mm;
++contact with friction (lateral correction impeded while pressing),
++wedging drift, a jam budget of 25 contact events beyond which the part
++counts as damaged; 15 s episode budget; starts x0 ~ U(-30, 30) mm at
++z0 = 60 mm.
++
++Deliberately trivial - what transfers to a real simulator is the wrapper
++structure, the calibration protocol, the censoring caveat, and the
++classification pipeline (doc S7 "what transfers"). Used here to
++(a) validate the synthetic-operator generator against the document's
++Table-5 separation pattern and (b) manufacture ground-truth-labelled
++populations for validating the skill classifier (doc S11).
++
++Gymnasium API. Observation: {"state": [x, z, vx, vz, F_lat, F_z,
++jam_frac, t_frac]} (mm, mm/s, N-ish force units). info carries the
++ground truths the oracle and the feature extractor need.
++"""
++
++import numpy as np
++
++try:
++    import gymnasium as gym
++    from gymnasium import spaces
++except ImportError:  # pragma: no cover
++    import gym
++    from gym import spaces
++
++from serl_launcher.aqi.operator_model import PhaseOracle
++
++DT = 0.1                     # 10 Hz
++CLEARANCE = 1.0              # mm
++DEPTH = 20.0                 # mm
++JAM_BUDGET = 25              # contact events -> damaged
++BUDGET_S = 15.0
++X0_RANGE = 30.0
++Z0 = 60.0
++A_MAX = 100.0                # |commanded velocity| cap (mm/s)
++FRICTION = 0.30              # lateral effectiveness while pressing
++WEDGE_DRIFT = 1.0            # mm/s drift outward while jammed
++K_FORCE = 0.12               # force per commanded mm/s while blocked
++
++
++class ToyInsertionEnv(gym.Env):
++    """See module docstring. Action: desired (vx, vz) in mm/s."""
++
++    metadata = {"render_modes": []}
++
++    def __init__(self, budget_s: float = BUDGET_S, seed: int = 0,
++                 fixed_x0=None):
++        self.observation_space = spaces.Dict(
++            {"state": spaces.Box(-np.inf, np.inf, (8,), np.float64)})
++        self.action_space = spaces.Box(-A_MAX, A_MAX, (2,), np.float64)
++        self.max_steps = int(round(budget_s / DT))
++        self.rng = np.random.default_rng(seed)
++        self.fixed_x0 = fixed_x0
++        self.reset()
++
++    # ------------------------------------------------------------------
++    def _obs(self):
++        s = np.array([self.x, self.z, self.vx, self.vz,
++                      self.f_lat, self.f_z,
++                      self.jams / JAM_BUDGET, self.t / self.max_steps])
++        return {"state": s}
++
++    def _info(self, jam_event=False):
++        return dict(x=self.x, z=self.z, f_lat=self.f_lat, f_z=self.f_z,
++                    contact=self.contact, jammed=self.jammed,
++                    jam_event=jam_event, jams=self.jams,
++                    succeeded=self.succeeded, t=self.t * DT)
++
++    def reset(self, seed=None, options=None):
++        if seed is not None:
++            self.rng = np.random.default_rng(seed)
++        self.x = (float(self.fixed_x0) if self.fixed_x0 is not None
++                  else float(self.rng.uniform(-X0_RANGE, X0_RANGE)))
++        self.z = Z0
++        self.vx = self.vz = 0.0
++        self.f_lat = self.f_z = 0.0
++        self.t = 0
++        self.jams = 0
++        self.contact = self.jammed = False
++        self._grind = 0
++        self.succeeded = False
++        return self._obs(), self._info()
++
++    # ------------------------------------------------------------------
++    def step(self, action):
++        a = np.clip(np.asarray(action, dtype=np.float64), -A_MAX, A_MAX)
++        vx_c, vz_c = float(a[0]), float(a[1])
++        self.f_lat = self.f_z = 0.0
++        jam_event = False
++
++        inside = self.z < 0.0
++        at_surface = (not inside) and self.z <= 1e-9
++        misaligned = abs(self.x) > CLEARANCE
++
++        if inside:
++            # in the hole: descend freely, walls constrain |x| <= clearance
++            self.x += vx_c * DT
++            if abs(self.x) > CLEARANCE:
++                self.f_lat = K_FORCE * abs(vx_c) + 0.5
++                self.x = np.clip(self.x, -CLEARANCE, CLEARANCE)
++            self.z += vz_c * DT
++            self.z = min(self.z, 0.0)      # can retract out through the top
++            self.contact, self.jammed = True, False
++        elif at_surface and misaligned and vz_c < 0.0:
++            # pressing on the surface off the hole: JAM. A "contact
++            # event" (doc S7 jam budget) is the rising edge of a jam
++            # plus one further event per 0.5 s of sustained grinding -
++            # continuous pressing damages the part progressively.
++            rising = not self.jammed
++            self.contact = self.jammed = True
++            self._grind = 0 if rising else self._grind + 1
++            jam_event = bool(rising or (self._grind % 5 == 0))
++            self.jams += int(jam_event)
++            self.f_z = K_FORCE * abs(vz_c) + 1.0
++            self.f_lat = 0.3 * self.f_z
++            # friction impedes lateral correction; wedging drifts outward
++            self.x += FRICTION * vx_c * DT \
++                + WEDGE_DRIFT * np.sign(self.x) * DT
++            self.z = 0.0                    # cannot penetrate the surface
++            if vz_c > 0:                    # (unreachable branch, clarity)
++                self.z += vz_c * DT
++        else:
++            # free space (or moving up off the surface)
++            self.contact = self.jammed = False
++            self.x += vx_c * DT
++            self.z += vz_c * DT
++            if self.z <= 0.0 and abs(self.x) <= CLEARANCE:
++                self.contact = True         # entering the hole
++            elif self.z < 0.0:
++                self.z = 0.0                # blocked by the surface
++
++        self.vx, self.vz = vx_c, vz_c
++        self.t += 1
++        self.succeeded = self.z <= -DEPTH
++        damaged = self.jams > JAM_BUDGET
++        terminated = bool(self.succeeded or damaged)
++        truncated = bool(self.t >= self.max_steps and not terminated)
++        reward = 1.0 if self.succeeded else 0.0
++        return self._obs(), reward, terminated, truncated, \
++            self._info(jam_event)
++
++
++class ToyInsertionOracle(PhaseOracle):
++    """PhaseOracle for the toy env: the primitives the operator's phase
++    machine consumes. Reads the (delayed, operator-side) observation."""
++
++    lateral_dims = (0,)
++    vertical_dim = 1
++
++    def lateral_error(self, obs):
++        return np.array([obs["state"][0]])   # hole is at x = 0
++
++    def height(self, obs):
++        return float(obs["state"][1])
++
++    def in_contact(self, obs):
++        return bool(obs["state"][5] > 0.05 or obs["state"][1] < 0.0)
++
++    def jammed(self, obs):
++        # pressing at the surface with lateral misalignment: F_z present
++        return bool(obs["state"][5] > 0.05)
++
++    def commit_threshold(self):
++        return 0.8 * CLEARANCE
++
++    def approach_height(self):
++        return 8.0
++
++    def action_dim(self):
++        return 2
++
++
++# ===========================================================================
++# population harness (doc S7 step 3 / S11): rollouts with the feature-
++# extractor's trajectory schema and ground-truth labels attached (R2)
++# ===========================================================================
++def rollout_episode(env, op, seed):
++    """One closed-loop episode -> the trajectory dict episode_features
++    consumes, plus ground truth."""
++    obs, info = env.reset(seed=seed)
++    op.reset()
++    P, F, C = [], [], []
++    done = False
++    jam = 0
++    while not done:
++        a = op.act(obs)
++        obs, r, term, trunc, info = env.step(a)
++        P.append([obs["state"][0], obs["state"][1]])
++        F.append(abs(info["f_lat"]) + abs(info["f_z"]))
++        C.append(bool(info["contact"]))
++        jam += int(info["jam_event"])
++        done = term or trunc
++    return dict(positions=np.asarray(P), forces=np.asarray(F),
++                contact=np.asarray(C), success=bool(info["succeeded"]),
++                jam_events=jam,
++                commit_err=(op.commit_events[0][1]
++                            if op.commit_events else None),
++                attempts=op.n_approaches, vertical_dim=1)
++
++
++def generate_population(op_thetas, n_episodes, seed0=0, budget_s=BUDGET_S):
++    """dict operator_id -> list of trajectory dicts; each theta is run
++    on its own seeded env/operator stream (R6)."""
++    from serl_launcher.aqi.operator_model import SyntheticOperator
++    out = {}
++    for i, th in enumerate(op_thetas):
++        env = ToyInsertionEnv(budget_s=budget_s, seed=seed0 + 1000 * i)
++        op = SyntheticOperator(ToyInsertionOracle(), th,
++                               rng=np.random.default_rng(seed0 + 77 * i))
++        out[th.operator_id] = [
++            rollout_episode(env, op, seed0 * 100000 + 1000 * i + e)
++            for e in range(n_episodes)]
++    return out
+--- /dev/null
++++ b/serl_launcher/serl_launcher/aqi/skill.py
+@@ -0,0 +1,696 @@
++"""Automatic operator skill assessment (methodology doc Part B, S9-S11).
++
++Feature catalogue (doc Table 7) -> per-operator aggregation and
++normalization (S10.1) -> four assignment methods (S10.2-10.5) ->
++validation metrics (S11). Everything computes from the standard log
++tuple; the counterfactual-advantage aggregates re-use the AQI quality
++numerator already logged per intervention segment.
++
++Censoring discipline (the doc's Table-5 lesson): any per-episode
++statistic is computed over ALL episodes with failures capped at the
++budget and flagged; time-to-success additionally reports the
++Kaplan-Meier median, which is the honest scalar under censoring.
++
++Dependencies: numpy; scipy for Savitzky-Golay filtering and Beta
++quantiles (repo requirement); statsmodels optional for the ordinal
++logistic variant of Method C (a built-in multinomial Newton solver is
++the default).
++"""
++
++import math
++from collections import defaultdict
++from typing import Dict, List, Optional, Sequence
++
++import numpy as np
++
++from serl_launcher.aqi import stats as aqi_stats
++
++CONTROL_HZ = 10.0
++
++# feature -> +1 if larger is better, -1 if smaller is better (Table 7)
++FEATURE_SIGNS = dict(
++    sr=+1, t_mean_capped=-1, t_km_median=-1, attempts=-1, plr=-1,
++    idle_frac=-1, ldj=+1, sparc=+1, vel_peaks=-1, reversals=-1,
++    f_peak=-1, f_impulse=-1, jams=-1, scrape_frac=-1, commit_err=-1,
++    cv_t=-1, dtw=-1, lapse_freq=-1,
++    intervention_rate=-1, takeover_dur=-1, over_assist=-1,
++    onset_margin=-1, recovery=+1, dv_rec=+1, a_hat_mean=+1,
++    a_hat_frac_pos=+1, unnecessary_frac=-1,
++)
++# the seven-feature set of the doc's worked example (S10.2)
++CORE7 = ("sr", "t_mean_capped", "plr", "ldj", "jams", "idle_frac",
++         "commit_err")
++
++
++# ===========================================================================
++# S9 - per-episode features
++# ===========================================================================
++def _savgol(x, window=7, poly=3):
++    try:
++        from scipy.signal import savgol_filter
++        w = min(window if window % 2 else window + 1,
++                len(x) - (1 - len(x) % 2))
++        if w <= poly + 1:
++            return np.asarray(x, dtype=np.float64)
++        return savgol_filter(np.asarray(x, dtype=np.float64), w, poly,
++                             axis=0)
++    except Exception:
++        return np.asarray(x, dtype=np.float64)
++
++
++def ldj(positions: np.ndarray, dt: float) -> float:
++    """Log dimensionless jerk (doc S9.2, Balasubramanian et al.):
++    LDJ = -ln( (T^5 / L^2) * integral ||jerk||^2 dt ); HIGHER = smoother.
++    Positions are Savitzky-Golay smoothed before differentiating."""
++    p = _savgol(positions)
++    if len(p) < 5:
++        return float("nan")
++    v = np.gradient(p, dt, axis=0)
++    a = np.gradient(v, dt, axis=0)
++    j = np.gradient(a, dt, axis=0)
++    T = len(p) * dt
++    L = float(np.sum(np.linalg.norm(np.diff(p, axis=0), axis=1)))
++    if L <= 1e-9:
++        return float("nan")
++    integ = float(np.sum(np.sum(j * j, axis=1)) * dt)
++    return -math.log(max((T ** 5 / L ** 2) * integ, 1e-300))
++
++
++def sparc(speed: np.ndarray, fs: float, fc: float = 10.0,
++          amp_th: float = 0.05) -> float:
++    """Spectral arc length of the speed profile (doc S9.2; the
++    noise-robust smoothness choice for real data). Standard definition:
++    arc length of the normalized magnitude spectrum up to the adaptive
++    cutoff; HIGHER (closer to 0, less negative) = smoother."""
++    v = np.asarray(speed, dtype=np.float64)
++    if len(v) < 6 or np.all(v < 1e-9):
++        return float("nan")
++    n = max(512, 2 ** int(math.ceil(math.log2(len(v)))))
++    mag = np.abs(np.fft.rfft(v, n))
++    f = np.fft.rfftfreq(n, 1.0 / fs)
++    mag = mag / max(mag[0], 1e-12)
++    sel = f <= fc
++    idx = np.where(sel & (mag >= amp_th))[0]
++    cutoff = f[idx[-1]] if len(idx) else fc
++    sel = f <= max(cutoff, f[1])
++    fn = f[sel] / max(f[sel][-1], 1e-12)
++    dm = np.diff(mag[sel])
++    dfn = np.diff(fn)
++    return -float(np.sum(np.sqrt(dfn ** 2 + dm ** 2)))
++
++
++def _count_peaks(speed, frac=0.25):
++    v = np.asarray(speed)
++    if len(v) < 3:
++        return 0
++    th = frac * float(v.max()) if v.max() > 0 else 0.0
++    return int(np.sum((v[1:-1] > v[:-2]) & (v[1:-1] >= v[2:])
++                      & (v[1:-1] > th)))
++
++
++def episode_features(traj: dict, dt: float = 1.0 / CONTROL_HZ,
++                     budget_s: Optional[float] = None,
++                     goal: Optional[Sequence[float]] = None) -> dict:
++    """Per-episode feature row (doc Table 7, execution block).
++
++    traj keys: positions (T, D) [mm]; success (bool); optional: forces
++    (T,) [N-ish], contact (T,) bool, jam_events int, commit_err float,
++    attempts int, vertical_dim int (default last), start/goal for L_ref.
++    """
++    p = np.asarray(traj["positions"], dtype=np.float64)
++    T = len(p) * dt
++    success = bool(traj.get("success", False))
++    budget = budget_s if budget_s is not None else T
++    v = np.linalg.norm(np.gradient(_savgol(p), dt, axis=0), axis=1) \
++        if len(p) >= 3 else np.zeros(len(p))
++    path_len = float(np.sum(np.linalg.norm(np.diff(p, axis=0), axis=1)))
++    g = np.asarray(goal, dtype=np.float64) if goal is not None else p[-1]
++    l_ref = max(float(np.linalg.norm(p[0] - g)), 1e-6)
++    vd = int(traj.get("vertical_dim", p.shape[1] - 1))
++    vz = np.gradient(_savgol(p[:, vd]), dt) if len(p) >= 3 else np.zeros(1)
++    forces = np.asarray(traj.get("forces", np.zeros(len(p))),
++                        dtype=np.float64)
++    contact = np.asarray(traj.get("contact",
++                                  forces > 0.05), dtype=bool)
++    n_contact = max(int(contact.sum()), 1)
++    return dict(
++        success=success,
++        t=float(T), t_capped=float(min(T, budget)), censored=not success,
++        attempts=float(traj.get("attempts", 1)),
++        plr=path_len / l_ref,
++        idle_frac=float(np.mean(v < 2.0)),
++        ldj=ldj(p, dt),
++        sparc=sparc(v, 1.0 / dt),
++        vel_peaks=float(_count_peaks(v)),
++        reversals=float(np.sum(np.diff(np.sign(vz + 1e-12)) != 0)),
++        f_peak=float(forces.max()) if len(forces) else 0.0,
++        f_impulse=float(np.sum(forces) * dt),
++        jams=float(traj.get("jam_events", 0)),
++        scrape_frac=float(np.sum(forces[contact] > 0.5) / n_contact)
++        if contact.any() else 0.0,
++        commit_err=float(traj["commit_err"])
++        if traj.get("commit_err") is not None else np.nan,
++        positions=p,     # kept for DTW; dropped at aggregation
++    )
++
++
++def intervention_features(segments: List[dict],
++                          episode_success: Optional[Sequence[bool]] = None,
++                          matched_phase: bool = True) -> dict:
++    """Per-operator Role-2 aggregates (doc S9.5) from AQI segment
++    records (segments.jsonl rows or equivalent dicts). Uses: length,
++    requested, a_hat_mean / a_hat_at_trigger, sigma_at_trigger,
++    episode_success, and - when the step logs carry mu_q - the onset
++    margin/recovered value computed upstream and passed per segment as
++    dv_on / dv_rec."""
++    out = dict(n_takeovers=float(len(segments)))
++    if not segments:
++        return out
++    durs = [s.get("length", 0) for s in segments]
++    a_means = [s["a_hat_mean"] for s in segments
++               if s.get("a_hat_mean") is not None]
++    out.update(
++        takeover_dur=float(np.mean(durs)) / CONTROL_HZ,
++        over_assist=float(np.mean([max(0, d - 20) for d in durs]))
++        / CONTROL_HZ,
++        a_hat_mean=float(np.mean(a_means)) if a_means else np.nan,
++        a_hat_frac_pos=float(np.mean([a > 0 for a in a_means]))
++        if a_means else np.nan,
++    )
++    dvo = [s["dv_on"] for s in segments if s.get("dv_on") is not None]
++    dvr = [s["dv_rec"] for s in segments if s.get("dv_rec") is not None]
++    if dvo:
++        out["onset_margin"] = float(np.mean(dvo))
++    if dvr:
++        out["dv_rec"] = float(np.mean(dvr))
++    if episode_success is not None and len(episode_success):
++        out["recovery"] = float(np.mean(episode_success))
++    unnecessary = [s["unnecessary"] for s in segments
++                   if s.get("unnecessary") is not None]
++    if unnecessary:
++        out["unnecessary_frac"] = float(np.mean(unnecessary))
++    return out
++
++
++# ===========================================================================
++# S10.1 - aggregation and normalization
++# ===========================================================================
++def km_median(times: Sequence[float], censored: Sequence[bool]) -> float:
++    """Kaplan-Meier median time-to-success with right censoring at the
++    budget (the honest scalar under censoring, doc Table-5 lesson)."""
++    order = np.argsort(times)
++    t = np.asarray(times, dtype=np.float64)[order]
++    c = np.asarray(censored, dtype=bool)[order]
++    n = len(t)
++    surv, at_risk = 1.0, n
++    for i in range(n):
++        if not c[i]:
++            surv *= (at_risk - 1) / at_risk
++        at_risk -= 1
++        if surv <= 0.5:
++            return float(t[i])
++    return float("inf")
++
++
++def _dtw(a: np.ndarray, b: np.ndarray) -> float:
++    n, m = len(a), len(b)
++    D = np.full((n + 1, m + 1), np.inf)
++    D[0, 0] = 0.0
++    for i in range(1, n + 1):
++        for j in range(1, m + 1):
++            c = float(np.linalg.norm(a[i - 1] - b[j - 1]))
++            D[i, j] = c + min(D[i - 1, j], D[i, j - 1], D[i - 1, j - 1])
++    return float(D[n, m] / (n + m))
++
++
++def _resample_path(p: np.ndarray, k: int = 40) -> np.ndarray:
++    if len(p) < 2:
++        return np.repeat(p, k, axis=0)[:k]
++    d = np.concatenate([[0], np.cumsum(
++        np.linalg.norm(np.diff(p, axis=0), axis=1))])
++    d = d / max(d[-1], 1e-9)
++    out = np.stack([np.interp(np.linspace(0, 1, k), d, p[:, j])
++                    for j in range(p.shape[1])], axis=1)
++    return out
++
++
++def aggregate_operator(episode_rows: List[dict],
++                       budget_s: float,
++                       interventions: Optional[dict] = None) -> dict:
++    """One feature vector per operator (doc S10.1): level = median over
++    episodes; censoring handled (capped mean + KM median); consistency =
++    CV of capped time, mean pairwise DTW of length-normalized paths,
++    lapse frequency (episodes beyond 2 MAD of the operator's own median
++    capped time)."""
++    rows = episode_rows
++    n = len(rows)
++    k = int(sum(r["success"] for r in rows))
++    tc = np.array([r["t_capped"] for r in rows])
++    med = float(np.median(tc))
++    mad = float(np.median(np.abs(tc - med))) + 1e-9
++    paths = [_resample_path(r["positions"]) for r in rows]
++    dtws = [_dtw(paths[i], paths[j])
++            for i in range(min(n, 10)) for j in range(i + 1, min(n, 10))]
++    out = dict(
++        n_episodes=n, k_success=k, sr=k / n,
++        sr_wilson=aqi_stats.wilson_interval(k, n),
++        t_mean_capped=float(tc.mean()),
++        t_km_median=km_median([r["t"] for r in rows],
++                              [r["censored"] for r in rows]),
++        cv_t=float(tc.std(ddof=1) / max(tc.mean(), 1e-9)) if n > 1
++        else np.nan,
++        lapse_freq=float(np.mean(np.abs(tc - med) > 2 * mad)),
++        dtw=float(np.mean(dtws)) if dtws else np.nan,
++    )
++    for key in ("attempts", "plr", "idle_frac", "ldj", "sparc",
++                "vel_peaks", "reversals", "f_peak", "f_impulse", "jams",
++                "scrape_frac", "commit_err"):
++        vals = [r[key] for r in rows if np.isfinite(r.get(key, np.nan))]
++        out[key] = float(np.median(vals)) if vals else np.nan
++    if interventions:
++        out.update(interventions)
++    return out
++
++
++def normalize_features(op_vectors: Dict[str, dict],
++                       features: Sequence[str],
++                       robust: bool = False) -> Dict[str, dict]:
++    """Per-task z-scores across the cohort (doc S10.1); robust=True uses
++    median/MAD. Features missing for an operator z-score to 0 (no
++    evidence either way)."""
++    ops = sorted(op_vectors)
++    Z = {o: {} for o in ops}
++    for f in features:
++        vals = np.array([op_vectors[o].get(f, np.nan) for o in ops],
++                        dtype=np.float64)
++        ok = np.isfinite(vals)
++        if ok.sum() < 2:
++            for o in ops:
++                Z[o][f] = 0.0
++            continue
++        if robust:
++            c = np.median(vals[ok])
++            s = 1.4826 * np.median(np.abs(vals[ok] - c)) + 1e-9
++        else:
++            c, s = vals[ok].mean(), vals[ok].std(ddof=1) + 1e-9
++        for o, v, good in zip(ops, vals, ok):
++            Z[o][f] = float((v - c) / s) if good else 0.0
++    return Z
++
++
++# ===========================================================================
++# S10.2 - Method A: transparent composite index
++# ===========================================================================
++def composite_score(z: dict, features: Sequence[str] = CORE7) -> float:
++    """S_i = mean_k sign_k * z_ik with the Table-7 direction signs."""
++    vals = [FEATURE_SIGNS[f] * z[f] for f in features if f in z]
++    return float(np.mean(vals)) if vals else float("nan")
++
++
++def composite_tiers(scores: Dict[str, float],
++                    cuts: Optional[Sequence[float]] = None) -> dict:
++    """Tertile cuts by default (balanced cohorts); pass anchor-derived
++    cuts for skewed cohorts (doc S10.2 caveat)."""
++    s = np.array(list(scores.values()))
++    if cuts is None:
++        cuts = (float(np.quantile(s, 1 / 3)), float(np.quantile(s, 2 / 3)))
++    tier = {o: ("novice" if v < cuts[0] else
++                "expert" if v >= cuts[1] else "intermediate")
++            for o, v in scores.items()}
++    return dict(cuts=tuple(cuts), tiers=tier)
++
++
++# ===========================================================================
++# S10.3 - Method B: unsupervised clustering
++# ===========================================================================
++def _kmeans(X, k, rng, n_init=10, iters=100):
++    best, best_inertia = None, np.inf
++    for _ in range(n_init):
++        # k-means++ init
++        centers = [X[rng.integers(len(X))]]
++        for _ in range(k - 1):
++            d2 = np.min([np.sum((X - c) ** 2, axis=1) for c in centers],
++                        axis=0)
++            centers.append(X[rng.choice(len(X), p=d2 / d2.sum())])
++        C = np.array(centers)
++        for _ in range(iters):
++            lab = np.argmin(((X[:, None] - C[None]) ** 2).sum(-1), axis=1)
++            newC = np.array([X[lab == j].mean(0) if (lab == j).any()
++                             else C[j] for j in range(k)])
++            if np.allclose(newC, C):
++                break
++            C = newC
++        inertia = float(((X - C[lab]) ** 2).sum())
++        if inertia < best_inertia:
++            best, best_inertia = (lab, C), inertia
++    return best
++
++
++def cluster_operators(z_vectors: Dict[str, dict],
++                      features: Sequence[str] = CORE7, k: int = 3,
++                      sr: Optional[Dict[str, float]] = None,
++                      rng: Optional[np.random.Generator] = None,
++                      n_boot: int = 100) -> dict:
++    """k-means on the z-vectors, clusters ORDERED by mean success rate
++    and only then read as novice/intermediate/expert (doc S10.3), with
++    bootstrap label stability. Refuses nothing, but flags cohorts under
++    15 operators as unstable per the doc."""
++    rng = rng or np.random.default_rng(0)
++    ops = sorted(z_vectors)
++    X = np.array([[z_vectors[o][f] for f in features] for o in ops])
++    lab, C = _kmeans(X, k, rng)
++    order_key = (np.array([np.mean([sr[o] for o, l in zip(ops, lab)
++                                    if l == j]) for j in range(k)])
++                 if sr else -np.array([np.mean(X[lab == j, 0])
++                                       for j in range(k)]))
++    order = np.argsort(order_key)   # ascending -> novice..expert
++    names = ["novice", "intermediate", "expert"] + \
++        [f"tier{j}" for j in range(3, k)]
++    remap = {int(order[j]): names[j] for j in range(k)}
++    tiers = {o: remap[int(l)] for o, l in zip(ops, lab)}
++    # bootstrap stability: perturb X with resampled ops
++    agree = []
++    for _ in range(n_boot):
++        idx = rng.integers(0, len(ops), len(ops))
++        lb, _ = _kmeans(X[idx], k, rng, n_init=3)
++        # majority label per original op among its bootstrap copies
++        m = defaultdict(list)
++        for i, l in zip(idx, lb):
++            m[i].append(l)
++        stable = [len(set(v)) == 1 for v in m.values() if len(v) > 1]
++        if stable:
++            agree.append(np.mean(stable))
++    return dict(tiers=tiers, labels={o: int(l) for o, l in zip(ops, lab)},
++                stability=float(np.mean(agree)) if agree else np.nan,
++                small_cohort_warning=len(ops) < 15)
++
++
++def adjusted_rand_index(a: Sequence, b: Sequence) -> float:
++    a, b = np.asarray(a), np.asarray(b)
++    n = len(a)
++    ua, ub = np.unique(a), np.unique(b)
++    M = np.array([[np.sum((a == x) & (b == y)) for y in ub] for x in ua])
++    def c2(x):
++        return x * (x - 1) / 2
++    sum_ij = c2(M).sum()
++    sa, sb = c2(M.sum(1)).sum(), c2(M.sum(0)).sum()
++    exp = sa * sb / c2(n)
++    mx = 0.5 * (sa + sb)
++    return float((sum_ij - exp) / (mx - exp + 1e-12))
++
++
++# ===========================================================================
++# S10.4 - Method C: (ordinal) classification with LOSO CV
++# ===========================================================================
++def _softmax_fit(X, y, k, l2=1e-2, iters=300, lr=0.5):
++    n, d = X.shape
++    W = np.zeros((k, d + 1))
++    Xb = np.hstack([X, np.ones((n, 1))])
++    Y = np.eye(k)[y]
++    for _ in range(iters):
++        P = np.exp(Xb @ W.T - (Xb @ W.T).max(1, keepdims=True))
++        P /= P.sum(1, keepdims=True)
++        G = (P - Y).T @ Xb / n + l2 * W
++        W -= lr * G
++    return W
++
++
++def _softmax_predict(W, X):
++    Xb = np.hstack([X, np.ones((len(X), 1))])
++    return np.argmax(Xb @ W.T, axis=1)
++
++
++def macro_f1(y_true, y_pred, k=3) -> float:
++    f1s = []
++    for c in range(k):
++        tp = np.sum((y_pred == c) & (y_true == c))
++        fp = np.sum((y_pred == c) & (y_true != c))
++        fn = np.sum((y_pred != c) & (y_true == c))
++        p = tp / max(tp + fp, 1)
++        r = tp / max(tp + fn, 1)
++        f1s.append(2 * p * r / max(p + r, 1e-12))
++    return float(np.mean(f1s))
++
++
++def qwk(y_true, y_pred, k=3) -> float:
++    """Quadratic-weighted Cohen's kappa (doc S10.4): the correct ordinal
++    loss - confusing novice with expert costs 4x an adjacent slip."""
++    y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
++    O = np.array([[np.sum((y_true == i) & (y_pred == j))
++                   for j in range(k)] for i in range(k)], dtype=np.float64)
++    W = np.array([[(i - j) ** 2 for j in range(k)] for i in range(k)],
++                 dtype=np.float64) / (k - 1) ** 2
++    hist_t, hist_p = O.sum(1), O.sum(0)
++    E = np.outer(hist_t, hist_p) / max(O.sum(), 1)
++    denom = float((W * E).sum())
++    return float(1.0 - (W * O).sum() / denom) if denom > 1e-12 else 0.0
++
++
++def loso_classify(z_vectors: Dict[str, dict], labels: Dict[str, int],
++                  features: Sequence[str] = CORE7, k: int = 3) -> dict:
++    """Leave-one-OPERATOR-out CV (never episode splits - doc S10.4) of a
++    multinomial logistic model on the per-operator z-vectors; reports
++    accuracy, macro-F1 and QWK. statsmodels' ordinal (proportional-odds)
++    model is used instead when installed."""
++    ops = sorted(z_vectors)
++    X = np.array([[z_vectors[o][f] for f in features] for o in ops])
++    y = np.array([labels[o] for o in ops])
++    preds = np.zeros_like(y)
++    use_ordinal = False
++    try:
++        from statsmodels.miscmodels.ordinal_model import OrderedModel
++        use_ordinal = True
++    except ImportError:
++        pass
++    for i in range(len(ops)):
++        tr = np.arange(len(ops)) != i
++        if use_ordinal:
++            try:
++                import warnings
++                with warnings.catch_warnings():
++                    warnings.simplefilter("ignore")
++                    m = OrderedModel(y[tr], X[tr], distr="logit").fit(
++                        method="bfgs", disp=False)
++                preds[i] = int(np.argmax(
++                    m.predict(X[i:i + 1])[0]))
++                continue
++            except Exception:
++                pass
++        W = _softmax_fit(X[tr], y[tr], k)
++        preds[i] = _softmax_predict(W, X[i:i + 1])[0]
++    return dict(accuracy=float(np.mean(preds == y)),
++                macro_f1=macro_f1(y, preds, k), qwk=qwk(y, preds, k),
++                predictions={o: int(p) for o, p in zip(ops, preds)},
++                model="ordinal_logit" if use_ordinal else
++                "multinomial_logit")
++
++
++# ===========================================================================
++# S10.5 - Method D: online estimators
++# ===========================================================================
++class BetaBernoulliTracker:
++    """Beta(alpha, beta) posterior on per-episode success (doc worked
++    example: 7/10 -> Beta(8,4), mean 0.667, 90% CI [0.44, 0.86])."""
++
++    def __init__(self, alpha: float = 1.0, beta: float = 1.0):
++        self.a, self.b = alpha, beta
++
++    def update(self, success: bool):
++        self.a += bool(success)
++        self.b += not bool(success)
++        return self
++
++    @property
++    def mean(self):
++        return self.a / (self.a + self.b)
++
++    def ci(self, level: float = 0.90):
++        from scipy.stats import beta as _beta
++        lo = (1 - level) / 2
++        return (float(_beta.ppf(lo, self.a, self.b)),
++                float(_beta.ppf(1 - lo, self.a, self.b)))
++
++    def tier(self, bands=(0.55, 0.90)):
++        m = self.mean
++        return ("novice" if m < bands[0] else
++                "expert" if m >= bands[1] else "intermediate")
++
++
++class EWMAComposite:
++    """S-hat <- (1-lambda) S-hat + lambda S_episode; lambda sets the
++    forgetting horizon and doubles as the drift handling (doc S10.5)."""
++
++    def __init__(self, lam: float = 0.25):
++        self.lam, self.s = lam, None
++
++    def update(self, s_episode: float):
++        self.s = (s_episode if self.s is None
++                  else (1 - self.lam) * self.s + self.lam * s_episode)
++        return self.s
++
++
++def _logistic_newton(X, y, iters=50, l2=1e-6):
++    w = np.zeros(X.shape[1])
++    for _ in range(iters):
++        p = 1.0 / (1.0 + np.exp(-(X @ w)))
++        g = X.T @ (p - y) + l2 * w
++        Wd = p * (1 - p) + 1e-9
++        H = (X * Wd[:, None]).T @ X + l2 * np.eye(X.shape[1])
++        w -= np.linalg.solve(H, g)
++    return w
++
++
++def rasch_fit(trials: List[dict]) -> dict:
++    """Difficulty-adjusted ability (doc S10.5, IRT/Rasch):
++    P(success) = sigmoid(theta_op - b_task), fitted as a logistic
++    regression with operator and task one-hot effects (first task's
++    difficulty pinned to its given value for identifiability when task
++    difficulties are supplied, else b_task[0] = 0).
++
++    trials: dicts with operator, task, k, n (or success 0/1 with n=1);
++    optionally b (known task difficulty) to fix task parameters and fit
++    abilities only - the doc's worked example: 9/10 at b=-1 and 5/10 at
++    b=+1 gives theta-hat = 1.05 with fitted P 0.89 / 0.51."""
++    ops = sorted({t["operator"] for t in trials})
++    tasks = sorted({t["task"] for t in trials})
++    known_b = {t["task"]: t["b"] for t in trials if "b" in t}
++    rows_X, rows_y = [], []
++    for t in trials:
++        k = int(t.get("k", t.get("success", 0)))
++        n = int(t.get("n", 1))
++        for succ in [1] * k + [0] * (n - k):
++            x = np.zeros(len(ops) + (0 if known_b else len(tasks)))
++            x[ops.index(t["operator"])] = 1.0
++            off = 0.0
++            if known_b:
++                off = -known_b[t["task"]]
++            else:
++                x[len(ops) + tasks.index(t["task"])] = -1.0
++            rows_X.append((x, off))
++            rows_y.append(succ)
++    X = np.array([r[0] for r in rows_X])
++    off = np.array([r[1] for r in rows_X])
++    y = np.array(rows_y, dtype=np.float64)
++    # absorb offsets: P = sigmoid(Xw + off) -> augment
++    Xa = np.hstack([X, off[:, None]])
++    w = _logistic_newton_offset(Xa, y)
++    theta = {o: float(w[i]) for i, o in enumerate(ops)}
++    if known_b:
++        b = dict(known_b)
++    else:
++        b = {t: float(w[len(ops) + j]) for j, t in enumerate(tasks)}
++        shift = b[tasks[0]]
++        b = {t: v - shift for t, v in b.items()}
++        theta = {o: v - shift for o, v in theta.items()}
++    def p(o, task):
++        return 1.0 / (1.0 + math.exp(-(theta[o] - b[task])))
++    return dict(theta=theta, b=b, predict=p)
++
++
++def _logistic_newton_offset(Xa, y, iters=60, l2=1e-6):
++    """Newton with the last column as a FIXED-coefficient offset."""
++    d = Xa.shape[1] - 1
++    w = np.zeros(d)
++    for _ in range(iters):
++        eta = Xa[:, :d] @ w + Xa[:, d]
++        p = 1.0 / (1.0 + np.exp(-eta))
++        g = Xa[:, :d].T @ (p - y) + l2 * w
++        Wd = p * (1 - p) + 1e-9
++        H = (Xa[:, :d] * Wd[:, None]).T @ Xa[:, :d] + l2 * np.eye(d)
++        w -= np.linalg.solve(H, g)
++    return w
++
++
++# ===========================================================================
++# S11 - validation utilities
++# ===========================================================================
++def spearman_rho(x: Sequence[float], y: Sequence[float]) -> float:
++    rx = np.argsort(np.argsort(x))
++    ry = np.argsort(np.argsort(y))
++    if rx.std() < 1e-12 or ry.std() < 1e-12:
++        return float("nan")
++    return float(np.corrcoef(rx, ry)[0, 1])
++
++
++def test_retest_icc(scores_a: Dict[str, float],
++                    scores_b: Dict[str, float]) -> float:
++    """Split-battery reliability: the same ICC(1,1) machinery the
++    operator-variance analysis uses, pointed at the classifier (two
++    disjoint episode batches per operator)."""
++    groups = {o: [scores_a[o], scores_b[o]]
++              for o in scores_a if o in scores_b}
++    return aqi_stats.icc_oneway(groups)["icc"]
++
++
++# ===========================================================================
++# real AQI-HIL-SERL training logs -> the same pipeline (doc S12 schema)
++# ===========================================================================
++def features_from_aqi_logs(run_dir: str, pos_slice=(0, 3),
++                           dt: float = 1.0 / CONTROL_HZ,
++                           budget_s: Optional[float] = None) -> dict:
++    """Consume one aqi_logs run (steps/segments/episodes.jsonl) and
++    return dict(episode_rows, interventions, meta) ready for
++    aggregate_operator. Execution features come from the logged proprio
++    positions (pos_slice into `state`) and f_norm; Role-2 features from
++    the segment records, including the mean-A-hat aggregates (the AQI
++    quality numerator re-aggregated per operator, doc S9.5) and - via
++    the logged mu_q - the onset margin dV_on = median(mu_q pre-onset) -
++    mu_q(onset) and the recovered value dV_rec."""
++    import json as _json
++    import os as _os
++
++    def _rd(name):
++        path = _os.path.join(run_dir, name)
++        if not _os.path.exists(path):
++            return []
++        with open(path) as f:
++            return [_json.loads(l) for l in f if l.strip()]
++
++    steps, segs, eps = _rd("steps.jsonl"), _rd("segments.jsonl"), \
++        _rd("episodes.jsonl")
++    meta = {}
++    mp = _os.path.join(run_dir, "meta.json")
++    if _os.path.exists(mp):
++        with open(mp) as f:
++            meta = _json.load(f)
++
++    ep_ids = sorted({s.get("episode", 0) for s in steps})
++    by_ep = {e: [s for s in steps if s.get("episode", 0) == e]
++             for e in ep_ids}
++    succ_by_ep = {e.get("episode", i): bool(e.get("success", False))
++                  for i, e in enumerate(eps)}
++
++    ep_rows = []
++    for e in ep_ids:
++        est = by_ep[e]
++        if not est or "state" not in est[0]:
++            continue
++        P = np.array([s["state"][pos_slice[0]:pos_slice[1]]
++                      for s in est], dtype=np.float64)
++        F = np.array([s.get("f_norm", 0.0) for s in est])
++        ep_rows.append(episode_features(
++            dict(positions=P, forces=F, contact=F > 0.1,
++                 success=succ_by_ep.get(e, False), attempts=1),
++            dt=dt, budget_s=budget_s or len(est) * dt))
++
++    seg_records, succ_given_takeover = [], []
++    for g in segs:
++        rec = dict(g)
++        e = g.get("episode")
++        est = by_ep.get(e, [])
++        if est and "mu_q" in est[0]:
++            mus = [s["mu_q"] for s in est]
++            onset = int(g.get("start_step", 0))
++            onset = min(max(onset, 0), len(mus) - 1)
++            pre = mus[max(0, onset - 10):onset] or mus[:1]
++            rec["dv_on"] = float(np.median(pre) - mus[onset])
++            hb = min(onset + int(g.get("length", 1)), len(mus) - 1)
++            rec["dv_rec"] = float(mus[hb] - mus[onset])
++        seg_records.append(rec)
++        if g.get("episode_success") is not None:
++            succ_given_takeover.append(bool(g["episode_success"]))
++    interv = intervention_features(seg_records, succ_given_takeover)
++    total = max(len(steps), 1)
++    interv["intervention_rate"] = \
++        sum(int(s.get("intervening", False)) for s in steps) / total
++    return dict(episode_rows=ep_rows, interventions=interv, meta=meta)
+--- /dev/null
++++ b/examples/collect_synthetic_demos.py
+@@ -0,0 +1,139 @@
++"""Role 1 - collect synthetic demonstrations (methodology doc S5).
++
++Runs a SyntheticOperator closed-loop from reset to termination and
++writes transitions in the SAME pkl format as examples/record_demos.py
++(observations / actions / next_observations / rewards / masks / dones /
++infos), so the resulting file drops straight into --demo_path of any
++training script. Ground truth (R2) - the operator's theta, s, tier and
++per-episode outcomes - is written to a sidecar JSON next to the pkl.
++
++The filtering policy (doc S5 step 4) is explicit: --filtered keeps only
++successful episodes (the HIL-SERL default; skill then manifests as
++quality variation among successes plus attempts-per-kept-demo cost);
++--nofiltered keeps everything (the harsher regime for a quality-aware
++learner, which must down-weight actively harmful data).
++
++Default environment is the 2-D toy insertion study; pass a different
++env via --env module:factory (a zero-arg callable returning a gym env
++exposing a `phase_oracle` attribute, or use --oracle_checkpoint-style
++integration in train_aqi_rlpd.py for policy oracles).
++
++Examples:
++    python collect_synthetic_demos.py --profile expert --episodes 20 \
++        --out ./demos/expert_toy.pkl
++    python collect_synthetic_demos.py --profile s=0.35 --nofiltered \
++        --episodes 30 --seed 7 --out ./demos/s035_unfiltered.pkl
++"""
++
++import copy
++import importlib
++import json
++import os
++import pickle as pkl
++
++import numpy as np
++from absl import app, flags
++
++from serl_launcher.aqi.operator_model import (SyntheticOperator,
++                                              make_operator_theta)
++from serl_launcher.aqi.toy_insertion import (BUDGET_S, ToyInsertionEnv,
++                                             ToyInsertionOracle)
++
++FLAGS = flags.FLAGS
++flags.DEFINE_string("profile", "expert",
++                    "operator profile: tier name, 'op1'..'op4', 's=0.7',"
++                    " or 'exec=expert,mon=novice'")
++flags.DEFINE_integer("episodes", 20, "episodes to KEEP (filtered) or to"
++                     " run (unfiltered)")
++flags.DEFINE_integer("max_attempts", 400, "attempt cap in filtered mode")
++flags.DEFINE_boolean("filtered", True, "keep only successful episodes"
++                     " (doc S5 step 4)")
++flags.DEFINE_boolean("jitter", False, "apply per-operator theta jitter")
++flags.DEFINE_integer("seed", 0, "seed (R6: same seed => same demos)")
++flags.DEFINE_string("out", "./synthetic_demos.pkl", "output pkl path")
++flags.DEFINE_string("env", "", "optional 'module:factory' for a custom"
++                    " env with a phase_oracle attribute")
++flags.DEFINE_string("operator_id", "", "override operator id in logs")
++
++
++def build_env_and_oracle():
++    if FLAGS.env:
++        mod, fac = FLAGS.env.split(":")
++        env = getattr(importlib.import_module(mod), fac)()
++        oracle = getattr(env, "phase_oracle")
++        budget = getattr(env, "budget_s", BUDGET_S)
++    else:
++        env = ToyInsertionEnv(seed=FLAGS.seed)
++        oracle = ToyInsertionOracle()
++        budget = BUDGET_S
++    return env, oracle, budget
++
++
++def main(_):
++    rng = np.random.default_rng(FLAGS.seed)
++    theta = make_operator_theta(FLAGS.profile, rng=rng,
++                                jitter=FLAGS.jitter,
++                                operator_id=FLAGS.operator_id or None)
++    env, oracle, budget = build_env_and_oracle()
++    op = SyntheticOperator(oracle, theta,
++                           rng=np.random.default_rng(FLAGS.seed + 17))
++
++    transitions, ep_meta = [], []
++    kept = attempts = 0
++    while kept < FLAGS.episodes and attempts < FLAGS.max_attempts:
++        ep_seed = FLAGS.seed * 100000 + attempts
++        obs, info = env.reset(seed=ep_seed)
++        op.reset()
++        traj, done, ep_ret, n = [], False, 0.0, 0
++        while not done:
++            a = np.asarray(op.act(obs), dtype=np.float32)
++            next_obs, rew, term, trunc, info = env.step(a)
++            done = bool(term or trunc)
++            traj.append(copy.deepcopy(dict(
++                observations=obs, actions=a, next_observations=next_obs,
++                rewards=float(rew), masks=1.0 - float(done),
++                dones=float(done),
++                infos=dict(succeed=bool(info.get("succeeded", False))),
++            )))
++            obs = next_obs
++            ep_ret += rew
++            n += 1
++        success = bool(info.get("succeeded", False))
++        attempts += 1
++        keep = success or (not FLAGS.filtered)
++        if keep:
++            transitions.extend(traj)
++            kept += 1
++        ep_meta.append(dict(attempt=attempts - 1, seed=ep_seed, kept=keep,
++                            success=success, steps=n,
++                            duration_s=n / 10.0,
++                            commit_err=(op.commit_events[0][1]
++                                        if op.commit_events else None),
++                            attempts_within=op.n_approaches))
++        print(f"[{attempts:3d}] success={success} kept={keep} "
++              f"steps={n} (kept {kept}/{FLAGS.episodes})")
++
++    os.makedirs(os.path.dirname(os.path.abspath(FLAGS.out)), exist_ok=True)
++    with open(FLAGS.out, "wb") as f:
++        pkl.dump(transitions, f)
++    succ_total = sum(m["success"] for m in ep_meta)
++    sidecar = dict(
++        profile=FLAGS.profile, theta=theta.as_dict(),
++        filtered=bool(FLAGS.filtered), seed=FLAGS.seed,
++        episodes_kept=kept, attempts=attempts,
++        attempts_per_kept=attempts / max(kept, 1),
++        success_rate=succ_total / max(attempts, 1),
++        budget_s=budget, episodes=ep_meta,
++    )
++    side_path = os.path.splitext(FLAGS.out)[0] + "_groundtruth.json"
++    with open(side_path, "w") as f:
++        json.dump(sidecar, f, indent=1)
++    print(f"\nwrote {len(transitions)} transitions from {kept} episodes "
++          f"to {FLAGS.out}")
++    print(f"ground truth (theta, s, outcomes) -> {side_path}")
++    print(f"attempts per kept demo: {sidecar['attempts_per_kept']:.2f} "
++          f"(the human-cost currency, doc S9.1)")
++
++
++if __name__ == "__main__":
++    app.run(main)
+--- /dev/null
++++ b/examples/operator_skill.py
+@@ -0,0 +1,264 @@
++"""Operator skill assessment CLI (methodology doc Part B).
++
++Two subcommands (via --mode):
++
++  assess             one feature vector + tier per operator from real
++                     or synthetic interaction data. Inputs: --log_root
++                     with one AQI-log run directory per operator (dir
++                     name = operator id), and/or --demo_glob matching
++                     collect_synthetic_demos outputs. Runs Method A
++                     (composite, tertile or --cuts), Method B (k-means,
++                     only if >= 8 operators; small-cohort warning under
++                     15 per doc S10.3), Method D (Beta-Bernoulli per
++                     operator), and Method C when --labels_json gives
++                     ground-truth tiers. Writes skill_report.md + .json
++                     into --out_dir.
++
++  validate-synthetic the doc S11 closed loop on the toy study: jittered
++                     tier cohort -> full pipeline -> accuracy / macro-F1
++                     / QWK / Spearman rho(S, s) / episodes-needed curve
++                     / test-retest ICC, written to --out_dir. This is
++                     the gate that must pass before the pipeline is
++                     trusted on humans (and its thresholds are the
++                     re-anchoring caveat's reminder).
++
++Examples:
++    python operator_skill.py --mode assess \
++        --log_root ./campaigns/c1/aqi_logs --out_dir ./skill_c1
++    python operator_skill.py --mode validate-synthetic --out_dir ./val
++"""
++
++import glob
++import json
++import os
++import pickle as pkl
++
++import numpy as np
++from absl import app, flags
++
++from serl_launcher.aqi import skill as SK
++from serl_launcher.aqi.operator_model import (jitter_theta,
++                                              make_operator_theta,
++                                              theta_from_scale)
++from serl_launcher.aqi.toy_insertion import generate_population
++
++FLAGS = flags.FLAGS
++flags.DEFINE_string("mode", "assess", "assess | validate-synthetic")
++flags.DEFINE_string("log_root", "", "dir of per-operator AQI-log runs")
++flags.DEFINE_string("demo_glob", "", "glob of demo pkls (operator id ="
++                    " file stem); *_groundtruth.json sidecars are used"
++                    " for success labels when present")
++flags.DEFINE_string("labels_json", "", "optional {operator: tier} truth"
++                    " for Method C (tiers: novice/intermediate/expert)")
++flags.DEFINE_string("out_dir", "./skill_report", "output directory")
++flags.DEFINE_list("cuts", None, "optional composite cuts 'lo,hi' from"
++                  " anchor operators (skewed cohorts, doc S10.2)")
++flags.DEFINE_float("budget_s", 15.0, "episode budget for censoring")
++flags.DEFINE_string("pos_slice", "0:3", "state slice for positions in"
++                    " AQI logs, e.g. 0:3")
++# validate-synthetic knobs
++flags.DEFINE_integer("val_ops_per_tier", 10, "")
++flags.DEFINE_integer("val_episodes", 12, "")
++flags.DEFINE_integer("val_seed", 3, "")
++
++TIERS = ["novice", "intermediate", "expert"]
++
++
++def _demo_episode_rows(pkl_path, budget_s):
++    """Rebuild per-episode trajectories from a demo pkl (episode ends
++    where dones==1) + sidecar ground truth when present."""
++    with open(pkl_path, "rb") as f:
++        transitions = pkl.load(f)
++    side = os.path.splitext(pkl_path)[0] + "_groundtruth.json"
++    rows, P = [], []
++    for tr in transitions:
++        obs = tr["observations"]
++        state = obs["state"] if isinstance(obs, dict) else obs
++        P.append(np.asarray(state, dtype=np.float64)[:3]
++                 if len(np.shape(state)) == 1 else np.asarray(state)[0][:3])
++        if tr.get("dones", 0):
++            arr = np.array(P)
++            rows.append(SK.episode_features(
++                dict(positions=arr[:, :2] if arr.shape[1] >= 2 else arr,
++                     success=bool(tr["infos"].get("succeed", False)),
++                     attempts=1),
++                budget_s=budget_s))
++            P = []
++    meta = {}
++    if os.path.exists(side):
++        with open(side) as f:
++            meta = json.load(f)
++    return rows, meta
++
++
++def cmd_assess():
++    os.makedirs(FLAGS.out_dir, exist_ok=True)
++    lo, hi = (int(x) for x in FLAGS.pos_slice.split(":"))
++    vecs, extra = {}, {}
++    if FLAGS.log_root:
++        for run in sorted(glob.glob(os.path.join(FLAGS.log_root, "*"))):
++            if not os.path.isdir(run):
++                continue
++            oid = os.path.basename(run)
++            r = SK.features_from_aqi_logs(run, pos_slice=(lo, hi),
++                                          budget_s=FLAGS.budget_s)
++            if not r["episode_rows"]:
++                continue
++            vecs[oid] = SK.aggregate_operator(
++                r["episode_rows"], FLAGS.budget_s, r["interventions"])
++            extra[oid] = dict(source="aqi_logs", meta=r["meta"])
++    for path in sorted(glob.glob(FLAGS.demo_glob)) if FLAGS.demo_glob \
++            else []:
++        oid = os.path.splitext(os.path.basename(path))[0]
++        rows, meta = _demo_episode_rows(path, FLAGS.budget_s)
++        if not rows:
++            continue
++        vecs[oid] = SK.aggregate_operator(rows, FLAGS.budget_s)
++        extra[oid] = dict(source="demos", ground_truth=meta.get("theta"))
++    if not vecs:
++        raise SystemExit("no operator data found (check --log_root /"
++                         " --demo_glob)")
++
++    feats = [f for f in SK.CORE7
++             if any(np.isfinite(v.get(f, np.nan)) for v in vecs.values())]
++    Z = SK.normalize_features(vecs, feats)
++    S = {o: SK.composite_score(Z[o], feats) for o in Z}
++    cuts = tuple(float(x) for x in FLAGS.cuts) if FLAGS.cuts else None
++    comp = SK.composite_tiers(S, cuts=cuts)
++
++    out = dict(features_used=feats, operators={}, composite=comp)
++    for o in sorted(vecs):
++        bt = SK.BetaBernoulliTracker(
++            1 + vecs[o]["k_success"],
++            1 + vecs[o]["n_episodes"] - vecs[o]["k_success"])
++        out["operators"][o] = dict(
++            features={k: v for k, v in vecs[o].items()
++                      if isinstance(v, (int, float)) and np.isfinite(v)},
++            z={f: Z[o][f] for f in feats}, composite=S[o],
++            tier_composite=comp["tiers"][o],
++            beta_mean=bt.mean, beta_ci90=bt.ci(0.90),
++            tier_beta=bt.tier(), **extra.get(o, {}))
++    if len(vecs) >= 8:
++        cl = SK.cluster_operators(Z, feats,
++                                  sr={o: vecs[o]["sr"] for o in vecs},
++                                  rng=np.random.default_rng(0))
++        out["clustering"] = dict(tiers=cl["tiers"],
++                                 stability=cl["stability"],
++                                 small_cohort_warning=cl[
++                                     "small_cohort_warning"])
++    if FLAGS.labels_json:
++        with open(FLAGS.labels_json) as f:
++            labels = {o: TIERS.index(t) for o, t in json.load(f).items()
++                      if o in Z}
++        if len(labels) >= 6:
++            out["loso"] = SK.loso_classify(
++                {o: Z[o] for o in labels}, labels, feats)
++
++    with open(os.path.join(FLAGS.out_dir, "skill_report.json"), "w") as f:
++        json.dump(out, f, indent=1, default=float)
++    _write_md(out, vecs, feats)
++    print(f"skill report -> {FLAGS.out_dir}/skill_report.md")
++
++
++def _write_md(out, vecs, feats):
++    lines = ["# Operator skill report", "",
++             f"Features used: {', '.join(feats)}",
++             f"Composite cuts: {np.round(out['composite']['cuts'], 3)}",
++             "", "| operator | n | SR | KM med T | composite S | tier "
++             "(A) | Beta mean [90% CI] | tier (D) |",
++             "|---|---|---|---|---|---|---|---|"]
++    for o, d in sorted(out["operators"].items()):
++        v = vecs[o]
++        ci = d["beta_ci90"]
++        lines.append(
++            f"| {o} | {v['n_episodes']} | {v['sr']:.2f} | "
++            f"{v['t_km_median']:.1f} | {d['composite']:+.2f} | "
++            f"{d['tier_composite']} | {d['beta_mean']:.2f} "
++            f"[{ci[0]:.2f},{ci[1]:.2f}] | {d['tier_beta']} |")
++    if "clustering" in out:
++        lines += ["", f"k-means tiers (stability "
++                  f"{out['clustering']['stability']:.2f}"
++                  + (", SMALL-COHORT WARNING: <15 operators"
++                     if out['clustering']['small_cohort_warning'] else "")
++                  + "): " + json.dumps(out["clustering"]["tiers"])]
++    if "loso" in out:
++        l = out["loso"]
++        lines += ["", f"LOSO ({l['model']}): acc={l['accuracy']:.2f} "
++                  f"macro-F1={l['macro_f1']:.2f} QWK={l['qwk']:.2f}"]
++    lines += ["", "Caveats: composite tertiles assume a roughly balanced"
++              " cohort; intervention statistics compare only at matched"
++              " training phase; synthetic validation licenses ordinal"
++              " claims, thresholds re-anchor on human data (doc S11)."]
++    with open(os.path.join(FLAGS.out_dir, "skill_report.md"), "w") as f:
++        f.write("\n".join(lines) + "\n")
++
++
++def cmd_validate():
++    os.makedirs(FLAGS.out_dir, exist_ok=True)
++    rng = np.random.default_rng(0)
++    thetas = []
++    for tier in TIERS:
++        for j in range(FLAGS.val_ops_per_tier):
++            th = jitter_theta(make_operator_theta(tier), rng)
++            th.operator_id, th.tier = f"{tier[:3]}{j}", tier
++            thetas.append(th)
++    pop = generate_population(thetas, FLAGS.val_episodes,
++                              seed0=FLAGS.val_seed)
++    truth = {t.operator_id: TIERS.index(t.tier) for t in thetas}
++    rows = {o: [SK.episode_features(t, budget_s=15.0, goal=(0.0, -20.0))
++                for t in tr] for o, tr in pop.items()}
++    vecs = {o: SK.aggregate_operator(r, 15.0) for o, r in rows.items()}
++    Z = SK.normalize_features(vecs, SK.CORE7)
++    S = {o: SK.composite_score(Z[o]) for o in Z}
++    comp = SK.composite_tiers(S)
++    acc_a = float(np.mean([comp["tiers"][o] == TIERS[truth[o]]
++                           for o in S]))
++    cl = SK.cluster_operators(Z, sr={o: vecs[o]["sr"] for o in vecs},
++                              rng=np.random.default_rng(1))
++    acc_b = float(np.mean([cl["tiers"][o] == TIERS[truth[o]] for o in Z]))
++    loso = SK.loso_classify(Z, truth)
++    sweep = []
++    for i, s in enumerate(np.linspace(0, 1, 9)):
++        th = theta_from_scale(float(s))
++        th.operator_id = f"s{i}"
++        sweep.append(th)
++    pop_s = generate_population(sweep, FLAGS.val_episodes, seed0=41)
++    vec_s = {o: SK.aggregate_operator(
++        [SK.episode_features(t, budget_s=15.0, goal=(0.0, -20.0))
++         for t in tr], 15.0) for o, tr in pop_s.items()}
++    Zs = SK.normalize_features(vec_s, SK.CORE7)
++    Ss = {o: SK.composite_score(Zs[o]) for o in Zs}
++    rho = SK.spearman_rho([Ss[f"s{i}"] for i in range(9)],
++                          list(range(9)))
++    half = {o: rows[o][0::2] for o in rows}
++    other = {o: rows[o][1::2] for o in rows}
++
++    def scores(rw):
++        v = {o: SK.aggregate_operator(r, 15.0) for o, r in rw.items()}
++        z = SK.normalize_features(v, SK.CORE7)
++        return {o: SK.composite_score(z[o]) for o in z}
++    icc = SK.test_retest_icc(scores(half), scores(other))
++    rep = dict(n_operators=len(thetas), episodes=FLAGS.val_episodes,
++               method_a_accuracy=acc_a, composite_cuts=comp["cuts"],
++               method_b_accuracy=acc_b, kmeans_stability=cl["stability"],
++               loso=loso, spearman_rho_vs_s=rho, test_retest_icc=icc)
++    with open(os.path.join(FLAGS.out_dir, "validation.json"), "w") as f:
++        json.dump(rep, f, indent=1, default=float)
++    print(json.dumps(rep, indent=1, default=float))
++    ok = (acc_b >= 0.9 and loso["qwk"] >= 0.8 and rho >= 0.9
++          and icc >= 0.75)
++    print(f"\nVALIDATION {'PASSED' if ok else 'BELOW TARGETS'} "
++          f"(doc S11 targets: clustering ~0.97, QWK high, rho>=0.9)")
++
++
++def main(_):
++    if FLAGS.mode == "assess":
++        cmd_assess()
++    elif FLAGS.mode == "validate-synthetic":
++        cmd_validate()
++    else:
++        raise SystemExit(f"unknown --mode {FLAGS.mode}")
++
++
++if __name__ == "__main__":
++    app.run(main)
+--- /dev/null
++++ b/docs/synthetic_operators_and_skill.md
+@@ -0,0 +1,103 @@
++# Synthetic Operators and Automatic Skill Assessment
++
++Implementation of the two-part methodology ("Synthetic Operator
++Behaviour and Automatic Skill Classification", working document, and
++"Synthetic Operator Models and Automatic Skill Assessment for
++HIL-SERL", v1.0 — both 22 Jul 2026) on top of AQI-HIL-SERL. Part A
++generates operator behaviour at graded, ground-truth-labelled skill
++levels for both operator roles (demonstrations, interventions); Part B
++types any operator — synthetic or human — from interaction logs.
++
++## What is NEW relative to AQI-HIL-SERL
++
++| Piece | File | Role (doc section) |
++|---|---|---|
++| Operator model | `serl_launcher/serl_launcher/aqi/operator_model.py` | theta (Tables 2+4), tier anchors, theta(s) interpolation, jitter, profiles op1–op4, perception→decision→motor `SyntheticOperator`, `PhaseOracle`/`PolicyOracle` (S3–S4) |
++| Intervention gate | `serl_launcher/serl_launcher/aqi/operator_gate.py` | `MonitoringSignal` z_t, SDT `SyntheticInterventionGate` (δ_in/m/L_react, p_miss, ρ_fa, δ_out/k, D_max), `SyntheticOperatorWrapper` at the SpaceMouse integration point (S6) |
++| Toy study | `serl_launcher/serl_launcher/aqi/toy_insertion.py` | the 2-D worked example env + oracle + population harness (S7) |
++| Skill pipeline | `serl_launcher/serl_launcher/aqi/skill.py` | Table-7 features (LDJ, SPARC, KM median, DTW, Â aggregates, ΔV_on…), Methods A–D, LOSO/QWK/ICC validation utilities, `features_from_aqi_logs` (S9–S11) |
++| Demo collector | `examples/collect_synthetic_demos.py` | Role 1 → repo-format demo pkl + ground-truth sidecar; filtered/unfiltered (S5) |
++| Skill CLI | `examples/operator_skill.py` | `--mode assess` (reports) and `--mode validate-synthetic` (the S11 loop) |
++
++Touched existing files: `examples/train_aqi_rlpd.py` (flags
++`--synthetic_operator`, `--synthetic_seed`, `--oracle_checkpoint`,
++`--synthetic_env_mm_per_unit`; env wrapping in the actor; theta into
++`meta.json`), `examples/experiment_pipeline.py` (`assess` subcommand +
++`operators.csv` annotation), `serl_launcher/serl_launcher/aqi/__init__.py`
++(exports), this file and pointers in README/walkthrough/protocol.
++Everything downstream of the wrapper — intervention routing, buffers,
++learner, the AQI gate and quality score — is untouched (requirement R5);
++`git diff` against the vanilla repo shows the cumulative AQI + operator
++delta, and `synthetic_operators_skill.patch` shows only this feature.
++
++## Requirements R1–R6 → where enforced
++
++Ordinal validity (R1): calibration test, three seeds, non-overlapping
++Wilson CIs and ordered secondaries. Ground truth (R2): theta/s/tier in
++every sidecar, `meta.json`, and `info["synthetic_operator"]`.
++Human-plausible errors (R3): latency deque, per-APPROACH bias resampled
++only on retract (the documented per-step-resampling pitfall is
++structurally impossible), signal-dependent noise, OU tremor, geometric
++pauses, whole-episode lapses ×2.5, q_rec recovery style, p_early
++premature commits. Both roles (R4): the same theta drives
++`collect_synthetic_demos.py` and the gate. Non-invasiveness (R5): the
++wrapper emits `info["intervene_action"]` with the executed action, byte-
++compatible with the SpaceMouse path. Determinism (R6): every random
++draw flows through seeded `np.random.Generator`s; the calibration test
++asserts byte-identical episodes per seed.
++
++## Calibration on the toy study (doc Table 5 pattern)
++
++200 episodes/tier, seeds 0–2: SR 0.29–0.33 < 0.78–0.80 < 0.99–1.00
++(all adjacent Wilson CIs disjoint); jam events 6.7–7.3 > 3.6–3.8 >
++0.6; alignment-at-commit 3.5–4.1 > 1.1 > 0.4 mm; s-sweep SR 0.34 →
++0.47 → 0.77 → 0.99 → 1.00 (doc: 0.34 → 1.00, monotone). Known
++divergence from the doc's own env: absolute jam counts differ (jam
++events here are contact rising edges + one event per 0.5 s of sustained
++grinding), and the novice successes-only median time lands at 5.8–7.9 s
++(doc 3.9 s) — the censoring direction differs but the LESSON (successes-
++only time is selection-biased; use the KM median) is identical and the
++KM median is what the pipeline reports. Per doc S7/S8 the absolute
++anchors are environment-specific; re-run the calibration in any new env
++and adjust theta anchors until this separation pattern reappears.
++
++## Classifier validation (doc S11 loop, 30 jittered ops × 12 episodes)
++
++Method A composite: tertile cuts −0.49/+0.54 (doc −0.49/+0.44),
++tier means −1.07/−0.01/+1.08, accuracy 1.00. Method B k-means: accuracy
++1.00, ARI 1.00, bootstrap stability 1.00 (doc 0.97/0.90). Method C LOSO
++ordinal logit: accuracy/macro-F1/QWK 1.00. Spearman ρ(S, true s) over a
++9-point sweep: 0.983. Episodes-needed curve (2/4/8/12): 0.72 → 0.85 →
++0.95 → 1.00 (doc shape 0.67 → 0.97). Split-battery test-retest ICC
++0.909. Method D doc vectors reproduce exactly: Beta(8,4) mean 0.667
++CI90 [0.44, 0.86]; Rasch θ̂=1.05 with P̂ 0.89/0.51. Reproduce with:
++`python examples/operator_skill.py --mode validate-synthetic`.
++
++## Usage
++
++Calibrate/validate the generator: run the module tests or
++`--mode validate-synthetic` above. Collect Role-1 demos:
++`python examples/collect_synthetic_demos.py --profile novice
++--episodes 20 --nofiltered --out demos/nov.pkl` (sidecar JSON carries
++theta and outcomes; `--filtered` reproduces the HIL-SERL successes-only
++regime and reports attempts-per-kept-demo). Drive training with a
++synthetic operator (Exp-1 cells): `python examples/train_aqi_rlpd.py
++--actor --exp_name=... --aqi_mode=aqi --synthetic_operator op3
++--synthetic_seed 5 --operator_id op3` — sim envs expose a
++`phase_oracle` attribute (doc option A); otherwise pass
++`--oracle_checkpoint` (option B) plus `--synthetic_env_mm_per_unit`
++for normalized action spaces. Assess operators from campaign logs:
++`python examples/experiment_pipeline.py assess --campaign <dir>` or the
++standalone `operator_skill.py --mode assess --log_root <runs>
++[--demo_glob 'demos/*.pkl'] [--labels_json truth.json]`.
++
++## Pitfalls the code enforces or surfaces (doc S13)
++
++Per-approach (not per-step) perceptual bias is structural. Censoring:
++capped means + KM medians everywhere; time comparisons flagged.
++Matched-phase intervention comparisons and critic-warm-up caveats are
++noted in reports (Â aggregates use the σ_Q-gated quality machinery).
++LOSO only, never episode splits. Clustering warns below 15 operators.
++Synthetic validation licenses ordinal claims; human thresholds must be
++re-anchored (report footer says so). Goodhart: keep assessed operators
++blind to the scoring details.

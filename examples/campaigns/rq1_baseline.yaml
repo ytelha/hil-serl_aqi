@@ -1,0 +1,122 @@
+# =====================================================================
+# rq1_baseline.yaml — RQ1 ONLY: "does the baseline depend on the operator?"
+#
+# Goal: prove that the plain HIL-SERL baseline (`hilserl`, 2 critics, no AQI)
+# produces a policy whose AUTONOMOUS success rate varies systematically with
+# WHICH operator trained it. This is a SINGLE-method dependency study — no AQI
+# comparison yet. It establishes the precondition every later RQ leans on
+# (docs/dependency_analysis.md §8: you can only claim AQI *reduces* dependence
+# once the baseline is shown to *have* a real, non-saturated skill gradient).
+#
+# Endpoint (per-method block emitted by run_campaign analyze for `hilserl`):
+#   ICC(1,1) high  +  operator_matters permutation-p < 0.05  +  monotone tier
+#   gradient (expert > intermediate > novice)  ->  "baseline depends on operator".
+# Secondary axis: steps-to-convergence ICC (does training COST depend on op?).
+#
+#   Smoke (headroom gate — RUN THIS FIRST):
+#     ./.venv/bin/python examples/run_campaign.py \
+#         --config examples/campaigns/rq1_baseline.yaml \
+#         --campaign runs/rq1_smoke --ops_per_tier 2 --seeds 2 --plan
+#   Full run:
+#     nohup ./.venv/bin/python examples/run_campaign.py \
+#         --config examples/campaigns/rq1_baseline.yaml \
+#         --campaign runs/rq1_baseline > runs/rq1_baseline.out 2>&1 &
+#
+# Any CLI flag overrides the matching field here.
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid                # HEADROOM. cylinder saturates the baseline to
+                                   # 100% (ICC uncomputable). cuboid keeps a real
+                                   # unsaturated gradient (probe: novice ~30% vs
+                                   # expert 100%). Switch to `cylinder` only if
+                                   # cuboid proves too unstable to eval cleanly.
+
+operators:                         # jittered POPULATION per tier: operator is the
+  expert: 5                        # random-effect GROUP, so we need >1/tier for a
+  intermediate: 5                  # real between-operator variance / ICC.
+  novice: 5
+  jitter: 0.15                     # within-tier spread (log-normal sigma)
+  sample_seed: 0                   # reproducible roster
+
+demos:
+  per_operator: 20                 # 20 (was 10): a stronger demo prior to stabilize
+  filtered: true                   # early training (the 0<->100% oscillation) + feed
+  max_attempts: 300                # demo pretraining. Online interventions add the
+                                   # second, skill-graded operator channel.
+
+methods:
+  - hilserl                        # THE baseline whose operator-dependence we prove
+                                   # (add `logged` here later if you also want the
+                                   #  same-architecture reference the AQI delta uses)
+
+replicates:
+  seeds: 3                         # within-operator repeats = the noise floor that
+  seed_base: 0                     # makes sigma2_within / ICC estimable (>=2 needed)
+
+budget:
+  mode: steps                      # EQUAL training for every cell: an ENV-STEP budget,
+                                   # NOT wall-clock. Heavy intervention slows the
+                                   # actor->learner, so a time budget gave the expert
+                                   # ~40% FEWER gradient steps than the novice in the
+                                   # same 60 min -> confounded skill with training amount.
+  steps_cap: 50000                 # env steps/cell: generous so even the slow, heavily-
+                                   # intervened expert cell can converge; convergence-stop
+                                   # ends fast cells (novice) early.
+  minutes_per_cell: 300            # SAFETY wall-clock cap only (anti-hang), NOT the budget.
+  converge_success: 0.9            # early-STOP + checkpoint a policy that reliably
+  converge_window: 20              # solves AUTONOMOUSLY (>=90% over 20 episodes) ->
+  converge_min_steps: 3000         # stable eval checkpoint + steps-to-converge axis.
+  converge_eval_threshold: 0.6     # ruler-aligned mini-eval gate for convergence:
+                                   # avoid 'converged on easy randomized resets' when
+                                   # fixed-pose autonomous skill is still poor.
+  converge_eval_max_steps: 300
+  converge_eval_poses:             # [dx_m, dyaw_rad] MIRROR the frozen ruler
+                                   # (dx -16..16mm, yaw 0) so the gate is a true
+                                   # subset of the eval grid -- not an easier/off-
+                                   # axis set. 5 poses span the full lateral range.
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0                   # campaign-wide cap (0 = unlimited, resumable)
+  learner_max_steps: 1000000
+  demo_pretrain: true              # WARM-START the learner on demo-only gradient
+  demo_pretrain_steps: 5000        # steps before online RL, so the actor connects to
+                                   # a competent BC-like prior instead of a random net
+                                   # (attacks the early-training instability directly).
+  demo_pretrain_batch_size: 0      # 0 = use config.batch_size.
+
+aqi:
+  synthetic_intervention_mode: signal   # SDT-gate handback (NOT latch): operator
+                                        # hands control back so the policy practices
+                                        # finishing -> autonomous SR is meaningful
+                                        # and convergence can actually fire.
+
+eval:                              # frozen, hash-locked ruler (operator-independent)
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5                        # MEAN over the last 5 checkpoints, not the last
+                                   # one -> de-noises the training oscillation that
+                                   # makes a single-checkpoint SR unreliable.
+  select: best_window              # report the best mean over `window_k` CONSECUTIVE
+  window_k: 3                      # checkpoints (sustained competence) -- fixes both
+                                   # the last-K trough artifact AND best-of-1 bias.
+                                   # scores ALL checkpoints (offline, no realtime).
+
+gpu:
+  jax_platform: cuda               # cuda or cpu. cpu = OOM-safe (baseline hilserl
+  mem_learner: 0.6                 # is 2-critic + no counterfactual, so GPU is fine).
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # off = disabled; offline stores under each
+                                   # checkpoint without requiring an API key.
+
+analysis:
+  baseline: hilserl                # single method -> delta is vs itself (harmless)
+  plots: true                      # report/plots/*.png (sr_by_operator, icc, spread)

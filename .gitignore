@@ -1,0 +1,139 @@
+# =============================================================================
+# hil-serl_aqi  —  repository .gitignore
+#
+# Ignores Python build artifacts, virtual environments, editor/OS cruft, and all
+# GENERATED experiment data (demonstrations, checkpoints, replay buffers, logs,
+# videos). Source code, configs, docs, and the tracked pretrained weights
+# (examples/experiments/resnet10_params.pkl) are kept.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Generated experiment data & artifacts
+# -----------------------------------------------------------------------------
+# Recorded / synthetic demonstrations (record_demos.py -> ./demo_data/*.pkl)
+demo_data/
+/runs/
+examples/runs/
+**/demo_data/
+
+# Training run directories, checkpoints and replay buffers
+#   launcher writes examples/run_<task>_<method>/ ; older scripts use aqi_first_run/
+examples/run_*/
+**/aqi_first_run*/
+**/checkpoint_*/
+**/buffer/
+**/demo_buffer/
+*.ckpt
+
+# AQI trigger / intervention logs (serl_launcher/aqi/config.py log_dir = aqi_logs/)
+aqi_logs/
+**/aqi_logs/
+
+# Experiment tracking (Weights & Biases)
+wandb/
+**/wandb/
+
+# Rendered rollout / training videos
+*.mp4
+*.avi
+*.gif
+**/videos/
+
+# Misc analysis / rollout outputs
+*.npz
+outputs/
+results/
+text/
+tex/
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+# -----------------------------------------------------------------------------
+.venv/
+.venv-gpu/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# -----------------------------------------------------------------------------
+# Testing / typing / coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+.tox/
+.nox/
+
+# -----------------------------------------------------------------------------
+# Jupyter / IPython
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+*.log
+
+# -----------------------------------------------------------------------------
+# Editor / IDE  (keep the shared VS Code launcher: tasks.json / launch.json)
+# -----------------------------------------------------------------------------
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS junk
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Keep curated documentation assets (banners, diagrams, GIFs, etc.) even though
+# the video/image patterns above would otherwise match them.
+# -----------------------------------------------------------------------------
+!docs/**

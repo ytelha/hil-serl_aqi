@@ -1,0 +1,120 @@
+<mujoco model="PandaPegInsertionArena">
+  <!--
+    Peg-in-hole (peg insertion) scene for HIL-SERL / AQI-HIL-SERL in MuJoCo.
+
+    - Reuses the ported Franka Panda + Robotiq 2f85 model (panda.xml).
+    - A rigid peg is welded to the gripper base ("base" body) so the task is a
+      pregrasped 6-DoF insertion (setup_mode = single-arm-fixed-gripper), which
+      mirrors the real RAM / USB insertion tasks.
+    - A square socket ("hole" fixture) sits on the table. Clearances are chosen
+      so a human can teleoperate the insertion with a SpaceMouse.
+
+    Geometry knobs you may want to tune on your machine (see docs):
+      * hole body pos (x y)         : where the socket sits on the table
+      * wall inner opening          : insertion clearance (currently 0.032 m for a
+                                      0.022 m peg -> 0.005 m radial clearance)
+      * cavity top / depth          : how deep the peg must go
+    Contacts: the peg and socket share contype/conaffinity = 2 so the peg
+    collides ONLY with the socket (not the robot fingers or the floor), which
+    keeps the weld stable.
+  -->
+  <include file="panda.xml"/>
+
+  <option timestep=".002" noslip_iterations="5" noslip_tolerance="0"/>
+
+  <statistic center="0.4 0 0.3" extent=".8"/>
+
+  <visual>
+    <headlight diffuse=".4 .4 .4" ambient=".5 .5 .5"/>
+    <global azimuth="160" elevation="-20" offheight="480" offwidth="640"/>
+    <quality offsamples="8"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="32" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" reflectance="0"/>
+    <material name="peg_mat" rgba="0.2 0.45 0.85 1"/>
+    <material name="hole_mat" rgba="0.75 0.75 0.78 1"/>
+    <!-- EXACT peg / socket meshes copied from assets/peg_in_hole.xml. The peg is
+         a 12-vertex hexagonal prism (65.16 x 66.74 mm, 200 mm tall); the socket
+         is 6 convex wall meshes forming the mating hex bore. -->
+    <!-- peg cross-section shrunk 10% (scale x,y; length z unchanged) to add
+         ~3 mm radial clearance in the hex bore so a human can teleoperate the
+         insertion. Set scale back to "1 1 1" for the exact reference fit. -->
+    <mesh name="peg_mesh"  file="meshes_peg/peg1.obj" scale="0.9 0.9 1"/>
+    <mesh name="framing_mesh1" file="meshes_peg/framing1.obj"/>
+    <mesh name="framing_mesh2" file="meshes_peg/framing2.obj"/>
+    <mesh name="framing_mesh3" file="meshes_peg/framing3.obj"/>
+    <mesh name="framing_mesh4" file="meshes_peg/framing4.obj"/>
+    <mesh name="framing_mesh5" file="meshes_peg/framing5.obj"/>
+    <mesh name="framing_mesh6" file="meshes_peg/framing6.obj"/>
+  </asset>
+
+  <worldbody>
+    <!-- Operator / monitoring camera used by env.render() (training videos). A 3/4
+         isometric view from the front-right, elevated ~25 deg and aimed at the
+         socket, so the operator can judge BOTH lateral (x/y) alignment and
+         insertion depth at a glance. Not used for policy observations. -->
+    <camera name="front" pos="1.14 -0.64 0.72" mode="targetbody" target="hole" fovy="45"/>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="1 1 1" specular=".3 .3 .3"/>
+    <light pos="0.5 -.4 .8" dir="-0.3 0.3 -1" diffuse=".7 .7 .7" specular=".2 .2 .2"/>
+    <geom name="floor" size="3 3 0.01" type="plane" material="grid"/>
+
+    <!-- Peg: EXACT hex mesh (65.16 x 66.74 mm cross-section, 200 mm tall) copied
+         from assets/peg_in_hole.xml. Free body welded to the gripper base
+         (pregrasped). The mesh is flipped 180 deg about X (via the geom quat) so
+         the insertion tip = mesh -Z end points world-down like the gripper, and
+         recentered so the peg cross-section axis passes through the body origin. -->
+    <body name="peg" pos="0.5 0 0.3">
+      <freejoint name="peg"/>
+      <inertial pos="0 0 0" mass="0.15" diaginertia="8e-4 8e-4 2e-4"/>
+      <geom name="peg" type="mesh" mesh="peg_mesh" quat="0 1 0 0" pos="-0.002925 0.00072 0"
+            rgba="0.2 0.45 0.85 1" contype="2" conaffinity="2" condim="3"
+            friction="0.5 0.02 0.001" margin="0.001"
+            solimp="0.97 0.995 0.001" solref="0.003 1"/>
+      <!-- insertion tip = mesh -Z end, at body +Z (world-down when welded) -->
+      <site name="peg_tip" pos="0 0 0.1" size="0.005" rgba="1 0 0 0.8"/>
+      <!-- two wrist cameras on +X / -X sides, angled down/inward at the tip+hole -->
+      <camera name="wrist_1" pos="0.13 0 -0.03"  xyaxes="0 1 0 1 0 0.6"  fovy="60"/>
+      <camera name="wrist_2" pos="-0.13 0 -0.03" xyaxes="0 1 0 1 0 -0.6" fovy="60"/>
+    </body>
+
+    <!-- Socket: EXACT hex bore = 6 convex framing meshes from assets/peg_in_hole.xml.
+         Static fixture; the env sets its world pose at build time to align the bore
+         with the welded peg (matching yaw). The framing assembly is flipped 180 deg
+         about X (same as the peg) and recentered (framing_grp pos) so the bore axis
+         is at the hole-body origin -> peg-over-hole at equal orientation = mated. -->
+    <body name="hole" pos="0.5 0 0.22">
+      <geom name="hole_pedestal" type="box" pos="0 0 -0.16" size="0.11 0.11 0.06"
+            material="hole_mat" contype="0" conaffinity="0"/>
+      <geom name="hole_floor" type="box" pos="0 0 -0.105" size="0.11 0.11 0.006"
+            material="hole_mat" contype="2" conaffinity="2" condim="3" margin="0.001"/>
+      <body name="framing_grp" quat="1 0 0 0" pos="-0.01025 0.00658 0">
+        <geom name="framing1" type="mesh" mesh="framing_mesh1" pos="0.042064134 0.023200962 0" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+        <geom name="framing2" type="mesh" mesh="framing_mesh2" pos="-0.038937349 0.012553065 0" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+        <geom name="framing3" type="mesh" mesh="framing_mesh3" pos="0.047212387 -0.033504776 0" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+        <geom name="framing4" type="mesh" mesh="framing_mesh4" pos="-0.008573179 0.040974978 0" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+        <geom name="framing5" type="mesh" mesh="framing_mesh5" pos="-0.034547431 -0.037259578 0" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+        <geom name="framing6" type="mesh" mesh="framing_mesh6" pos="0.011485394 -0.049214426 0" rgba=".62 .62 .66 1" contype="2" conaffinity="2" condim="3" margin="0.001" solimp="0.97 0.995 0.001" solref="0.003 1"/>
+        <!-- opening (peg entry) at framing +Z, bore floor at framing -Z; sites on the bore axis -->
+        <site name="hole_top" pos="0.01025 -0.00658 0.1" size="0.006" rgba="0 1 0 0.6"/>
+        <site name="hole_bottom" pos="0.01025 -0.00658 -0.1" size="0.006" rgba="0 0 1 0.6"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <!-- Rigidly attach the peg to the gripper base. relpose is the peg pose in the
+         base frame: 0.12 m along base +z. Orientation identity => the peg body
+         frame equals the gripper base frame (the mesh is pre-flipped in the geom). -->
+    <weld name="peg_weld" body1="base" body2="peg" relpose="0 0 0.12 1 0 0 0"
+          solref="0.001 1" solimp="0.99 0.999 0.001"/>
+  </equality>
+
+  <sensor>
+    <framepos name="peg_tip_pos" objtype="site" objname="peg_tip"/>
+    <framepos name="hole_top_pos" objtype="site" objname="hole_top"/>
+    <framepos name="hole_bottom_pos" objtype="site" objname="hole_bottom"/>
+  </sensor>
+</mujoco>

@@ -1,0 +1,47 @@
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cylinder
+
+operators:            # one operator per tier
+  expert: 1
+  intermediate: 1
+  novice: 1
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 25
+  filtered: true
+  max_attempts: 400   # the novice needs more tries to reach 25 successes
+
+methods:              # the two arms
+  - hilserl           # baseline HIL-SERL
+  - active            # active gate (uncertainty-only, set below)
+
+aqi:                  # composition for the active arm (inert for hilserl)
+  trigger_terms: [uncertainty]   # the minimal trigger: ensemble disagreement only
+  trigger_combiner: max
+
+replicates:
+  seeds: 1            # one seed per operator (fast)
+
+budget:
+  mode: time           # use only wall-clock per cell; step cap is ignored
+  converge_success: 0.9
+  converge_window: 20
+  steps_cap: 8000
+  minutes_per_cell: 30   # wall-clock safety cap per cell
+  total_hours: 3         # wall-clock cap for the whole test
+
+eval:
+  dx_mm: [-12, -6, 0, 6, 12]   # small 5-pose grid = fast eval
+  yaw: [0.0]
+  reps: 1
+
+analysis:
+  baseline: hilserl
+  plots: true
+
+logging:
+  wandb: "off"   # off = disabled (unattended default); offline = local logs;
+                # online needs WANDB_API_KEY in the environment (no TTY here).
