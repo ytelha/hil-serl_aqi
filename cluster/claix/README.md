@@ -174,7 +174,8 @@ Results land in `runs/c7b/`, i.e. `$HPCWORK/aqi_runs/c7b/`:
 - `slurm/*.out`.
 
 Re-running the same command resumes and skips finished cells.
-`--dry` shows the plan without submitting.
+`--dry` shows the plan without submitting. `--exclude NODES` keeps the GPU
+jobs off nodes that failed the rendering check (see Troubleshooting).
 
 **Monitoring and control:**
 - `squeue --me`;
@@ -206,6 +207,8 @@ per environment step** than on the training machine's GPU. Consequences:
 | VS Code hangs at "Setting up SSH host" | the password/2FA prompt is waiting: `remote.SSH.showLoginTerminal: true`; or `ssh claix` once in a terminal (valid for 10 h) |
 | `Permission denied (publickey)` | key not set to "interactive" in the RegApp, or it expired (12 months) |
 | `[env.sh] WARNING: no working EGL device` | `python cluster/claix/egl_probe.py -v` inside a GPU job and send the output |
+| a job ends with exit code 3: `node nXXX: MuJoCo EGL rendering takes N s per frame` | that node's EGL path is broken (seen on n23g0004: 19 s per env step, then an abort in the renderer). Re-run the same `submit_campaign.sh` command with `--exclude nXXX` (comma-separate several); finished cells are skipped. If the node stays bad, report it to the ITC ServiceDesk with the job id |
+| `[roster] keeping the frozen operators/*.json` | expected for a campaign sampled before the roster fix: the existing operator files stay authoritative. `python examples/roster_audit.py runs/<name>` checks that every cell used its demos' operator |
 | learner never READY / `Address already in use` | two cells on one port: check `AQI_TRAINER_PORT` in the log header (`[env.sh] ... port=`); the job scripts pick a free pair per job |
 | job pending for long | `squeue --me --start`; GPU nodes are shared by all users; `--parallel` does not make it faster |
 | `ImportError` for easyhid / pyrealsense2 / pynput | `env.sh` was not sourced (it puts `cluster/claix/stubs` on the path) |
