@@ -77,10 +77,16 @@ fi
 say "3/5 packages"
 REQ="$(mktemp)"
 trap 'rm -f "${REQ}"' EXIT
+NODEPS=()
 if [ "${FALLBACK}" = 1 ]; then
     cp "${FALLBACK_REQ}" "${REQ}"
     warn "fallback requirements: versions may differ from the training machine"
 elif [ -f "${LOCK}" ]; then
+    # The lock is the COMPLETE installed set of the training machine, so it
+    # is installed as-is without re-solving (--no-deps): pip there accepted
+    # combinations a strict resolver rejects (dm-robotics-transformations
+    # 0.9.0 declares numpy<2 but runs with numpy 2.1.3).
+    NODEPS=(--no-deps)
     # drop: the repo's own packages (on PYTHONPATH via sim_env.sh), editable
     # installs, and robot-hardware packages (headless stand-ins); swap OpenCV
     # for its headless build (no libGL on compute nodes).
@@ -99,7 +105,7 @@ else
     exit 1
 fi
 echo "installing $(grep -c . "${REQ}") requirement lines"
-uv pip install --python "${REPO}/.venv/bin/python" -r "${REQ}"
+uv pip install --python "${REPO}/.venv/bin/python" "${NODEPS[@]}" -r "${REQ}"
 
 # ---- 4. runs folder + VS Code settings ---------------------------------------
 say "4/5 runs folder and VS Code settings"
