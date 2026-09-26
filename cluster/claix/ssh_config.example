@@ -1,0 +1,35 @@
+# Append to C:\Users\<you>\.ssh\config on your PC (create the file if needed)
+# and replace ab123456 with your HPC username (RegApp -> "HPC account").
+#
+# Do NOT add "PreferredAuthentications publickey": CLAIX must still be able to
+# ask for your HPC password + 2FA code (needed once every 10 hours even with a
+# registered SSH key).
+
+Host claix
+    HostName login23-1.hpc.itc.rwth-aachen.de
+    User ab123456
+    IdentityFile ~/.ssh/id_ed25519_claix
+    ServerAliveInterval 60
+    ServerAliveCountMax 5
+
+# second login node, if login23-1 is busy or rebooting (Mondays 6:00)
+Host claix2
+    HostName login23-2.hpc.itc.rwth-aachen.de
+    User ab123456
+    IdentityFile ~/.ssh/id_ed25519_claix
+    ServerAliveInterval 60
+    ServerAliveCountMax 5
+
+# login node WITH GPUs, for short GPU tests (30 min per process)
+Host claix-gpu
+    HostName login23-g-1.hpc.itc.rwth-aachen.de
+    User ab123456
+    IdentityFile ~/.ssh/id_ed25519_claix
+    ServerAliveInterval 60
+    ServerAliveCountMax 5
+
+# fast file transfer node (no modules, no Slurm)
+Host claix-copy
+    HostName copy23-1.hpc.itc.rwth-aachen.de
+    User ab123456
+    IdentityFile ~/.ssh/id_ed25519_claix

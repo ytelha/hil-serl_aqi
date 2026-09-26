@@ -1,5 +1,7 @@
 # !/usr/bin/env python3
 
+import os
+
 import jax
 from jax import nn
 import jax.numpy as jnp
@@ -323,7 +325,17 @@ def make_batch_augmentation_func(image_keys) -> callable:
     return augment_batch
 
 
-def make_trainer_config(port_number: int = 5588, broadcast_port: int = 5589):
+def make_trainer_config(port_number: int = None, broadcast_port: int = None):
+    """agentlace ports of the learner/actor pair: 5588 / 5589 by default.
+
+    AQI_TRAINER_PORT=<p> moves them to p / p+1, so several learner/actor pairs
+    can share one machine (e.g. separate Slurm jobs on one 4-GPU node). Both
+    processes of a pair read the same variable, so they always agree."""
+    base = int(os.environ.get("AQI_TRAINER_PORT", "0") or 0)
+    if port_number is None:
+        port_number = base if base > 0 else 5588
+    if broadcast_port is None:
+        broadcast_port = port_number + 1
     return TrainerConfig(
         port_number=port_number,
         broadcast_port=broadcast_port,

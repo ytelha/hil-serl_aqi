@@ -1,0 +1,55 @@
+# Fallback package list for cluster/claix/setup_env.sh --fallback, used only
+# when no lock (pip freeze of the training machine) is available.
+#
+# It follows serl_launcher/requirements.txt and franka_sim/requirements.txt,
+# minus the robot-hardware packages (headless stand-ins in stubs/) and with
+# the headless OpenCV build. Two deliberate differences from those files:
+#   * mujoco is NOT pinned to 2.3.7: 2.3.7 has no Python 3.12 wheel and was
+#     built against NumPy 1.x, while serl_launcher pins NumPy 2.1. The
+#     training machine therefore runs some newer MuJoCo; which one only its
+#     lock tells. Different MuJoCo versions can change the physics, so
+#     fallback results are NOT comparable with the training machine's.
+#   * jax is pinned to the version documented in docs/sim_walkthrough.md
+#     (0.4.35, CUDA 12), which supports the H100 (sm_90).
+
+jax[cuda12]==0.4.35
+flax>=0.10.0
+distrax>=0.1.2
+chex>=0.1.90
+optax>=0.2.4
+ml_collections>=0.1.0
+numpy>=2.1,<2.2
+scipy>=1.13.0
+absl-py>=0.12.0
+tqdm>=4.60.0
+wandb
+protobuf>=5.29.5,<6
+googleapis-common-protos<1.70
+tensorflow-cpu>=2.18.0
+tensorflow_probability>=0.25.0
+tf-keras
+einops>=0.6.1
+imageio[ffmpeg]>=2.31.1
+moviepy>=1.0.3
+gym>=0.26
+gymnasium==0.29.1
+natsort
+matplotlib
+pandas
+statsmodels
+pyyaml
+requests
+# franka_sim
+mujoco
+dm_env
+dm-robotics-transformations
+lxml
+# serl_launcher setup.py
+pyzmq
+typing_extensions
+opencv-python-headless
+lz4
+agentlace @ git+https://github.com/youliangtan/agentlace.git@cf2c337c5e3694cdbfc14831b239bd657bc4894d
+# serl_robot_infra (sim path only)
+pyquaternion
+defusedxml

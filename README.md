@@ -99,6 +99,8 @@ existing open-source human-in-the-loop RL framework and adds two contributions:
     ```
     On a headless / CPU machine also set `export MUJOCO_GL=egl`. See [docs/sim_walkthrough.md](./docs/sim_walkthrough.md) for the full walkthrough.
 
+    **On the RWTH cluster CLAIX** (Slurm, H100 nodes): see [cluster/claix/README.md](./cluster/claix/README.md) for a separate copy of the code, the environment setup, VS Code over SSH and campaign jobs.
+
 ## Overview and Code Structure
 
 The training pipeline runs two asynchronous nodes — an **actor** and a

@@ -1,0 +1,2 @@
+# cluster scripts run on Linux (CLAIX): keep LF even when edited on Windows
+cluster/** text eol=lf

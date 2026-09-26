@@ -624,6 +624,20 @@ class Cell:
         return f"{self.method}_{self.operator}_s{self.seed}"
 
 
+def _parse_shard(spec):
+    """'i/n' -> (i, n) with 0 <= i < n; '' -> None."""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    try:
+        i, n = (int(x) for x in spec.split("/"))
+    except ValueError:
+        raise SystemExit(f"[shard] expected 'i/n', got {spec!r}")
+    if not (n >= 1 and 0 <= i < n):
+        raise SystemExit(f"[shard] need 0 <= i < n, got {spec!r}")
+    return i, n
+
+
 def enumerate_cells(methods, roster, seeds):
     tier_of = {th.operator_id: th.tier for th in roster}
     cells = []
@@ -2414,6 +2428,16 @@ def build_arg_parser():
                    help="print every subprocess command instead of running it.")
     p.add_argument("--force", action="store_true",
                    help="bypass the shared-GPU pre-flight check.")
+    p.add_argument("--shard", default="",
+                   help="'i/n': train/eval only the cells with index %% n == i "
+                        "(0-based, in plan order) -- one Slurm array task per "
+                        "shard. Run the demos stage once beforehand and the "
+                        "analyze stage once afterwards (not per shard). A "
+                        "shard never rewrites the roster/grid/manifest of a "
+                        "campaign that already has them.")
+    p.add_argument("--list_cells", action="store_true",
+                   help="print the cell ids in plan order (one per line) and "
+                        "exit; writes nothing.")
     p.add_argument("--skip_trained", action="store_true", default=True,
                    help="skip a cell that finished before (has a .done marker); "
                         "partial/crashed cells are retrained from scratch "
@@ -2471,7 +2495,23 @@ def main(argv=None):
     # -- stage 1: roster + grid + manifest (always; cheap, deterministic) -----
     roster = sample_operators(tiers, _ops_effective(args), args.sample_seed,
                               args.jitter, args.unified_monitoring)
-    write_roster(roster, campaign)
+    if args.list_cells:
+        for cell in enumerate_cells(methods, roster, seeds):
+            print(cell.id)
+        return 0
+    shard = _parse_shard(args.shard)
+    # parallel shards of one campaign must not rewrite the shared files the
+    # prepare step already wrote (a reader could see a half-written file)
+    shared_written = ((campaign / "campaign.json").exists()
+                      and (campaign / "eval_grid.json").exists())
+    write_shared = not (shard and shared_written)
+    if shard and ("demos" in stages or "analyze" in stages):
+        raise SystemExit(
+            "[shard] run the demos stage once BEFORE the shards and the "
+            "analyze stage once AFTER them (shards: --stages train,eval); "
+            "parallel shards would collect the same demos concurrently.")
+    if write_shared:
+        write_roster(roster, campaign)
     # The eval ruler is FROZEN on first write: all cells (including across
     # resumed runs) are scored on the byte-identical, hash-locked grid. A later
     # run that requests a different grid keeps the frozen one and warns -- use a
@@ -2493,9 +2533,15 @@ def main(argv=None):
     else:
         grid = requested_grid
         json.dump(grid, open(grid_path, "w"), indent=2)
-    write_manifest(args, campaign, roster, grid, seeds)
-    _document_campaign(args, campaign, roster, grid, seeds)
+    if write_shared:
+        write_manifest(args, campaign, roster, grid, seeds)
+        _document_campaign(args, campaign, roster, grid, seeds)
     cells = enumerate_cells(methods, roster, seeds)
+    if shard:
+        i, n = shard
+        cells = [c for k, c in enumerate(cells) if k % n == i]
+        _green(f"[shard] {i}/{n}: {len(cells)} cell(s): "
+               + ", ".join(c.id for c in cells))
     print_plan(args, roster, cells, seeds, grid)
     if args.plan:
         _green("[plan] roster, eval_grid.json and campaign.json written. "
