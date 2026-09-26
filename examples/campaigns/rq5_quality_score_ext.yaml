@@ -1,0 +1,152 @@
+# =====================================================================
+# rq5_quality_score_ext.yaml -- C7b: three more intervention scores as
+# REPLAY PRIORITY, next to the behavioral score of C7.
+#
+# The literature review (thesis ch. 3) gave four candidate signals besides
+# the counterfactual Q-gap and the behavioral composite. This campaign runs
+# the three that act on replay priority; the fourth (operator consistency)
+# only weights imitation -> rq5_quality_imitation.yaml (C8).
+#
+#   arm           mode     replay priority from (docs/quality_scores_v2.md)
+#   logged        logged   uniform replay (same-architecture control)
+#   quality-beh   quality  behavioral z(dV) - z(t_int) - z(F_peak) (C7 arm)
+#   quality-hind  quality  hindsight advantage: n-step return from onset to
+#                          handback + K on the visited states' V(s), minus
+#                          V(onset). Never evaluates Q at a_H (AWR/CRR/GAE).
+#   quality-prog  quality  insertion-depth change from onset to handback + K
+#   quality-outc  quality  +1 per kept segment; with outcome_filter the
+#                          segments of failed episodes are DROPPED from the
+#                          intervention buffer = Hi-ORS-style rejection
+#                          sampling, uniform among the survivors. Answers
+#                          "does any grading beat outcome filtering?"
+#
+# EVALUATE FIRST (handoff/EVALUATE_FIRST.md, "Quality scores v2"): run
+# examples/quality_signal_audit.py on the existing logged/quality logs. It
+# now reports the AUROC of a_hind and d_progress_post, recomputed offline
+# from steps.jsonl. A score whose AUROC is ~0.5 is not worth 18 cells: drop
+# its arm from `methods` before launching.
+#
+# Everything else is the C7 base (rq5_quality_score.yaml): cuboid, 3
+# ops/tier x 2 seeds, 40k cap, RQ4 convergence rule, frozen +-16 mm ruler,
+# K=8/M=1 ensemble, warm start 5000 + LR 1.5e-4, replay priority only
+# (bc_loss_weight 0), stabilised PER. The logged_* and quality-beh_* cells
+# are IDENTICAL to C7's, so copy them from runs/rq5_quality_score. Recipe:
+# docs/e2hil_baseline.md "Reusing the RQ4 hilserl cells" with
+# SRC=runs/rq5_quality_score and the globs logged_* and quality-beh_*; also
+# copy $SRC/aqi_logs/<cell>* for the audit. That leaves 54 new cells.
+# If the C6 audit shows t_int is a timing confound, use quality-beh-not
+# instead of quality-beh (copy its cells the same way).
+#
+# Launch (OOM-protected, as C7):
+#   WANDB_RUN_GROUP=rq5_quality_score_ext \
+#   systemd-run --user --unit=rq5ext_campaign --collect \
+#     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/rq5_quality_score_ext.yaml \
+#          --campaign runs/rq5_quality_score_ext \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/rq5_quality_score_ext.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:                           # arm names, report order
+  - logged
+  - quality-beh
+  - quality-hind
+  - quality-prog
+  - quality-outc
+
+arms:
+  quality-beh:  {mode: quality, quality_score_mode: behavioral}
+  quality-hind: {mode: quality, quality_score_mode: hindsight}
+  quality-prog: {mode: quality, quality_score_mode: progress}
+  quality-outc: {mode: quality, quality_score_mode: outcome,
+                 quality_filters: [safety_veto, jerk_veto, outcome_filter]}
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000                 # as RQ4
+  minutes_per_cell: 300
+  converge_success: 0.9            # convergence rule identical to RQ3/RQ4
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true              # RQ4 fix: warm start (hilserl opts out)
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015           # RQ4 fix: halved LR (hilserl opts out)
+
+aqi:
+  synthetic_intervention_mode: signal
+  # ---- RQ4-fixed ensemble (inert for hilserl) ----
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+  # ---- quality module (inert for hilserl / logged) ----
+  bc_loss_weight: 0.0              # replay priority only
+  quality_filters:
+    - safety_veto
+    - jerk_veto
+  per_standardize: true
+  per_delta_init: 0.1
+  per_eps: 0.05
+  per_eta: 1.0
+  quality_warmup_steps: 5000
+  per_scale_decay: 0.01
+  per_refresh_period: 2000
+  per_is_beta: 0.5
+  # ---- post-release window of hindsight / progress: default K = 10
+  # steps after the handback. Left unset on purpose so the logged_* and
+  # quality-beh_* commands stay byte-identical to C7's.
+  # quality_post_release_steps: 10
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI
+
+analysis:
+  baseline: logged
+  plots: true

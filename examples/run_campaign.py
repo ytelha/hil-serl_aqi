@@ -82,6 +82,7 @@ from serl_launcher.aqi.operator_model import (  # noqa: E402
     theta_from_scale, TIER_S)
 from serl_launcher.aqi import stats as S  # noqa: E402
 from serl_launcher.aqi.config import MODES as AQI_MODES  # noqa: E402
+from serl_launcher.aqi.config import QUALITY_SCORE_MODES  # noqa: E402
 from serl_launcher.hiril.config import CLI_FIELDS as HIRIL_FIELDS  # noqa: E402
 import provenance as prov  # noqa: E402
 
@@ -288,6 +289,13 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     if (aqi.get("quality_behavioral_terms") is not None
             and "quality_behavioral_terms" not in explicit):
         args.quality_behavioral_terms = _csv(aqi["quality_behavioral_terms"])
+    for key, cast in (("quality_post_release_steps", int),
+                      ("quality_hindsight_discount", float),
+                      ("quality_consistency_weight", bool),
+                      ("quality_consistency_k", int),
+                      ("quality_consistency_sigma_ref", float)):
+        if aqi.get(key) is not None and key not in explicit:
+            setattr(args, key, cast(aqi[key]))
     if (aqi.get("synthetic_intervention_mode") is not None
             and "synthetic_intervention_mode" not in explicit):
         args.synthetic_intervention_mode = str(
@@ -471,6 +479,12 @@ def _method_conditions(method, args):
                 ("per_scale_decay", "per_scale_decay"),
                 ("per_refresh_period", "per_refresh_period"),
                 ("per_is_beta", "per_is_beta"),
+                ("quality_post_release_steps", "quality_post_release_steps"),
+                ("quality_hindsight_discount", "quality_hindsight_discount"),
+                ("quality_consistency_weight", "quality_consistency_weight"),
+                ("quality_consistency_k", "quality_consistency_k"),
+                ("quality_consistency_sigma_ref",
+                 "quality_consistency_sigma_ref"),
                 ("critic_ensemble_size", "critic_ensemble_size"),
                 ("per_member_targets", "critic_per_member_targets"),
                 ("e2hil_K", "e2hil_K"), ("e2hil_q_low", "e2hil_q_low"),
@@ -854,6 +868,10 @@ _AQI_FLAG_SPEC = (
     ("quality_warmup_steps", "val"), ("per_scale_decay", "val"),
     ("per_refresh_period", "val"), ("per_is_beta", "val"),
     ("quality_score_mode", "val"), ("quality_behavioral_terms", "str"),
+    ("quality_post_release_steps", "val"),
+    ("quality_hindsight_discount", "val"),
+    ("quality_consistency_weight", "bool"), ("quality_consistency_k", "val"),
+    ("quality_consistency_sigma_ref", "val"),
     ("critic_ensemble_size", "val"), ("critic_subsample_size", "val"),
     ("per_member_targets", "bool"),
     ("e2hil_K", "val"), ("e2hil_q_low", "val"), ("e2hil_q_high", "val"),
@@ -960,6 +978,9 @@ ARM_KEYS = {
     "quality_filters": _to_csv, "quality_disagreement_gate": _to_bool,
     "bc_loss_weight": float, "quality_score_mode": str,
     "quality_behavioral_terms": _to_csv,
+    "quality_post_release_steps": int, "quality_hindsight_discount": float,
+    "quality_consistency_weight": _to_bool, "quality_consistency_k": int,
+    "quality_consistency_sigma_ref": float,
     "per_standardize": _to_bool, "per_delta_init": float, "per_eta": float,
     "per_eps": float, "quality_warmup_steps": int, "per_scale_decay": float,
     "per_refresh_period": int, "per_is_beta": float,
@@ -1040,6 +1061,12 @@ def validate_arms(args, methods):
                 ARM_KEYS[k](v)
             except (TypeError, ValueError) as exc:
                 raise SystemExit(f"[arms] '{arm}': bad value for {k}: {exc}")
+        if ("quality_score_mode" in d
+                and str(d["quality_score_mode"]) not in QUALITY_SCORE_MODES):
+            raise SystemExit(
+                f"[arms] '{arm}': quality_score_mode "
+                f"{d['quality_score_mode']!r} is not one of "
+                f"{QUALITY_SCORE_MODES}.")
         is_pipeline = d["mode"] in PIPELINES
         if is_pipeline:     # the pipeline's own config validates the values
             from serl_launcher.hiril.config import HiRILConfig
@@ -2155,14 +2182,35 @@ def build_arg_parser():
                    help="divide q_int by its running scale before the replay "
                         "priority so per_eta is dimension-free (quality/aqi).")
     p.add_argument("--quality_score_mode", default=None,
-                   choices=["counterfactual", "behavioral"],
+                   choices=["counterfactual", "behavioral", "hindsight",
+                            "progress", "outcome", "uniform"],
                    help="graded intervention signal: 'counterfactual' A_hat "
-                        "Q-gap (default) or critic-free 'behavioral' composite "
-                        "z(d_value)-z(t_int)-z(f_peak) (quality/aqi).")
+                        "Q-gap (default), critic-free 'behavioral' composite "
+                        "z(d_value)-z(t_int)-z(f_peak), 'hindsight' n-step "
+                        "advantage to handback+K, 'progress' depth change to "
+                        "handback+K, 'outcome' +/-1 episode success, or "
+                        "'uniform' (no grading, control) (quality/aqi).")
     p.add_argument("--quality_behavioral_terms", default=None,
                    help="comma-separated terms of the behavioral score out of "
                         "d_value,t_int,f_peak (default all; quality/aqi with "
                         "quality_score_mode=behavioral).")
+    p.add_argument("--quality_post_release_steps", type=int, default=None,
+                   help="K steps after the handback in the hindsight/progress "
+                        "window (default 10; every logging mode).")
+    p.add_argument("--quality_hindsight_discount", type=float, default=None,
+                   help="discount of the hindsight advantage (default: the "
+                        "experiment's TD discount).")
+    p.add_argument("--quality_consistency_weight", default=None,
+                   action=argparse.BooleanOptionalAction,
+                   help="multiply the BC weight by the operator-consistency "
+                        "factor (quality/aqi; inert unless bc_loss_weight>0).")
+    p.add_argument("--quality_consistency_k", type=int, default=None,
+                   help="earlier takeover segments behind sigma_beta "
+                        "(default 5; quality/aqi).")
+    p.add_argument("--quality_consistency_sigma_ref", type=float,
+                   default=None,
+                   help="fixed sigma_ref of the consistency factor (default: "
+                        "running mean of sigma_beta; quality/aqi).")
     p.add_argument("--per_delta_init", type=float, default=None,
                    help="PER |delta| init in the priority (quality/aqi).")
     p.add_argument("--per_eta", type=float, default=None,

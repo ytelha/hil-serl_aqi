@@ -81,6 +81,25 @@ QUALITY_FILTERS = ("safety_veto", "jerk_veto", "outcome_filter", "unsolicited")
 # into the episode; examples/quality_signal_audit.py tests that.
 BEHAVIORAL_TERMS = ("d_value", "t_int", "f_peak")
 
+# Graded intervention signal (quality_score_mode). "counterfactual" grades
+# every step; the others give ONE signed score per segment (see
+# QualityScorer.apply_segment_score):
+#   "counterfactual" A_hat = mu_Q(s,a_H) - mu_Q(s,a_robot)            (S5.5 B)
+#   "behavioral"     z(d_value) - z(t_int) - z(f_peak), critic-free
+#   "hindsight"      n-step advantage over [onset, handback + K] built from
+#                    the ON-POLICY value V(s) = mu_Q(s, a_robot) of states
+#                    actually visited (AWR / CRR / GAE lineage); never
+#                    evaluates the critic at a_H
+#   "progress"       task-progress change over [onset, handback + K]
+#                    (default: insertion depth), critic-free
+#   "outcome"        +1 if the episode succeeded, -1 otherwise (Option G as
+#                    a score; with the outcome_filter section = Hi-ORS-style
+#                    rejection sampling, uniform among the kept segments)
+#   "uniform"        0 for every segment: no graded signal at all (control
+#                    for "does the grading matter", e.g. uniform BC in C8)
+QUALITY_SCORE_MODES = ("counterfactual", "behavioral", "hindsight",
+                       "progress", "outcome", "uniform")
+
 
 @dataclass
 class AQIConfig:
@@ -221,8 +240,39 @@ class AQIConfig:
     #     force-controlled takeover scores high. Avoids the off-distribution
     #     critic evaluation of a_H that makes A_hat anti-aligned with outcome
     #     (diagnostic AUROC 0.72 vs 0.18). Standardised online per run.
+    #   "hindsight" / "progress" / "outcome" / "uniform": see
+    #     QUALITY_SCORE_MODES above. The disagreement gate and adv_exclude
+    #     act on the counterfactual A_hat only; every segment-level mode maps
+    #     its score q_seg to q_int = max(q_seg, 0) and
+    #     w = clip(sigmoid(quality_gamma * q_seg), w_min, w_max).
     quality_score_mode: str = "counterfactual"
     quality_behavioral_terms: Tuple[str, ...] = BEHAVIORAL_TERMS
+
+    # Post-handback window shared by "hindsight" and "progress" (and logged
+    # in every logging mode as features a_hind / d_progress_post):
+    #   A_hind = sum_{t=t0}^{t_e-1} g^(t-t0) r_t + g^(t_e-t0) m V(s_te) - V(s_t0)
+    # with t0 = onset, t_e = handback + quality_post_release_steps (clipped
+    # to the episode), g = quality_hindsight_discount, V(s) = mu_Q(s, a_robot)
+    # from the per-step critic call. g should match the agent's TD discount
+    # (TrainConfig.discount, 0.97 for every experiment in this repo).
+    quality_post_release_steps: int = 10
+    quality_hindsight_discount: float = 0.97
+
+    # Operator-consistency weight (SiLRI-style sigma_beta; C8 = weighted
+    # imitation). sigma_beta(s) is the spread of the operator's OWN earlier
+    # takeover actions at the k most similar earlier takeover states (at most
+    # one neighbour per earlier segment, so a single smooth trajectory cannot
+    # fake consistency). The BC weight is multiplied by
+    #   c(s) = 1 / (1 + (sigma_beta(s) / sigma_ref)^2)
+    # sigma_ref = quality_consistency_sigma_ref, or the running mean of
+    # sigma_beta if None. Replay priority (q_int) is NOT changed, so the
+    # weight is inert unless bc_loss_weight > 0. c = 1 until min_ref
+    # reference steps from >= k earlier segments exist.
+    quality_consistency_weight: bool = False
+    quality_consistency_k: int = 5
+    quality_consistency_min_ref: int = 200
+    quality_consistency_capacity: int = 20000
+    quality_consistency_sigma_ref: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Quality-aware replay (S5.6): p_i = (eps + |delta_i| + eta*max(q,0))^alpha
@@ -309,6 +359,18 @@ class AQIConfig:
         assert self.quality_behavioral_terms and not bad, (
             f"quality_behavioral_terms must be a non-empty subset of "
             f"{BEHAVIORAL_TERMS}, got {self.quality_behavioral_terms}")
+        assert self.quality_score_mode in QUALITY_SCORE_MODES, (
+            f"quality_score_mode must be one of {QUALITY_SCORE_MODES}, got "
+            f"{self.quality_score_mode!r}")
+        assert int(self.quality_post_release_steps) >= 0, (
+            "quality_post_release_steps must be >= 0")
+        assert 0.0 < self.quality_hindsight_discount <= 1.0, (
+            "quality_hindsight_discount must be in (0, 1]")
+        assert int(self.quality_consistency_k) >= 2, (
+            "quality_consistency_k must be >= 2 (a spread needs 2 actions)")
+        assert (self.quality_consistency_sigma_ref is None
+                or self.quality_consistency_sigma_ref > 0.0), (
+            "quality_consistency_sigma_ref must be > 0 (or None = running)")
         assert 0.0 < self.critic_bootstrap_p <= 1.0, (
             "critic_bootstrap_p must be in (0, 1]")
         if self.active_on:

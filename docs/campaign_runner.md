@@ -147,7 +147,10 @@ analysis:
     `per_member_targets`;
   - active gate: `trigger_terms`, `trigger_combiner`;
   - quality: `quality_filters`, `quality_disagreement_gate`,
-    `bc_loss_weight`, `quality_score_mode`, `per_*`, `quality_warmup_steps`;
+    `bc_loss_weight`, `quality_score_mode`, `quality_behavioral_terms`,
+    `quality_post_release_steps`, `quality_hindsight_discount`,
+    `quality_consistency_*` (see `docs/quality_scores_v2.md`), `per_*`,
+    `quality_warmup_steps`;
   - E2HiL: `e2hil_*`.
 
   Operators, demos, budget, the convergence rule and the ruler are

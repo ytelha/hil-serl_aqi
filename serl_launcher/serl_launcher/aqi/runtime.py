@@ -15,6 +15,9 @@ per-step and per-episode AQI work is delegated here:
 
     per episode end (end_episode):
         counterfactual advantage + disagreement gate -> q_int, w_i    (S5.5)
+        or one segment-level score (quality_score_mode: behavioral,
+        hindsight, progress, outcome, uniform)                         (S5.5)
+        optional operator-consistency factor on w_i (C8)
         hard force / jerk vetoes, outcome filter                       (S5.5)
         FailureRiskModel refit; D_success update for OOD               (S5.4)
         scored transitions returned for the intervention buffer        (S5.6)
@@ -32,6 +35,7 @@ import gymnasium as gym
 import numpy as np
 
 from serl_launcher.aqi.config import AQIConfig
+from serl_launcher.aqi.consistency import OperatorConsistency
 from serl_launcher.aqi.failure import FailureRiskModel
 from serl_launcher.aqi.force_risk import ForceRiskMonitor
 from serl_launcher.aqi.logger import AQILogger
@@ -39,6 +43,7 @@ from serl_launcher.aqi.ood import KnnOODScorer
 from serl_launcher.aqi.quality import (
     InterventionSegment,
     QualityScorer,
+    hindsight_advantage,
     segment_features,
 )
 from serl_launcher.aqi.query_gate import ActiveQueryGate
@@ -92,6 +97,12 @@ def _state_vec(obs) -> np.ndarray:
     if state.ndim > 1:  # ChunkingWrapper: (obs_horizon, D) -> last frame
         state = state[-1]
     return state.astype(np.float64)
+
+
+def _finite(x):
+    """float(x), or None if it is not finite (keeps the JSONL strict)."""
+    x = float(x)
+    return x if np.isfinite(x) else None
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +171,19 @@ class AQIRuntime:
             self._feat_z = [RunningZScore(), RunningZScore(center=False),
                             RunningZScore(), RunningZScore(center=False)]
         self.scorer = QualityScorer(cfg)
+        # operator-consistency BC factor (C8): a weight on the imitation
+        # loss only, so it is built only where that loss can exist.
+        self.consistency = (OperatorConsistency(
+            state_dim=state_dim, k=cfg.quality_consistency_k,
+            capacity=cfg.quality_consistency_capacity,
+            min_ref=cfg.quality_consistency_min_ref,
+            sigma_ref=cfg.quality_consistency_sigma_ref)
+            if cfg.quality_consistency_weight and cfg.quality_on else None)
+        # the proprio layout goes into meta.json so offline analyses can
+        # locate e.g. the tcp_pose z of the logged "state" vectors
+        config_dict_for_log = {
+            **(config_dict_for_log or {}),
+            "proprio_slices": {k: list(v) for k, v in self.slices.items()}}
         self.logger = AQILogger(cfg.log_dir, run_name, operator_id, cfg.mode,
                                 config_dict=config_dict_for_log,
                                 log_every_step=cfg.log_every_step)
@@ -174,6 +198,13 @@ class AQIRuntime:
         self._pending_step_record = None
         self._ep_features: List[np.ndarray] = []
         self._ep_states: List[np.ndarray] = []
+        # per-step data of the post-release window (hindsight / progress),
+        # keyed by episode step: V(s_t) = mu_Q(s_t, a_robot_t), r_t, and the
+        # proprio state at t (the key n_steps holds the final next-state).
+        self._ep_value: Dict[int, float] = {}
+        self._ep_reward: Dict[int, float] = {}
+        self._ep_state_at: Dict[int, np.ndarray] = {}
+        self._ep_last_mask = 1.0
         self._hard_violation_steps: List[int] = []
         self._segments: List[InterventionSegment] = []
         self._open_seg: Optional[InterventionSegment] = None
@@ -268,6 +299,8 @@ class AQIRuntime:
         if feats is not None:
             self._ep_features.append(feats)
         self._ep_states.append(state)
+        self._ep_value[self._ep_step] = float(mu_q)
+        self._ep_state_at[self._ep_step] = state
         self._ep_requests += int(record["request"] and not self._last_request)
         self._ep_request_steps += int(record["request"])
         self._last_request = bool(record["request"])
@@ -289,13 +322,24 @@ class AQIRuntime:
         if not self.enabled:
             return
         state = _state_vec(obs)
+        reward = float(np.asarray(transition.get("rewards", 0.0)))
+        self._ep_last_mask = float(np.asarray(transition.get("masks", 1.0)))
+        self._ep_reward[self._ep_step] = reward
+        if "next_observations" in transition:
+            # the next observe_step re-stores the same state under this key;
+            # at the episode end it is the only record of the final state.
+            self._ep_state_at[self._ep_step + 1] = _state_vec(
+                transition["next_observations"])
         rec = getattr(self, "_pending_step_record", None)
         if rec is not None:
             # complete the E.3 per-step record: executed action, the
             # policy's own action, the human action when intervening, and
             # the CURRENT step's intervention truth (observe_step only had
-            # the previous step's).
+            # the previous step's). reward / mask let the offline audit
+            # rebuild the hindsight advantage from steps.jsonl.
             rec["intervening"] = bool(intervening)
+            rec["reward"] = reward
+            rec["mask"] = self._ep_last_mask
             if self.cfg.log_actions:
                 a_exec = np.asarray(transition["actions"]).tolist()
                 rec["a_robot"] = np.asarray(robot_action).tolist()
@@ -329,6 +373,54 @@ class AQIRuntime:
         if self._open_seg is not None and len(self._open_seg) > 0:
             self._segments.append(self._open_seg)
         self._open_seg = None
+
+    def _post_release(self, seg: InterventionSegment) -> dict:
+        """What the robot reached after the handback: the hindsight
+        advantage and the progress change over [onset, handback + K]
+        (K = quality_post_release_steps), plus the value at the onset (the
+        state-difficulty covariate of the audit). Logged for every segment
+        in every logging mode; drives q only in the matching score mode."""
+        n_steps = self._ep_step
+        t0, length = seg.start_step, len(seg)
+        horizon = int(self.cfg.quality_post_release_steps)
+        values = np.array([self._ep_value.get(t, np.nan)
+                           for t in range(n_steps)])
+        rewards = np.array([self._ep_reward.get(t, 0.0)
+                            for t in range(n_steps)])
+        terminal = self._ep_last_mask == 0.0
+        a_hind, t_e = hindsight_advantage(
+            values, rewards, t0, length, horizon,
+            self.cfg.quality_hindsight_discount, terminal)
+        # progress: up to handback + K, or the final (next-)state
+        t_p = min(t0 + length + horizon, n_steps)
+        s_start = self._ep_state_at.get(t0)
+        s_end = self._ep_state_at.get(t_p)
+        if s_start is None or s_end is None:
+            d_prog = float("nan")
+        else:
+            d_prog = self._progress_fn(s_end) - self._progress_fn(s_start)
+        return dict(a_hind=a_hind, hind_window=int(t_e - t0),
+                    d_progress_post=float(d_prog),
+                    progress_window=int(t_p - t0),
+                    v_onset=float(values[t0]) if t0 < n_steps else float("nan"))
+
+    def _segment_score(self, seg, success, feats, post) -> Optional[float]:
+        """Segment-level score q_seg for every quality_score_mode except
+        "counterfactual" (None). Each branch updates only its own running
+        scale, so a mode's q is unaffected by the others being logged."""
+        mode = self.cfg.quality_score_mode
+        if mode == "behavioral":
+            return self.scorer.behavioral_q(
+                len(seg), feats["d_value"], feats["f_peak"])
+        if mode == "hindsight":
+            return self.scorer.hindsight_q(post["a_hind"])
+        if mode == "progress":
+            return self.scorer.progress_q(post["d_progress_post"])
+        if mode == "outcome":
+            return self.scorer.outcome_q(success)
+        if mode == "uniform":
+            return 0.0
+        return None
 
     # ------------------------------------------------------------------
     def end_episode(self, agent, success: bool, ep_return: float
@@ -369,22 +461,29 @@ class AQIRuntime:
             d_value = float(mu_h[-1] - mu_r[0])
             feats = segment_features(seg, d_progress=d_progress,
                                      d_value=d_value, post_success=success)
-            # behavioral scoring mode: override the counterfactual q_int/weights
-            # with a critic-free composite (short + value-up + low-force = good).
-            # Signed score clipped to [0,inf) for replay priority; excluded
-            # segments keep weights 0 from the filter pipeline.
-            if self.cfg.quality_score_mode == "behavioral":
-                q_beh = self.scorer.behavioral_q(
-                    len(seg), d_value, feats["f_peak"])
-                n = len(seg)
-                seg.q_signed = np.full(n, q_beh, dtype=np.float64)
-                seg.q_int = np.clip(seg.q_signed, 0.0, None)
+            post = self._post_release(seg)
+            feats.update(post)
+            # segment-level scoring modes (behavioral, hindsight, progress,
+            # outcome, uniform): override the counterfactual q_int/weights
+            # with one signed score per segment. Signed score clipped to
+            # [0,inf) for replay priority; excluded segments keep weights 0
+            # from the filter pipeline.
+            q_seg = self._segment_score(seg, success, feats, post)
+            if q_seg is not None:
+                self.scorer.apply_segment_score(seg, q_seg)
+            # operator-consistency factor on the BC weight only (q_int, i.e.
+            # the replay priority, is untouched)
+            cons = {}
+            if self.consistency is not None:
+                sig_b, c = self.consistency.weights(
+                    np.stack([_state_vec(o) for o in seg.obs_list]))
                 if not seg.excluded:
-                    w = 1.0 / (1.0 + np.exp(
-                        -np.clip(self.cfg.quality_gamma * q_beh, -30, 30)))
-                    w = float(np.clip(w, self.cfg.quality_w_min,
-                                      self.cfg.quality_w_max))
-                    seg.weights = np.full(n, w, dtype=np.float64)
+                    seg.weights = seg.weights * c
+                fin = sig_b[np.isfinite(sig_b)]
+                cons = dict(
+                    sigma_beta_mean=_finite(np.mean(fin)) if fin.size else None,
+                    consistency_mean=float(np.mean(c)),
+                    consistency_ready=bool(fin.size > 0))
             self.logger.log_segment(dict(
                 episode=self.episode_idx,
                 operator_id=self.operator_id,
@@ -404,10 +503,12 @@ class AQIRuntime:
                 q_int_mean=float(np.mean(seg.q_int)),
                 w_mean=float(np.mean(seg.weights)),
                 w_nonzero_frac=float(np.mean(seg.weights > 0)),
-                features=feats,
+                features={k: (_finite(v) if isinstance(v, float) else v)
+                          for k, v in feats.items()},
                 a_hat=seg.a_hat.tolist(),
                 q_int=seg.q_int.tolist(),
                 weights=seg.weights.tolist(),
+                **cons,
             ))
             if not seg.excluded:
                 for i, tr in enumerate(seg.transitions):
@@ -417,6 +518,15 @@ class AQIRuntime:
                         0.0 if warmup else seg.weights[i])
                     tr["intervention_mask"] = np.float32(1.0)
                     scored_transitions.append(tr)
+
+        # ---- operator-consistency references: this episode's takeovers
+        # (all of them, excluded ones too -- they are the operator's actions)
+        # become references only now, so no segment is compared with itself.
+        if self.consistency is not None:
+            for seg in self._segments:
+                self.consistency.add_segment(
+                    np.stack([_state_vec(o) for o in seg.obs_list]),
+                    np.stack(seg.human_actions))
 
         # ---- failure model + OOD reference updates (S5.4) ----------------
         if self.failure is not None and self._ep_features:

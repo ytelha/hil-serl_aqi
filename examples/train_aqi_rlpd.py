@@ -307,10 +307,32 @@ flags.DEFINE_float("per_is_beta", -1.0,
                    "Importance-sampling exponent for prioritised replay "
                    "(quality/aqi; 0 = off; <0 = experiment default).")
 flags.DEFINE_enum("quality_score_mode", None,
-                  ["counterfactual", "behavioral"],
+                  ["counterfactual", "behavioral", "hindsight", "progress",
+                   "outcome", "uniform"],
                   "Graded intervention signal: 'counterfactual' = A_hat "
                   "critic Q-gap (default); 'behavioral' = critic-free "
-                  "z(d_value)-z(t_int)-z(f_peak) composite. quality/aqi only.")
+                  "z(d_value)-z(t_int)-z(f_peak) composite; 'hindsight' = "
+                  "n-step advantage from onset to handback+K on the visited "
+                  "states' V(s); 'progress' = insertion-depth change from "
+                  "onset to handback+K; 'outcome' = +1/-1 episode success; "
+                  "'uniform' = no grading (control). quality/aqi only.")
+flags.DEFINE_integer("quality_post_release_steps", None,
+                     "K: steps after the handback included in the hindsight/"
+                     "progress window (default 10). Logged in every logging "
+                     "mode; drives q only with the matching score mode.")
+flags.DEFINE_float("quality_hindsight_discount", None,
+                   "Discount of the hindsight advantage (default: the "
+                   "experiment's TD discount, config.discount).")
+flags.DEFINE_boolean("quality_consistency_weight", None,
+                     "Multiply the BC weight by the operator-consistency "
+                     "factor 1/(1+(sigma_beta/sigma_ref)^2) (SiLRI-style). "
+                     "Inert unless bc_loss_weight > 0. quality/aqi only.")
+flags.DEFINE_integer("quality_consistency_k", None,
+                     "Earlier takeover segments (one neighbour each) behind "
+                     "sigma_beta (default 5). quality/aqi only.")
+flags.DEFINE_float("quality_consistency_sigma_ref", None,
+                   "Fixed sigma_ref of the consistency factor (default: the "
+                   "running mean of sigma_beta). quality/aqi only.")
 flags.DEFINE_string("quality_behavioral_terms", None,
                     "Comma-separated terms of the behavioral score out of "
                     "{d_value,t_int,f_peak} (default all). E.g. "
@@ -1474,6 +1496,17 @@ def main(_):
     if FLAGS["quality_behavioral_terms"].present:
         overrides["quality_behavioral_terms"] = _csv(
             FLAGS.quality_behavioral_terms)
+    for _key in ("quality_post_release_steps", "quality_hindsight_discount",
+                 "quality_consistency_weight", "quality_consistency_k",
+                 "quality_consistency_sigma_ref"):
+        if FLAGS[_key].present:
+            overrides[_key] = getattr(FLAGS, _key)
+    # the hindsight advantage must discount like the critic it reads
+    if (not FLAGS["quality_hindsight_discount"].present
+            and aqi_cfg.logging_on
+            and getattr(config, "discount", None) is not None
+            and float(config.discount) != aqi_cfg.quality_hindsight_discount):
+        overrides["quality_hindsight_discount"] = float(config.discount)
     if FLAGS["bootstrap_p"].present:
         overrides["critic_bootstrap_p"] = FLAGS.bootstrap_p
     if FLAGS["per_member_targets"].present:
@@ -1497,7 +1530,9 @@ def main(_):
     # hilserl baseline) can never change the run -- picking any value is then
     # identical to picking any other. Relevance follows the mode switches:
     #   trigger_*  matter only when the active gate acts   (active, aqi)
-    #   quality_*  matter only for quality replay + loss   (quality, aqi)
+    #   quality_*  matter only for quality replay + loss   (quality, aqi),
+    #              except the post-release window (K, discount), which also
+    #              shapes the features logged in every logging mode
     #   critic_*   matter only for the K-critic ensemble   (every mode but
     #              hilserl/e2hil, fixed at the 2-critic baseline).
     #   e2hil_*    matter only for the e2hil baseline.
@@ -1510,8 +1545,13 @@ def main(_):
                    "bc_loss_weight", "per_standardize", "per_delta_init",
                    "per_eta", "per_eps", "quality_warmup_steps",
                    "per_scale_decay", "per_refresh_period", "per_is_beta",
-                   "quality_score_mode", "quality_behavioral_terms"):
+                   "quality_score_mode", "quality_behavioral_terms",
+                   "quality_consistency_weight", "quality_consistency_k",
+                   "quality_consistency_sigma_ref"):
             return aqi_cfg.quality_on
+        if key in ("quality_post_release_steps", "quality_hindsight_discount"):
+            # also shape the LOGGED a_hind / d_progress_post features
+            return aqi_cfg.logging_on
         if key in ("critic_ensemble_size", "critic_subsample_size",
                    "critic_bootstrap_p", "critic_per_member_targets"):
             return not aqi_cfg.baseline_arch

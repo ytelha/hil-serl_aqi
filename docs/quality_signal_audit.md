@@ -55,6 +55,8 @@ columns are:
 | **all** | AUROC over all segments + 95% CI from an **episode-cluster bootstrap** | reproduces RQ4; segments of one episode share a label, so episodes are resampled, not segments |
 | **clean** | only segments **released by handback**: not capped, not cut by the episode end | removes the two mechanical routes from timing to `t_int` |
 | **time-stratified** | pairs compared only within the same quantile bin of start time / episode budget | a score cannot win by encoding *when* the takeover happened |
+| **difficulty-stratified** | pairs compared only within the same quantile bin (`--n_diff_bins`, default 3) of V(onset) = μQ at the takeover's first step | a score cannot win by encoding *how easy the state was* (PART C) |
+| **window-clean** | only segments whose post-release window (handback + K) closes before the episode ends | the hindsight advantage contains the success reward when the window reaches it (PART C) |
 | **post-release** | label = episode succeeded within `--horizon` steps after release (released segments only) | a label closer to "the correction helped" than whole-episode success |
 | per tier | AUROC within expert / intermediate / novice | RQ4's within-tier check |
 
@@ -132,3 +134,38 @@ feature stays at 0.85–0.98. That is the signature to look for.
 - **Human operators have no `d_max`.** For humans, B1 reports `released`
   instead of cap/handback, and the clean subset is empty. Use the
   stratified and post-release columns.
+
+## 7. PART C — the quality scores v2
+
+The four scores added from the literature review
+([quality_scores_v2.md](quality_scores_v2.md)) get the same treatment,
+**before** any of them is trained on:
+
+| score row | source | what to check |
+|---|---|---|
+| `a_hind (hindsight)` | segments.jsonl if logged with the audit's K and discount; else recomputed from steps.jsonl (μQ, reward, mask per step; pre-v2 logs: sparse reward inferred from the episode outcome) | **window-clean** AUROC. The window of a late takeover contains the success reward, so "all" is inflated by construction |
+| `d_progress_post` | same; offline the window ends at the last logged state, online at the true final state | window-clean and difficulty-stratified AUROC |
+| `V(onset) (difficulty only)` | μQ at the takeover's first step | a yardstick like the time-only rows: how far does state difficulty alone get? |
+| `-sigma_beta (consistency)` | replayed in time order from steps.jsonl with `serl_launcher/aqi/consistency.py` | its **per-tier means** (should rise expert → novice); its success AUROC is secondary, since σβ is an imitation weight, not an outcome predictor |
+
+Also reported: the correlation of each key score with V(onset) (section
+"C2") and per-tier means of V(onset), `a_hind`, `d_progress_post` and σβ.
+
+```bash
+# PART C on existing logs, with other window lengths:
+./.venv/bin/python examples/quality_signal_audit.py --campaign runs/quality_behavioral_diag --post_release_steps 5 --out /tmp/qa_k5
+./.venv/bin/python examples/quality_signal_audit.py --campaign runs/quality_behavioral_diag --post_release_steps 20 --out /tmp/qa_k20
+# --no_steps skips steps.jsonl (fast; PART C only from segments.jsonl, no sigma_beta)
+```
+
+Reading it:
+- **Hindsight / progress arm worth training** (C7b,
+  `rq5_quality_score_ext.yaml`) if the **window-clean** AUROC is clearly
+  above 0.5 and survives the difficulty stratification. If it is ≈ 0.5
+  window-clean, the score only re-labels outcomes: drop the arm (the
+  outcome arm `quality-outc` already covers that).
+- **Consistency weight worth training** (C8, `rq5_quality_imitation.yaml`)
+  if σβ rises from expert to novice. If it does not, it does not measure
+  operator skill in this simulator.
+- **Difficulty:** a key score whose AUROC falls toward 0.5 within V(onset)
+  bins mostly says "the takeover started in an easy state".

@@ -162,8 +162,38 @@ def condition_rows(cfg) -> list:
         rows.append(_row(name, g(name), quality, q_ok, q_no))
     rows.append(_row(
         "quality_score_mode", g("quality_score_mode"), quality,
-        "graded intervention signal: 'counterfactual' Q-gap A_hat or the "
-        "critic-free 'behavioral' composite", q_no))
+        "graded intervention signal: 'counterfactual' Q-gap A_hat, or one "
+        "score per segment: 'behavioral' composite, 'hindsight' n-step "
+        "advantage, 'progress' depth change, 'outcome' +/-1, 'uniform' 0",
+        q_no))
+    score = g("quality_score_mode")
+    window_drives = quality and score in ("hindsight", "progress")
+    for name in ("quality_post_release_steps", "quality_hindsight_discount"):
+        rows.append(_row(
+            name, g(name), logging_on,
+            ("post-release window [onset, handback+K] of the "
+             + ("q that drives replay/BC ('%s')" % score if window_drives
+                else "LOGGED a_hind / d_progress_post features only "
+                     "(score '%s')" % score)),
+            f"INERT - '{mode}' writes no training logs"))
+    cons_on = bool(g("quality_consistency_weight"))
+    bc = float(g("bc_loss_weight") or 0.0)
+    cons_active = quality and cons_on and bc > 0.0
+    if not quality:
+        cons_no = q_no
+    elif not cons_on:
+        cons_no = "INERT - operator-consistency weight is off"
+    else:
+        cons_no = ("INERT - bc_loss_weight is 0, and the consistency factor "
+                   "only scales the BC weight (not the replay priority)")
+    rows.append(_row(
+        "quality_consistency_weight", cons_on, cons_active,
+        "BC weight x 1/(1+(sigma_beta/sigma_ref)^2), sigma_beta = spread of "
+        "the operator's earlier takeover actions at similar states", cons_no))
+    for name in ("quality_consistency_k", "quality_consistency_sigma_ref"):
+        rows.append(_row(name, g(name), cons_active,
+                         "operator-consistency estimate (SiLRI-style)",
+                         cons_no))
     behavioral = quality and g("quality_score_mode") == "behavioral"
     rows.append(_row(
         "quality_behavioral_terms", g("quality_behavioral_terms"), behavioral,

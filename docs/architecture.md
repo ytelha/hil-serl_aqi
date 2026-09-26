@@ -80,7 +80,7 @@ human runs it).
 | script | reads | writes | standalone? |
 |---|---|---|---|
 | [`aqi_analysis.py`](../examples/aqi_analysis.py) | `aqi_logs/` (JSONL only) | `summary.md`, `results.json`, 4 plots | **fully standalone** (imports no other script) |
-| [`quality_signal_audit.py`](../examples/quality_signal_audit.py) | `aqi_logs/` (segments + episodes + meta) | `report/quality_audit/{summary.md,audit.json,segments.csv}` + plots | yes (also called by `run_campaign.py analyze`); see [quality_signal_audit.md](quality_signal_audit.md) |
+| [`quality_signal_audit.py`](../examples/quality_signal_audit.py) | `aqi_logs/` (segments + episodes + meta; steps for PART C) | `report/quality_audit/{summary.md,audit.json,segments.csv}` + plots | yes (also called by `run_campaign.py analyze`); see [quality_signal_audit.md](quality_signal_audit.md) |
 | [`campaign_plots.py`](../examples/campaign_plots.py) | `<campaign>/report/dependency.json` | `<campaign>/report/plots/*.png` | yes (also imported by `run_campaign.py`) |
 | [`operator_skill.py`](../examples/operator_skill.py) | `aqi_logs/` or demo `.pkl` (via `serl_launcher.aqi.skill`) | `skill_report.md`, `skill.json` | yes (also driven by `experiment_pipeline.py assess`) |
 

@@ -130,6 +130,12 @@ class QualityScorer:
         self._z_tint = RunningZScore()
         self._z_dval = RunningZScore()
         self._z_fpeak = RunningZScore()
+        # running |x| scales of the sign-carrying segment scores
+        # (quality_score_mode="hindsight" / "progress"): dividing by the mean
+        # magnitude keeps quality_gamma dimension-free WITHOUT centring, so a
+        # negative hindsight advantage / lost depth stays negative.
+        self._hind_scale = RunningZScore(center=False)
+        self._prog_scale = RunningZScore(center=False)
 
     def behavioral_q(self, t_int: float, d_value: float, f_peak: float) -> float:
         """Critic-free intervention score: short + value-increasing + force-
@@ -147,6 +153,47 @@ class QualityScorer:
         if "f_peak" in terms:
             q -= self._z_fpeak.z(float(f_peak))
         return q
+
+    @staticmethod
+    def _scaled(scale: RunningZScore, x: float) -> float:
+        """x / running mean |x| (sign kept). Non-finite x (e.g. a missing
+        value estimate) scores 0 = neutral and does not touch the scale."""
+        x = float(x)
+        if not np.isfinite(x):
+            return 0.0
+        scale.update(abs(x))
+        return x / max(scale.mean, 1e-6)
+
+    def hindsight_q(self, a_hind: float) -> float:
+        """quality_score_mode="hindsight": A_hind / running mean |A_hind|."""
+        return self._scaled(self._hind_scale, a_hind)
+
+    def progress_q(self, d_progress_post: float) -> float:
+        """quality_score_mode="progress": the post-release progress change
+        over its running mean magnitude."""
+        return self._scaled(self._prog_scale, d_progress_post)
+
+    @staticmethod
+    def outcome_q(episode_success: bool) -> float:
+        """quality_score_mode="outcome": +1 success, -1 failure."""
+        return 1.0 if episode_success else -1.0
+
+    def apply_segment_score(self, seg: InterventionSegment,
+                            q_seg: float) -> InterventionSegment:
+        """Replace the counterfactual q/w of a scored segment by ONE signed
+        segment-level score q_seg (every mode except "counterfactual"):
+            q_signed = q_seg,  q_int = max(q_seg, 0)          (replay priority)
+            w        = clip(sigmoid(gamma * q_seg), w_min, w_max)   (BC weight)
+        Excluded segments keep the zero weights of the filter pipeline."""
+        n = len(seg)
+        seg.q_signed = np.full(n, q_seg, dtype=np.float64)
+        seg.q_int = np.clip(seg.q_signed, 0.0, None)
+        if not seg.excluded:
+            w = 1.0 / (1.0 + np.exp(
+                -np.clip(self.cfg.quality_gamma * q_seg, -30, 30)))
+            w = float(np.clip(w, self.cfg.quality_w_min, self.cfg.quality_w_max))
+            seg.weights = np.full(n, w, dtype=np.float64)
+        return seg
 
     # -- called every control step so scales track the current critic -----
     def observe_sigma(self, sigma_q: float) -> None:
@@ -241,6 +288,55 @@ def segment_features(seg: InterventionSegment, d_progress: float,
         jerk_max=float(np.max(jerk)),
         t_int=int(len(seg)),
     )
+
+
+# --------------------------------------------------------------------------
+# Post-release window: "hindsight" and "progress" judge a takeover by what
+# the ROBOT reached once it had control back, i.e. over [onset, handback+K].
+# Pure functions of per-step episode data so the online runtime and the
+# offline audit (examples/quality_signal_audit.py) share one definition.
+# --------------------------------------------------------------------------
+def post_release_window(t0: int, length: int, n_steps: int, horizon: int,
+                        terminal: bool):
+    """End index t_e of the window [t0, t0 + length + horizon] clipped to an
+    episode of n_steps transitions (steps 0..n_steps-1), and whether the
+    return is bootstrapped from V(s_te).
+
+    t0 + length is the handback step (first autonomous step). If the window
+    reaches the episode end:
+      - terminated (mask 0 on the last step): t_e = n_steps, no bootstrap
+        (nothing follows a terminal state);
+      - truncated (time limit): t_e = n_steps - 1, bootstrap from the last
+        state that has a value estimate.
+    """
+    t_e = int(t0) + int(length) + int(horizon)
+    if t_e <= n_steps - 1:
+        return t_e, True
+    if terminal:
+        return int(n_steps), False
+    return max(int(n_steps) - 1, int(t0)), True
+
+
+def hindsight_advantage(values, rewards, t0: int, length: int, horizon: int,
+                        discount: float, terminal: bool):
+    """n-step advantage of the takeover measured on the states actually
+    visited (AWR / CRR / GAE lineage):
+
+        A_hind = sum_{t=t0}^{t_e-1} g^(t-t0) r_t + g^(t_e-t0) V(s_te) - V(s_t0)
+
+    values[t] = V(s_t) (here mu_Q(s_t, a_robot_t), NaN where unknown),
+    rewards[t] = r_t, both over the whole episode. The critic is only ever
+    evaluated at the policy's own action, never at a_H. Returns
+    (A_hind, t_e); A_hind is NaN if a needed value is missing."""
+    values = np.asarray(values, dtype=np.float64)
+    rewards = np.asarray(rewards, dtype=np.float64)
+    t_e, bootstrap = post_release_window(t0, length, len(rewards), horizon,
+                                         terminal)
+    disc = float(discount) ** np.arange(t_e - t0)
+    ret = float(np.sum(disc * rewards[t0:t_e]))
+    if bootstrap:
+        ret += float(discount) ** (t_e - t0) * values[t_e]
+    return float(ret - values[t0]), int(t_e)
 
 
 def heuristic_quality(z_features: np.ndarray, alphas: np.ndarray) -> float:

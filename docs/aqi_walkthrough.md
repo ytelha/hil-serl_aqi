@@ -60,6 +60,8 @@ controls **both sides of the human-feedback loop**:
 | Online logistic P_fail (S5.4) | `serl_launcher/serl_launcher/aqi/failure.py` |
 | Acquisition function A(s_t), hysteresis/cooldown (S5.2) | `serl_launcher/serl_launcher/aqi/query_gate.py` |
 | Segments, q_int / w_i, vetoes, Option-A features (S5.5-S5.6) | `serl_launcher/serl_launcher/aqi/quality.py` |
+| Segment-level scores (behavioral, hindsight, progress, outcome, uniform) and the post-release window ([quality_scores_v2.md](quality_scores_v2.md)) | `QualityScorer.apply_segment_score`, `hindsight_advantage` in `serl_launcher/serl_launcher/aqi/quality.py`; `AQIRuntime._post_release` in `runtime.py` |
+| Operator-consistency BC weight σβ (SiLRI-style) | `serl_launcher/serl_launcher/aqi/consistency.py` |
 | JSONL logging (S7) | `serl_launcher/serl_launcher/aqi/logger.py` |
 | Actor-side orchestration | `serl_launcher/serl_launcher/aqi/runtime.py` |
 | Quality-prioritized replay (S5.6) | `QualityAwareReplayBufferDataStore` in `serl_launcher/serl_launcher/data/data_store.py` |
