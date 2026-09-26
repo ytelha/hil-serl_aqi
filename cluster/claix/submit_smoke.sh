@@ -12,6 +12,6 @@ if [ "${1:-}" = "--account" ] && [ -n "${2:-}" ]; then
     ACCOUNT=(--account "$2")
 fi
 JOB=$(sbatch --parsable "${ACCOUNT[@]}" \
-    --output="${RUNS}/slurm/smoke_%j.out" "${HERE}/smoke.sbatch")
+    --output="${RUNS}/slurm/smoke_%j.out" "${HERE}/smoke.sbatch" "${AQI_REPO_DIR}")
 echo "submitted smoke test ${JOB}"
 echo "  watch:  squeue --me        log: tail -f ${RUNS}/slurm/smoke_${JOB}.out"

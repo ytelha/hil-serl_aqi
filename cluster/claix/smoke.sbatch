@@ -16,8 +16,12 @@
 #SBATCH --time=01:00:00
 
 set -uo pipefail
+# CLAIX does not pass the submitting shell's environment into jobs, so the
+# repo location arrives as the first script argument (submit_smoke.sh).
+AQI_REPO_DIR="${1:-}"
+[ -d "${AQI_REPO_DIR}" ] || { echo "usage: sbatch smoke.sbatch <repo dir>  (use submit_smoke.sh)"; exit 2; }
 unset AQI_TRAINER_PORT MUJOCO_EGL_DEVICE_ID      # never inherit the login shell's
-cd "${AQI_REPO_DIR:?submit with submit_smoke.sh}"
+cd "${AQI_REPO_DIR}"
 # shellcheck disable=SC1091
 source cluster/claix/env.sh
 FAILED=()

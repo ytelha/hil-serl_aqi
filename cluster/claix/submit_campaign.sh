@@ -41,21 +41,20 @@ cd "${REPO}"
 [ -f "${CONFIG}" ] || { echo "no such config: ${CONFIG}"; exit 2; }
 
 RUNS="${AQI_RUNS:-${HPCWORK:-$HOME}/aqi_runs}"
-export AQI_REPO_DIR="${REPO}"
-export AQI_CONFIG="$(cd "$(dirname "${CONFIG}")" && pwd)/$(basename "${CONFIG}")"
-export AQI_CAMPAIGN="${RUNS}/${NAME}"
-export AQI_EXTRA="${EXTRA}"
+# CLAIX starts jobs with a clean environment (SLURM_EXPORT_ENV=NONE), so
+# everything a job needs is passed as script arguments.
+AQI_CONFIG="$(cd "$(dirname "${CONFIG}")" && pwd)/$(basename "${CONFIG}")"
+AQI_CAMPAIGN="${RUNS}/${NAME}"
+read -r -a EXTRA_ARR <<< "${EXTRA}"
 LOGS="${AQI_CAMPAIGN}/slurm"
 mkdir -p "${LOGS}"
 
 # number of cells = number of array tasks (computed without training anything)
-# shellcheck disable=SC2086
 NCELLS=$( ( unset AQI_TRAINER_PORT; source "${HERE}/env.sh" >/dev/null 2>&1
             JAX_PLATFORMS=cpu python examples/run_campaign.py \
                 --config "${AQI_CONFIG}" --campaign "${AQI_CAMPAIGN}" \
-                --list_cells ${EXTRA} ) | grep -c . )
+                --list_cells "${EXTRA_ARR[@]}" ) | grep -c . )
 [ "${NCELLS}" -gt 0 ] || { echo "no cells found (check the config)"; exit 1; }
-export AQI_NCELLS="${NCELLS}"
 echo "campaign ${NAME}: ${NCELLS} cells, config ${AQI_CONFIG}"
 echo "folder   ${AQI_CAMPAIGN}"
 
@@ -71,18 +70,21 @@ run() {
 DEP=()
 if [ "${PREP}" = 1 ]; then
     PREP_ID=$(run "${ACCOUNT[@]}" --job-name="aqi-prep-${NAME}" \
-        --output="${LOGS}/prepare_%j.out" "${HERE}/campaign_prepare.sbatch")
+        --output="${LOGS}/prepare_%j.out" "${HERE}/campaign_prepare.sbatch" \
+        "${REPO}" "${AQI_CONFIG}" "${AQI_CAMPAIGN}" "${EXTRA_ARR[@]}")
     echo "prepare  ${PREP_ID}"
     DEP=(--dependency="afterok:${PREP_ID}")
 fi
 CELLS_ID=$(run "${ACCOUNT[@]}" "${DEP[@]}" --job-name="aqi-cells-${NAME}" \
     --array="0-$((NCELLS - 1))%${PARALLEL}" --time="${TIME}" \
-    --output="${LOGS}/cell_%a_%A.out" "${HERE}/campaign_cells.sbatch")
+    --output="${LOGS}/cell_%a_%A.out" "${HERE}/campaign_cells.sbatch" \
+    "${REPO}" "${AQI_CONFIG}" "${AQI_CAMPAIGN}" "${NCELLS}" "${EXTRA_ARR[@]}")
 echo "cells    ${CELLS_ID}  (array 0-$((NCELLS - 1)), at most ${PARALLEL} at once)"
 if [ "${ANALYZE}" = 1 ]; then
     AN_ID=$(run "${ACCOUNT[@]}" --dependency="afterany:${CELLS_ID}" \
         --job-name="aqi-analyze-${NAME}" --output="${LOGS}/analyze_%j.out" \
-        "${HERE}/campaign_analyze.sbatch")
+        "${HERE}/campaign_analyze.sbatch" \
+        "${REPO}" "${AQI_CONFIG}" "${AQI_CAMPAIGN}" "${EXTRA_ARR[@]}")
     echo "analyze  ${AN_ID}"
 fi
 echo
