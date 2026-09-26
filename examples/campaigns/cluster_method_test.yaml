@@ -1,0 +1,114 @@
+# =====================================================================
+# cluster_method_test.yaml -- short end-to-end test of every method that has
+# never trained on a GPU, before spending campaign hours on it.
+#
+#   arm                   exercises
+#   quality-hind          quality mode, hindsight score (patch 0005)
+#   quality-beh-bc-cons   weighted BC (never run in a campaign) + the
+#                         operator-consistency weight (patch 0005)
+#   e2hil                 E2HiL entropy-bounded actor loss (patch 0001)
+#   hiril                 the HiRIL pipeline, train_hiril.py (patch 0004);
+#                         3000 steps so tau_risk calibrates (step ~1700)
+#                         and risk-triggered requests start
+#   aqi                   full system: active gate + quality; the synthetic
+#                         operator responds to the robot's requests
+#
+# 1 intermediate operator x 1 seed x 5 arms, 3000 env steps each (~15-25 min
+# per cell on an H100). Not a result: SR after 3000 steps says nothing. The
+# test passes when every cell trains, checkpoints, and is scored on the
+# ruler; then read the per-arm logs (see cluster/claix/README.md).
+#
+#   bash cluster/claix/submit_campaign.sh examples/campaigns/cluster_method_test.yaml method-test --parallel 5 --time 01:00:00
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  intermediate: 1
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 3
+  filtered: true
+  max_attempts: 150
+
+methods:
+  - quality-hind
+  - quality-beh-bc-cons
+  - e2hil
+  - hiril
+  - aqi
+
+arms:
+  quality-hind:        {mode: quality, quality_score_mode: hindsight}
+  quality-beh-bc-cons: {mode: quality, quality_score_mode: behavioral,
+                        bc_loss_weight: 0.1, quality_consistency_weight: true,
+                        quality_consistency_k: 2}
+
+replicates:
+  seeds: 1
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 3000
+  minutes_per_cell: 40              # anti-hang only
+  converge_success: 0.9             # will not converge in 3000 steps
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 5
+  demo_pretrain: true               # exercise the warm start briefly
+  demo_pretrain_steps: 300
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+
+aqi:
+  synthetic_intervention_mode: signal
+  critic_ensemble_size: 8           # RQ4-fixed ensemble (inert for e2hil)
+  critic_subsample_size: 1
+  per_member_targets: true
+  bc_loss_weight: 0.0               # the BC arm overrides this
+  quality_filters:
+    - safety_veto
+    - jerk_veto
+  per_standardize: true
+  per_delta_init: 0.1
+  per_eps: 0.05
+  per_eta: 1.0
+  quality_warmup_steps: 1000        # short, so q/w act inside the test
+  per_scale_decay: 0.01
+  per_refresh_period: 500
+  per_is_beta: 0.5
+
+eval:
+  dx_mm: [-8, 0, 8]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 3
+  select: best_window
+  window_k: 2
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: aqi
+  plots: false
