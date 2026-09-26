@@ -21,6 +21,13 @@ cd "${AQI_REPO_DIR}" || exit 2
 # shellcheck disable=SC1091
 source cluster/claix/env.sh
 nvidia-smi -L
+# stop before training on a node whose EGL rendering is broken (env.sh)
+if [ -n "${AQI_EGL_SLOW:-}" ]; then
+    echo "node $(hostname): MuJoCo EGL rendering takes ${AQI_EGL_SLOW} s per" \
+         "frame; stopping before any work. Resubmit the same command with" \
+         "--exclude $(hostname)." >&2
+    exit 3
+fi
 python examples/run_campaign.py --config "${AQI_CONFIG}" \
     --campaign "${AQI_CAMPAIGN}" --stages train,eval \
     --shard "${SLURM_ARRAY_TASK_ID:?submit as an array}/${AQI_NCELLS}" "$@"

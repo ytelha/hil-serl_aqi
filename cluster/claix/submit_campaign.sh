@@ -15,15 +15,18 @@
 #   --cells-only     skip prepare (demos exist); still chains analyze
 #   --no-analyze     do not submit the analyze job
 #   --extra "ARGS"   extra run_campaign.py arguments for all steps
+#   --exclude NODES  keep the GPU jobs off these nodes (e.g. n23g0004), for
+#                    a node whose EGL rendering is broken (job exit code 3)
 #   --dry            print what would be submitted, submit nothing
 #
 # Re-running the same command resumes: finished cells are skipped.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
-[ $# -ge 2 ] || { sed -n '2,24p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '2,26p' "$0"; exit 2; }
 CONFIG="$1"; NAME="$2"; shift 2
 ACCOUNT=(); PARALLEL=8; TIME=06:00:00; PREP=1; ANALYZE=1; EXTRA=""; DRY=0
+EXCL=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --account) ACCOUNT=(--account "$2"); shift 2 ;;
@@ -32,6 +35,7 @@ while [ $# -gt 0 ]; do
         --cells-only) PREP=0; shift ;;
         --no-analyze) ANALYZE=0; shift ;;
         --extra) EXTRA="$2"; shift 2 ;;
+        --exclude) EXCL=(--exclude "$2"); shift 2 ;;
         --dry) DRY=1; shift ;;
         *) echo "unknown option $1"; exit 2 ;;
     esac
@@ -69,13 +73,13 @@ run() {
 
 DEP=()
 if [ "${PREP}" = 1 ]; then
-    PREP_ID=$(run "${ACCOUNT[@]}" --job-name="aqi-prep-${NAME}" \
+    PREP_ID=$(run "${ACCOUNT[@]}" "${EXCL[@]}" --job-name="aqi-prep-${NAME}" \
         --output="${LOGS}/prepare_%j.out" "${HERE}/campaign_prepare.sbatch" \
         "${REPO}" "${AQI_CONFIG}" "${AQI_CAMPAIGN}" "${EXTRA_ARR[@]}")
     echo "prepare  ${PREP_ID}"
     DEP=(--dependency="afterok:${PREP_ID}")
 fi
-CELLS_ID=$(run "${ACCOUNT[@]}" "${DEP[@]}" --job-name="aqi-cells-${NAME}" \
+CELLS_ID=$(run "${ACCOUNT[@]}" "${EXCL[@]}" "${DEP[@]}" --job-name="aqi-cells-${NAME}" \
     --array="0-$((NCELLS - 1))%${PARALLEL}" --time="${TIME}" \
     --output="${LOGS}/cell_%a_%A.out" "${HERE}/campaign_cells.sbatch" \
     "${REPO}" "${AQI_CONFIG}" "${AQI_CAMPAIGN}" "${NCELLS}" "${EXTRA_ARR[@]}")

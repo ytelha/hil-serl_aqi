@@ -20,5 +20,12 @@ unset AQI_TRAINER_PORT MUJOCO_EGL_DEVICE_ID
 cd "${AQI_REPO_DIR}" || exit 2
 # shellcheck disable=SC1091
 source cluster/claix/env.sh
+# stop before recording demos on a node whose EGL rendering is broken (env.sh)
+if [ -n "${AQI_EGL_SLOW:-}" ]; then
+    echo "node $(hostname): MuJoCo EGL rendering takes ${AQI_EGL_SLOW} s per" \
+         "frame; stopping before any work. Resubmit the same command with" \
+         "--exclude $(hostname)." >&2
+    exit 3
+fi
 python examples/run_campaign.py --config "${AQI_CONFIG}" \
     --campaign "${AQI_CAMPAIGN}" --stages sample,demos "$@"

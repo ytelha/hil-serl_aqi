@@ -82,14 +82,23 @@ export PYTHONPATH="${_AQI_CLAIX_DIR}/stubs:${PYTHONPATH}"
 # Slurm gave this job. Probe once per job (a few seconds).
 if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${CUDA_VISIBLE_DEVICES:-}" ] \
         && [ -z "${MUJOCO_EGL_DEVICE_ID+x}" ] && [ "${MUJOCO_GL}" = "egl" ]; then
-    _dev="$(python "${_AQI_CLAIX_DIR}/egl_probe.py" 2>/dev/null | tail -n 1)"
+    _probe="$(python "${_AQI_CLAIX_DIR}/egl_probe.py" --bench 2>/dev/null)"
+    _dev="$(printf '%s\n' "${_probe}" | sed -n 1p)"
+    _spf="$(printf '%s\n' "${_probe}" | sed -n 2p)"
     if [ "${_dev}" = "none" ]; then
         echo "[env.sh] WARNING: no working EGL device found; MuJoCo image" \
              "rendering will fail. Run: python cluster/claix/egl_probe.py -v" >&2
     elif [ -n "${_dev}" ]; then
         export MUJOCO_EGL_DEVICE_ID="${_dev}"
     fi
-    unset _dev
+    # a broken EGL path can pass the one-frame probe and still take ~10 s
+    # per frame; the job scripts stop early on such a node (AQI_EGL_SLOW)
+    if [ -n "${_spf}" ] && ! awk -v s="${_spf}" 'BEGIN { exit !(s < 0.5) }'; then
+        export AQI_EGL_SLOW="${_spf}"
+        echo "[env.sh] WARNING: EGL rendering on $(hostname) takes ${_spf} s" \
+             "per frame (healthy: ~0.01 s)" >&2
+    fi
+    unset _probe _dev _spf
 fi
 
 echo "[env.sh] repo=${AQI_REPO} runs=${AQI_RUNS} port=${AQI_TRAINER_PORT}" \
