@@ -139,8 +139,10 @@ say "5/5 import check (CPU; the GPU is checked by the smoke job)"
     source "${HERE}/env.sh"
     JAX_PLATFORMS=cpu python - <<'PY'
 import importlib
-mods = ["jax", "flax", "optax", "distrax", "mujoco", "gymnasium", "agentlace",
-        "cv2", "yaml", "experiments.mappings", "serl_launcher.aqi"]
+# serl_launcher first: its __init__ patches JAX for distrax (as in training)
+mods = ["jax", "flax", "optax", "serl_launcher", "distrax", "mujoco",
+        "gymnasium", "agentlace", "cv2", "yaml", "experiments.mappings",
+        "serl_launcher.aqi"]
 optional = ["serl_launcher.hiril"]          # only with patch 0004
 bad = []
 for m in mods + optional:
