@@ -34,7 +34,8 @@ Layout created under ``--campaign``::
     eval_grid.json               the fixed ruler grid (dx x dyaw poses)
     operators.csv                the sampled operator roster
     operators/<op>.json          per-operator ground-truth theta (drives BOTH
-                                 demo collection and live interventions)
+                                 demo collection and live interventions);
+                                 frozen on first write, never re-sampled
     demos/<op>_s<seed>.pkl       synthetic demonstrations (+ _groundtruth.json)
     checkpoints/<cell>/          trained policy per cell (+ .done marker)
     eval_runs/<cell>/cell.json   ruler outcomes per cell
@@ -568,10 +569,36 @@ def sample_operators(tiers, ops_per_tier, sample_seed, jitter,
     return roster
 
 
+def freeze_roster(roster, campaign: Path):
+    """The roster is FROZEN on first write, like the eval ruler: an operator
+    whose operators/<id>.json already exists keeps that theta -- the demos
+    and every trained cell used it -- and only new operators take the
+    freshly sampled one. Returns (roster, ids whose file differs from what
+    the sampler draws now)."""
+    out, differs = [], []
+    for th in roster:
+        old = _roster_theta(campaign, th.operator_id)
+        if old is None:
+            out.append(th)
+            continue
+        a, b = old.as_dict(), th.as_dict()
+        if any(not (a.get(k) == v or (isinstance(v, float)
+                                      and isinstance(a.get(k), float)
+                                      and abs(a[k] - v) <= 1e-9 * max(1.0, abs(v))))
+               for k, v in b.items()):
+            differs.append(th.operator_id)
+        out.append(old)
+    return out, differs
+
+
 def write_roster(roster, campaign: Path):
+    """Write operators/<id>.json for operators that have none (existing files
+    are the frozen roster, see freeze_roster) and refresh operators.csv."""
     (campaign / "operators").mkdir(parents=True, exist_ok=True)
     for th in roster:
-        theta_to_json(th, str(campaign / "operators" / f"{th.operator_id}.json"))
+        p = campaign / "operators" / f"{th.operator_id}.json"
+        if not p.exists():
+            theta_to_json(th, str(p))
     with open(campaign / "operators.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(_ROSTER_COLS)
@@ -2510,6 +2537,13 @@ def main(argv=None):
             "[shard] run the demos stage once BEFORE the shards and the "
             "analyze stage once AFTER them (shards: --stages train,eval); "
             "parallel shards would collect the same demos concurrently.")
+    roster, differs = freeze_roster(roster, campaign)
+    if differs:
+        _yellow(f"[roster] keeping the frozen operators/*.json for "
+                f"{', '.join(differs)}: the sampler now draws different values "
+                "(the campaign was sampled before the fixed key order, or "
+                "jitter/sample_seed changed). The frozen files are what the "
+                "demos and cells used; examples/roster_audit.py checks this.")
     if write_shared:
         write_roster(roster, campaign)
     # The eval ruler is FROZEN on first write: all cells (including across

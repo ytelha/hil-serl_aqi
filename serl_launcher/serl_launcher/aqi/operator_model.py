@@ -171,10 +171,14 @@ def jitter_theta(theta: OperatorTheta, rng: np.random.Generator,
     by exp(N(0, strength^2)) so tiers become overlapping clouds rather
     than three identical robots. ``keys`` restricts jitter to a subset of
     the scale-like parameters (e.g. execution-only, to keep a unified
-    monitoring signal identical across operators)."""
+    monitoring signal identical across operators).
+
+    The keys are visited in sorted order: iterating the set directly follows
+    Python's per-process string hashing (PYTHONHASHSEED), so the same rng
+    draws landed on different parameters in every process."""
     jkeys = _SCALE_JITTERED if keys is None else (_SCALE_JITTERED & set(keys))
     kw = theta.as_dict()
-    for k in jkeys:
+    for k in sorted(jkeys):
         kw[k] = kw[k] * float(np.exp(rng.normal(0.0, strength)))
     return OperatorTheta(**kw)
 
