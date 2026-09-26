@@ -14,7 +14,8 @@
 #   - then sources the repo's own sim_env.sh (venv, MUJOCO_GL=egl, PYTHONPATH).
 # Nothing here is used outside the cluster.
 
-_AQI_CLAIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# works when sourced from bash or zsh (the CLAIX default login shell)
+_AQI_CLAIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export AQI_REPO="$(cd "${_AQI_CLAIX_DIR}/../.." && pwd)"
 export AQI_RUNS="${AQI_RUNS:-${HPCWORK:-$HOME}/aqi_runs}"
 mkdir -p "${AQI_RUNS}"

@@ -8,7 +8,7 @@
 # in-repo packages to PYTHONPATH.
 
 # --- locate the repo root (this file lives in examples/experiments/sim_peg_insertion) ---
-_SIM_ENV_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+_SIM_ENV_DIR="$( cd "$( dirname "${BASH_SOURCE[0]:-$0}" )" && pwd )"   # bash or zsh
 REPO_ROOT="$( cd "${_SIM_ENV_DIR}/../../.." && pwd )"
 
 # --- python venv ---
