@@ -2537,6 +2537,15 @@ def main(argv=None):
             "[shard] run the demos stage once BEFORE the shards and the "
             "analyze stage once AFTER them (shards: --stages train,eval); "
             "parallel shards would collect the same demos concurrently.")
+    # The operator roster is frozen like the ruler (handoff FINDINGS F1):
+    # an existing operators/<id>.json is never re-sampled or overwritten,
+    # because the demos and the trained cells of this campaign used it.
+    # - To get different operators, use a fresh --campaign folder; changing
+    #   jitter / sample_seed for an existing folder only prints a warning.
+    # - To reuse an old campaign's operators in a new folder, copy its
+    #   operators/*.json there before the first run.
+    # - This never repairs a roster that an older run already rewrote; run
+    #   examples/roster_audit.py (read-only) to find out.
     roster, differs = freeze_roster(roster, campaign)
     if differs:
         _yellow(f"[roster] keeping the frozen operators/*.json for "

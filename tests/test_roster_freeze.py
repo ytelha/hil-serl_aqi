@@ -109,6 +109,28 @@ def test_audit_flags_cells_trained_against_another_operator():
         assert json.loads(Path(str(f) + ".bak").read_text()) == other
 
 
+def test_audit_never_restores_when_demo_seeds_disagree():
+    import roster_audit
+    th = {"operator_id": "int00", "tier": "intermediate", "sigma0": 2.31,
+          "rho_fa": 0.62, "sigma_perc": 0.76}
+    other = dict(th, sigma0=2.76, rho_fa=0.57)
+    with tempfile.TemporaryDirectory() as tmp:
+        c = Path(tmp)
+        _write(c / "operators" / "int00.json", other)
+        # the demos stage itself ran twice: seed 1 used a different theta
+        _write(c / "demos" / "int00_s0" / "demos_groundtruth.json",
+               {"theta": th})
+        _write(c / "demos" / "int00_s1" / "demos_groundtruth.json",
+               {"theta": other})
+        # each cell is compared with the demos of its own seed
+        _write(c / "checkpoints" / "a_int00_s1" / "manifest.json",
+               {"operator": dict(other, theta_path="x")})
+        assert roster_audit.main(["--restore", str(c)]) == 1  # ambiguous
+        f = c / "operators" / "int00.json"
+        assert json.loads(f.read_text()) == other             # untouched
+        assert not Path(str(f) + ".bak").exists()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
