@@ -1,5 +1,8 @@
 # Weights & Biases monitoring
 
+What every metric means, how to read a run, how to compare arms and how to
+export the data: [`wandb_metrics.md`](wandb_metrics.md).
+
 W&B is integrated into the learner processes. The actor sends episode and timer
 statistics to the learner through Agentlace; the learner combines those with its
 optimization metrics and writes one W&B run. The actor does not open a separate

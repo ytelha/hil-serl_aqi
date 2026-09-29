@@ -80,3 +80,4 @@ them:
 | [`e2hil_baseline.md`](../e2hil_baseline.md), [`hiril_baseline.md`](../hiril_baseline.md) | part 02 (baselines) |
 | [`campaign_runner.md`](../campaign_runner.md), [`dependency_analysis.md`](../dependency_analysis.md), [`eval_ruler.md`](../eval_ruler.md) | parts 02 and 05 |
 | [`thesis/`](../thesis/README.md) (RQ logs) | part 05 (the story of your results) |
+| [`wandb_metrics.md`](../wandb_metrics.md) | parts 02 and 05: what each W&B metric means and how to read a run |
