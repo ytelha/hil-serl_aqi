@@ -34,10 +34,11 @@ def test_note_ground_truth_only_when_enabled():
     for on in (False, True):
         stub = SimpleNamespace(cfg=SimpleNamespace(quality_cf_diag=on),
                                _pending_step_record={"step": 4})
-        AQIRuntime.note_ground_truth(stub, gt)
+        AQIRuntime.note_ground_truth(stub, dict(gt, z_task=0.4))
         rec = stub._pending_step_record
         assert ("gt_lat_err_mm" in rec) == on
-        assert "z" not in rec                     # only the gt_* fields
+        assert rec.get("op_z_task") == (0.4 if on else None)
+        assert "z" not in rec                     # only the listed fields
     stub = SimpleNamespace(cfg=SimpleNamespace(quality_cf_diag=True),
                            _pending_step_record=None)
     AQIRuntime.note_ground_truth(stub, gt)        # nothing pending: no-op

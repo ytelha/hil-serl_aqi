@@ -318,13 +318,18 @@ class AQIRuntime:
         """Diagnostics only (quality_cf_diag): attach the synthetic
         operator's simulator ground truth for the state AFTER this step
         (true lateral error, height above the hole, jam) to the pending
-        step record. Call after env.step, before record_transition."""
+        step record, plus the operator's own task-trouble estimate z_task
+        (as op_z_task: the "would the operator have worried here" baseline
+        for evaluating the active gate). Call after env.step, before
+        record_transition."""
         rec = getattr(self, "_pending_step_record", None)
         if rec is None or not gt or not self.cfg.quality_cf_diag:
             return
         for k in ("gt_lat_err_mm", "gt_height_mm", "gt_jammed"):
             if k in gt:
                 rec[k] = gt[k]
+        if "z_task" in gt:
+            rec["op_z_task"] = gt["z_task"]
 
     # ------------------------------------------------------------------
     def record_transition(self, obs, transition: dict,
