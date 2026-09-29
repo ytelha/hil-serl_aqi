@@ -50,6 +50,14 @@ existing open-source human-in-the-loop RL framework and adds two contributions:
 > **Writing the thesis?** [docs/thesis/](./docs/thesis/) is the hub — the experiment
 > plan, the exact run/analyse/plot protocols, a ready-to-run campaign config, and a
 > chapter-by-chapter map from each RQ to the doc, command, and figure.
+>
+> **Learning the codebase?** [docs/learn/](./docs/learn/README.md) is a
+> self-study course built around this repo:
+> - where every algorithm and wrapper lives, with one training step traced end to end;
+> - the algorithms from the maths to the code;
+> - the libraries (JAX, Flax, Optax, Gymnasium, MuJoCo, agentlace), with runnable examples;
+> - the Python features and design patterns used here;
+> - graded exercises, and a guide to presenting and defending the thesis.
 
 ## Installation
 1. **Setup Conda Environment:**
