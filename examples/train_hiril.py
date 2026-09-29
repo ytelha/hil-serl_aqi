@@ -255,6 +255,13 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
     obs, _ = env.reset(seed=int(env_seed))
 
     # ---- risk threshold (Eq. 23): absolute, or calibrated once --------------
+    # KNOWN LIMITATION (cluster method test 2026-09-26, handoff FINDINGS F2):
+    # DU(s, a_RL) roughly halved every episode under the sparse reward
+    # (0.46 -> 0.0005 in 3000 steps), so the quantile frozen at calib_end was
+    # never exceeded again and the run made 0 requests. Requests are only
+    # possible after calibration (see `request` below). Decide how HiRIL
+    # should trigger before running a HiRIL campaign; do not change it
+    # between cells of one campaign.
     tau_risk = hiril.tau_risk if hiril.tau_risk > 0 else None
     calib_start = config.random_steps + hiril.calib_delay_steps
     calib_end = calib_start + hiril.calib_steps

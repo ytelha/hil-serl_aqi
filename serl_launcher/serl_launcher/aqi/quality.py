@@ -317,6 +317,12 @@ def post_release_window(t0: int, length: int, n_steps: int, horizon: int,
     return max(int(n_steps) - 1, int(t0)), True
 
 
+# KNOWN LIMITATION (cluster method test 2026-09-26, handoff FINDINGS F4):
+# before the critic has seen any reward, r = 0 in the window and V is nearly
+# flat, so A_hind ~ (g^(n+K) - 1) * V(s_t0): negative, and set by the
+# takeover length n and the onset value rather than by what the takeover
+# achieved (corr +0.96 with that expression over 28 segments). Treat
+# "hindsight" scores from early training as a timing signal.
 def hindsight_advantage(values, rewards, t0: int, length: int, horizon: int,
                         discount: float, terminal: bool):
     """n-step advantage of the takeover measured on the states actually

@@ -1374,6 +1374,12 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
     # wait till the replay buffer is filled with enough data
     timer = Timer()
 
+    # NOTE (handoff FINDINGS F3): this loop is not tied to the actor. The
+    # actor is paced at 10 Hz, while the learner updates as fast as its GPU
+    # allows, so the updates per env step depend on the method's per-update
+    # cost and on the GPU. Measured on an H100: quality/aqi ~2.6, hiril ~2.1,
+    # e2hil ~1.3 learner steps per env step. Report it per method; changing
+    # it here would make new cells incomparable with every finished one.
     for step in tqdm.tqdm(
         range(step, config.max_steps), dynamic_ncols=True, desc="learner"
     ):
