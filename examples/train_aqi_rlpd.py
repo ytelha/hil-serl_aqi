@@ -333,6 +333,12 @@ flags.DEFINE_integer("quality_consistency_k", None,
 flags.DEFINE_float("quality_consistency_sigma_ref", None,
                    "Fixed sigma_ref of the consistency factor (default: the "
                    "running mean of sigma_beta). quality/aqi only.")
+flags.DEFINE_boolean("quality_cf_diag", None,
+                     "Log diagnostics of the counterfactual score (every "
+                     "critic's Q at a_H / a_robot / the policy mode / policy "
+                     "samples per takeover step) and the synthetic operator's "
+                     "simulator ground truth per step. Logging only; no "
+                     "effect on training. Every logging mode.")
 flags.DEFINE_string("quality_behavioral_terms", None,
                     "Comma-separated terms of the behavioral score out of "
                     "{d_value,t_int,f_peak} (default all). E.g. "
@@ -503,7 +509,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         respond_to_request=aqi_cfg.active_on,
         action_conditioner=action_conditioner,
         intervention_mode=intervention_mode,
-        latch_until_success=FLAGS.synthetic_latch_until_success), theta
+        latch_until_success=FLAGS.synthetic_latch_until_success,
+        log_ground_truth=aqi_cfg.quality_cf_diag), theta
 
 
 def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
@@ -786,6 +793,8 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
         with timer.context("step_env"):
 
             next_obs, reward, done, truncated, info = env.step(exec_action)
+            if aqi_cfg.quality_cf_diag:     # logging only (diagnostics)
+                aqi.note_ground_truth(info.get("synthetic_operator"))
             if "left" in info:
                 info.pop("left")
             if "right" in info:
@@ -1504,7 +1513,7 @@ def main(_):
             FLAGS.quality_behavioral_terms)
     for _key in ("quality_post_release_steps", "quality_hindsight_discount",
                  "quality_consistency_weight", "quality_consistency_k",
-                 "quality_consistency_sigma_ref"):
+                 "quality_consistency_sigma_ref", "quality_cf_diag"):
         if FLAGS[_key].present:
             overrides[_key] = getattr(FLAGS, _key)
     # the hindsight advantage must discount like the critic it reads
@@ -1555,8 +1564,10 @@ def main(_):
                    "quality_consistency_weight", "quality_consistency_k",
                    "quality_consistency_sigma_ref"):
             return aqi_cfg.quality_on
-        if key in ("quality_post_release_steps", "quality_hindsight_discount"):
-            # also shape the LOGGED a_hind / d_progress_post features
+        if key in ("quality_post_release_steps", "quality_hindsight_discount",
+                   "quality_cf_diag"):
+            # also shape the LOGGED a_hind / d_progress_post features;
+            # quality_cf_diag is logging-only in every logging mode
             return aqi_cfg.logging_on
         if key in ("critic_ensemble_size", "critic_subsample_size",
                    "critic_bootstrap_p", "critic_per_member_targets"):

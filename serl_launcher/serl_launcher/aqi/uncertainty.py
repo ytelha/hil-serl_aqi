@@ -124,6 +124,68 @@ def counterfactual_advantage_batch(agent, observations, human_actions,
     return mu_h - mu_r, sigma, mu_h, mu_r
 
 
+@jax.jit
+def _q_members_batched(agent, observations, actions):
+    """Q of every ensemble member: (K, B)."""
+    return agent.forward_critic(observations, actions, rng=None, train=False)
+
+
+def counterfactual_diagnostics(agent, observations, human_actions,
+                               robot_actions, seed: int, n_samples: int = 8,
+                               max_batch: int = 32) -> dict:
+    """Diagnostics of the counterfactual score (logging only).
+
+    For B takeover steps returns numpy arrays:
+        qh    (K, B)  every member's Q(s, a_H)
+        qr    (K, B)  every member's Q(s, a_robot), the logged policy sample
+        qmu   (K, B)  every member's Q(s, mu_pi(s)), the policy mode
+        vk    (K, B)  every member's mean Q over n_samples policy samples,
+                      i.e. a per-member estimate of E_{a~pi} Q(s, a)
+        qs    (N, B)  member-mean Q of each of the N policy samples
+        a_mu  (B, A)  the policy mode mu_pi(s)
+    Chunked and padded to one fixed shape like
+    counterfactual_advantage_batch, so each jit compiles once.
+    """
+    human_actions = jnp.asarray(human_actions)
+    robot_actions = jnp.asarray(robot_actions)
+    n = int(human_actions.shape[0])
+    if n == 0:
+        return {}
+    key = jax.random.PRNGKey(int(seed) % (2 ** 31 - 1))
+    parts = {k: [] for k in ("qh", "qr", "qmu", "vk", "qs", "a_mu")}
+    for c, start in enumerate(range(0, n, max_batch)):
+        stop = min(start + max_batch, n)
+        m = stop - start
+        obs_c = jax.tree_util.tree_map(
+            lambda x, a=start, b=stop: x[a:b], observations)
+        a_h = human_actions[start:stop]
+        a_r = robot_actions[start:stop]
+        if m < max_batch:
+            pad = max_batch - m
+            obs_c = jax.tree_util.tree_map(
+                lambda x: jnp.concatenate(
+                    [x, jnp.repeat(x[-1:], pad, axis=0)], axis=0), obs_c)
+            a_h = jnp.concatenate([a_h, jnp.repeat(a_h[-1:], pad, axis=0)], 0)
+            a_r = jnp.concatenate([a_r, jnp.repeat(a_r[-1:], pad, axis=0)], 0)
+        parts["qh"].append(np.asarray(_q_members_batched(agent, obs_c, a_h))[:, :m])
+        parts["qr"].append(np.asarray(_q_members_batched(agent, obs_c, a_r))[:, :m])
+        a_mu = agent.sample_actions(observations=obs_c, argmax=True)
+        parts["qmu"].append(np.asarray(_q_members_batched(agent, obs_c, a_mu))[:, :m])
+        parts["a_mu"].append(np.asarray(a_mu)[:m])
+        q_samples = []
+        for j in range(n_samples):
+            a_s = agent.sample_actions(
+                observations=obs_c,
+                seed=jax.random.fold_in(key, c * n_samples + j), argmax=False)
+            q_samples.append(np.asarray(_q_members_batched(agent, obs_c, a_s))[:, :m])
+        q_samples = np.stack(q_samples)                  # (N, K, m)
+        parts["vk"].append(q_samples.mean(axis=0))
+        parts["qs"].append(q_samples.mean(axis=1))
+    out = {k: np.concatenate(v, axis=0 if k == "a_mu" else 1)
+           for k, v in parts.items()}
+    return out
+
+
 def counterfactual_advantage_batch_safe(agent, observations, human_actions,
                                         robot_actions, max_batch=32):
     """OOM-resilient counterfactual scoring; returns identical values.

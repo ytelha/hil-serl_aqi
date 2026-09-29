@@ -294,7 +294,8 @@ def apply_config(args, cfg: dict, explicit) -> dict:
                       ("quality_hindsight_discount", float),
                       ("quality_consistency_weight", bool),
                       ("quality_consistency_k", int),
-                      ("quality_consistency_sigma_ref", float)):
+                      ("quality_consistency_sigma_ref", float),
+                      ("quality_cf_diag", bool)):
         if aqi.get(key) is not None and key not in explicit:
             setattr(args, key, cast(aqi[key]))
     if (aqi.get("synthetic_intervention_mode") is not None
@@ -486,6 +487,7 @@ def _method_conditions(method, args):
                 ("quality_consistency_k", "quality_consistency_k"),
                 ("quality_consistency_sigma_ref",
                  "quality_consistency_sigma_ref"),
+                ("quality_cf_diag", "quality_cf_diag"),
                 ("critic_ensemble_size", "critic_ensemble_size"),
                 ("per_member_targets", "critic_per_member_targets"),
                 ("e2hil_K", "e2hil_K"), ("e2hil_q_low", "e2hil_q_low"),
@@ -913,6 +915,7 @@ _AQI_FLAG_SPEC = (
     ("quality_hindsight_discount", "val"),
     ("quality_consistency_weight", "bool"), ("quality_consistency_k", "val"),
     ("quality_consistency_sigma_ref", "val"),
+    ("quality_cf_diag", "bool"),
     ("critic_ensemble_size", "val"), ("critic_subsample_size", "val"),
     ("per_member_targets", "bool"),
     ("e2hil_K", "val"), ("e2hil_q_low", "val"), ("e2hil_q_high", "val"),
@@ -1022,6 +1025,7 @@ ARM_KEYS = {
     "quality_post_release_steps": int, "quality_hindsight_discount": float,
     "quality_consistency_weight": _to_bool, "quality_consistency_k": int,
     "quality_consistency_sigma_ref": float,
+    "quality_cf_diag": _to_bool,
     "per_standardize": _to_bool, "per_delta_init": float, "per_eta": float,
     "per_eps": float, "quality_warmup_steps": int, "per_scale_decay": float,
     "per_refresh_period": int, "per_is_beta": float,
@@ -2252,6 +2256,11 @@ def build_arg_parser():
                    default=None,
                    help="fixed sigma_ref of the consistency factor (default: "
                         "running mean of sigma_beta; quality/aqi).")
+    p.add_argument("--quality_cf_diag", default=None,
+                   action=argparse.BooleanOptionalAction,
+                   help="log diagnostics of the counterfactual score and the "
+                        "synthetic operator's simulator ground truth "
+                        "(logging only; every logging mode).")
     p.add_argument("--per_delta_init", type=float, default=None,
                    help="PER |delta| init in the priority (quality/aqi).")
     p.add_argument("--per_eta", type=float, default=None,

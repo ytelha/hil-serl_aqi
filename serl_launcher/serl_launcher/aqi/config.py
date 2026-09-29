@@ -274,6 +274,16 @@ class AQIConfig:
     quality_consistency_capacity: int = 20000
     quality_consistency_sigma_ref: Optional[float] = None
 
+    # Diagnostics of the counterfactual score (LOGGING ONLY, no effect on
+    # training or on q/w). At episode end, per takeover step, the segment log
+    # gets every critic's Q at a_H, at the sampled a_robot and at the policy
+    # mean, plus Q at quality_cf_diag_samples fresh policy samples; each step
+    # record gets the synthetic operator's ground truth from the simulator
+    # (true lateral error, height, jam). Used to test why A_hat fails and
+    # whether a better-built score works (docs/counterfactual_score_study.md).
+    quality_cf_diag: bool = False
+    quality_cf_diag_samples: int = 8
+
     # ------------------------------------------------------------------
     # Quality-aware replay (S5.6): p_i = (eps + |delta_i| + eta*max(q,0))^alpha
     # ------------------------------------------------------------------

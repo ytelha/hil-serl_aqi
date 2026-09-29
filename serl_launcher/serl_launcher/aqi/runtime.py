@@ -49,6 +49,7 @@ from serl_launcher.aqi.quality import (
 from serl_launcher.aqi.query_gate import ActiveQueryGate
 from serl_launcher.aqi.uncertainty import (
     counterfactual_advantage_batch_safe,
+    counterfactual_diagnostics,
     lcb,
     q_stats_single,
     stack_obs,
@@ -313,6 +314,19 @@ class AQIRuntime:
         return record
 
     # ------------------------------------------------------------------
+    def note_ground_truth(self, gt) -> None:
+        """Diagnostics only (quality_cf_diag): attach the synthetic
+        operator's simulator ground truth for the state AFTER this step
+        (true lateral error, height above the hole, jam) to the pending
+        step record. Call after env.step, before record_transition."""
+        rec = getattr(self, "_pending_step_record", None)
+        if rec is None or not gt or not self.cfg.quality_cf_diag:
+            return
+        for k in ("gt_lat_err_mm", "gt_height_mm", "gt_jammed"):
+            if k in gt:
+                rec[k] = gt[k]
+
+    # ------------------------------------------------------------------
     def record_transition(self, obs, transition: dict,
                           robot_action: np.ndarray,
                           intervening: bool, requested: bool,
@@ -450,6 +464,20 @@ class AQIRuntime:
             a_hat, sigma, mu_h, mu_r = counterfactual_advantage_batch_safe(
                 agent, obs_batch,
                 np.stack(seg.human_actions), np.stack(seg.robot_actions))
+            # logging-only diagnostics of the counterfactual score; they
+            # never feed q/w and must never stop the actor
+            cf_diag = None
+            if self.cfg.quality_cf_diag:
+                try:
+                    d = counterfactual_diagnostics(
+                        agent, obs_batch, np.stack(seg.human_actions),
+                        np.stack(seg.robot_actions),
+                        seed=100003 * self.episode_idx + seg.start_step,
+                        n_samples=self.cfg.quality_cf_diag_samples)
+                    cf_diag = {k: np.round(np.asarray(v, np.float64), 6)
+                               .tolist() for k, v in d.items()}
+                except Exception as err:     # diagnostics only
+                    cf_diag = {"error": repr(err)[:300]}
             # unified path: the core signal is always graded; exclusion
             # (incl. unsolicited takeovers) is the filter pipeline's job.
             self.scorer.score_segment(seg, a_hat, sigma,
@@ -509,6 +537,7 @@ class AQIRuntime:
                 q_int=seg.q_int.tolist(),
                 weights=seg.weights.tolist(),
                 **cons,
+                **({"cf_diag": cf_diag} if cf_diag is not None else {}),
             ))
             if not seg.excluded:
                 for i, tr in enumerate(seg.transitions):

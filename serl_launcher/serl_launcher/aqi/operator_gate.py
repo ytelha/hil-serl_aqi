@@ -242,10 +242,14 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                  respond_to_request: bool = False,
                  action_conditioner=None,
                  intervention_mode: str = "signal",
-                 latch_until_success: bool = False):
+                 latch_until_success: bool = False,
+                 log_ground_truth: bool = False):
         super().__init__(env)
         self.op = operator
         self.monitor = monitor
+        # diagnostics only: add the oracle's simulator ground truth
+        # (gt_lat_err_mm, gt_height_mm, gt_jammed) to info each step
+        self.log_ground_truth = bool(log_ground_truth)
         self.gate = SyntheticInterventionGate(
             operator.th, rng or np.random.default_rng(0), dt=dt)
         # active/aqi: the operator RESPONDS to the robot's active-learning
@@ -374,5 +378,14 @@ class SyntheticOperatorWrapper(gym.Wrapper):
             handback=bool(event.startswith("handback")),
             false_alarm=bool(event == "trigger_fa"),
         )
+        if self.log_ground_truth and self.op.phase_based:
+            try:        # state AFTER this step, read from the simulator
+                orc = self.op.oracle
+                info["synthetic_operator"].update(
+                    gt_lat_err_mm=float(np.linalg.norm(orc.lateral_error(obs))),
+                    gt_height_mm=float(orc.height(obs)),
+                    gt_jammed=bool(orc.jammed(obs)))
+            except Exception:
+                pass
         self._last_obs, self._last_info = obs, info
         return obs, rew, terminated, truncated, info
