@@ -123,17 +123,32 @@ This patch leaves the `hilserl` code path unchanged, so RQ4's 18 scored
 `hilserl` cells can be copied in. The campaign then trains only the 18 `e2hil`
 cells, on the **same demos**, which keeps the design paired:
 
+**The operators must be copied too.** The copied cells and demos were made
+with `$SRC`'s synthetic operators. A new folder would otherwise sample its
+own roster, which differs from `$SRC`'s (always before patch 0007, whose
+fixed key order still draws different values than an old unpatched process).
+The new cells would then train against other operators than the copied ones,
+silently breaking the paired design. Requirements:
+- **patch 0007 applied first.** Without it, the first `run_campaign.py`
+  call in `$DST` re-samples and overwrites the copied `operators/*.json`;
+- `$SRC` audited: `roster_audit.py` must not report MISMATCH cells for it.
+
 ```bash
 SRC=runs/rq4_ensemble_convergence; DST=runs/e2hil_comparison
+./.venv/bin/python examples/roster_audit.py $SRC       # no MISMATCH, else ask the user
 mkdir -p $DST/checkpoints $DST/eval_runs
-cp -r $SRC/eval_grid.json $SRC/demos $DST/
+cp -r $SRC/eval_grid.json $SRC/demos $SRC/operators $SRC/operators.csv $DST/
 for d in $SRC/checkpoints/hilserl_*/; do
   c=$(basename $d); mkdir -p $DST/checkpoints/$c
   cp $d/.done $DST/checkpoints/$c/
-  cp $d/episodes.jsonl $d/CONVERGED.json $DST/checkpoints/$c/ 2>/dev/null
+  cp $d/episodes.jsonl $d/CONVERGED.json $d/manifest.json $DST/checkpoints/$c/ 2>/dev/null
 done
 cp -r $SRC/eval_runs/hilserl_* $DST/eval_runs/
+# repairs an operator file that an old run rewrote, from the copied demos
+./.venv/bin/python examples/roster_audit.py --restore $DST
 ```
+
+(`manifest.json` is copied so the audit can check the copied cells as well.)
 
 Checks:
 - The runner must **not** print `a DIFFERENT eval grid was requested`. If it
@@ -141,6 +156,8 @@ Checks:
 - `--plan` should list 36 cells.
 - The train stage should log `already trained (.done) -- skip` for every
   `hilserl_*` cell.
+- After the first new cells finish, `roster_audit.py $DST` must report
+  them consistent with their demos.
 
 If a copied cell has no `episodes.jsonl`, its intervention rate shows as
 missing (SR / ICC / convergence are unaffected).

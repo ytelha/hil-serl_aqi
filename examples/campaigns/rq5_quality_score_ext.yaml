@@ -34,6 +34,10 @@
 # docs/e2hil_baseline.md "Reusing the RQ4 hilserl cells" with
 # SRC=runs/rq5_quality_score and the globs logged_* and quality-beh_*; also
 # copy $SRC/aqi_logs/<cell>* for the audit. That leaves 54 new cells.
+# The recipe copies $SRC/operators too, which is required: otherwise the new
+# folder samples its own operators and the new cells train against others
+# than the copied ones. It needs patch 0007 (else the first run overwrites
+# the copied operators/*.json); check with examples/roster_audit.py.
 # If the C6 audit shows t_int is a timing confound, use quality-beh-not
 # instead of quality-beh (copy its cells the same way).
 #
