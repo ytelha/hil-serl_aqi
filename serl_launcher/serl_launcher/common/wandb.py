@@ -36,6 +36,28 @@ def _as_tags(tag):
     return [str(t) for t in tag]
 
 
+WANDB_TAG_MAX = 64   # W&B rejects longer tags
+
+
+def _env_tags(var: str = "AQI_WANDB_TAGS"):
+    """Extra tags from the environment, comma-separated. run_campaign.py sets
+    AQI_WANDB_TAGS for each cell's learner (campaign, arm, tier, operator,
+    seed, ...), so the tags need no command-line flag."""
+    return [t.strip() for t in os.environ.get(var, "").split(",") if t.strip()]
+
+
+def _merge_tags(*groups):
+    """Tag lists joined in order, duplicates dropped, each tag cut to the W&B
+    maximum; None when nothing is left."""
+    out = []
+    for group in groups:
+        for t in group or []:
+            t = str(t)[:WANDB_TAG_MAX]
+            if t and t not in out:
+                out.append(t)
+    return out or None
+
+
 def _recursive_flatten_dict(d: dict):
     keys, values = [], []
     for key, value in d.items():
@@ -101,7 +123,8 @@ class WandBLogger(object):
             project=project,
             entity=entity,
             group=group,
-            tags=_as_tags(getattr(self.config, "tag", None)),
+            tags=_merge_tags(_as_tags(getattr(self.config, "tag", None)),
+                             _env_tags()),
             dir=wandb_output_dir,
             id=self.config.experiment_id,
             name=self.config.experiment_id,

@@ -10,6 +10,7 @@ environment (jax) and is skipped otherwise. Run from the repo root with
 """
 
 import importlib.util
+import os
 import sys
 import tempfile
 import types
@@ -48,10 +49,14 @@ class _FakeRun:
         self.config = types.SimpleNamespace(update=lambda *a, **k: None)
 
 
-def _capture_init(fn):
-    """Run fn with wandb.init replaced by a recorder; return the kwargs."""
+def _capture_init(fn, env_tags=None):
+    """Run fn with wandb.init replaced by a recorder (and AQI_WANDB_TAGS set to
+    env_tags, or unset); return the kwargs."""
     seen = {}
     real = cw.wandb.init
+    old_env = os.environ.pop("AQI_WANDB_TAGS", None)
+    if env_tags is not None:
+        os.environ["AQI_WANDB_TAGS"] = env_tags
 
     def fake_init(**kwargs):
         seen.update(kwargs)
@@ -62,6 +67,9 @@ def _capture_init(fn):
         fn()
     finally:
         cw.wandb.init = real
+        os.environ.pop("AQI_WANDB_TAGS", None)
+        if old_env is not None:
+            os.environ["AQI_WANDB_TAGS"] = old_env
     return seen
 
 
@@ -106,6 +114,21 @@ def test_logger_without_tag():
     del cfg.tag
     seen = _capture_init(lambda: cw.WandBLogger(cfg, {}, tempfile.mkdtemp(), debug=True))
     assert seen["tags"] is None
+
+
+def test_env_tags_are_added_after_the_description():
+    # run_campaign.py sets AQI_WANDB_TAGS per cell; duplicates and blanks drop out
+    seen = _capture_init(lambda: cw.WandBLogger(_logger_cfg(DESC), {}, tempfile.mkdtemp(), debug=True),
+                         env_tags="active_effect, active ,novice,nov01,seed1,,active")
+    assert seen["tags"] == [DESC, "active_effect", "active", "novice", "nov01", "seed1"]
+
+
+def test_env_tags_alone_and_cut_to_64_chars():
+    cfg = _logger_cfg(None)
+    del cfg.tag
+    seen = _capture_init(lambda: cw.WandBLogger(cfg, {}, tempfile.mkdtemp(), debug=True),
+                         env_tags="x" * 80 + ",D3")
+    assert seen["tags"] == ["x" * 64, "D3"]
 
 
 def test_make_wandb_logger_passes_one_tag():

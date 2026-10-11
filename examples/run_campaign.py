@@ -250,6 +250,8 @@ def apply_config(args, cfg: dict, explicit) -> dict:
             raise SystemExit(f"[config] logging.wandb must be off/offline/online, "
                              f"got {log['wandb']!r}.")
         args.wandb = w
+    if log.get("wandb_tags") is not None and "wandb_tags" not in explicit:
+        args.wandb_tags = _csv(log["wandb_tags"])
 
     aqi = cfg.get("aqi") or {}
     if aqi.get("trigger_terms") is not None and "trigger_terms" not in explicit:
@@ -960,6 +962,30 @@ def _wandb_env(args):
     return {"WANDB_MODE": "offline"} if getattr(args, "wandb", "off") == "offline" else {}
 
 
+WANDB_TAG_MAX = 64   # W&B rejects longer tags
+
+
+def _wandb_tag_env(args, campaign: Path, cell) -> dict:
+    """W&B tags for one cell's learner: campaign, arm, base mode (named arms
+    only), tier, operator, seed, plus --wandb_tags / logging.wandb_tags. They
+    travel in AQI_WANDB_TAGS (read by serl_launcher.common.wandb.WandBLogger)
+    instead of a CLI flag, so every training command -- and with it every
+    --dry_run snapshot -- stays unchanged. Empty when wandb is off."""
+    if getattr(args, "wandb", "off") == "off":
+        return {}
+    mode = _arm_mode(args, cell.method)
+    tags = ([campaign.name, cell.method]
+            + ([mode] if mode != cell.method else [])
+            + [str(cell.tier), str(cell.operator), f"seed{cell.seed}"]
+            + str(getattr(args, "wandb_tags", "") or "").split(","))
+    out = []
+    for t in tags:
+        t = t.strip().replace(",", "_")[:WANDB_TAG_MAX]
+        if t and t not in out:
+            out.append(t)
+    return {"AQI_WANDB_TAGS": ",".join(out)}
+
+
 # ===========================================================================
 # arms: named method variants (base aqi_mode + per-arm overrides)
 # ===========================================================================
@@ -1325,7 +1351,7 @@ def train_cell(args, campaign: Path, cell: Cell):
     lp, lf = _launch(lcmd, llog, background=True, extra_env={
         "JAX_PLATFORMS": args.jax_platform,
         "XLA_PYTHON_CLIENT_MEM_FRACTION": args.gpu_mem_learner,
-        **_wandb_env(args)})
+        **_wandb_env(args), **_wandb_tag_env(args, campaign, cell)})
     try:
         # Demo pretraining runs BEFORE the learner prints "LEARNER READY", so
         # the ready wait must budget for it (a crash still returns early via
@@ -2133,6 +2159,9 @@ def print_plan(args, roster, cells, seeds, grid):
           f"combiner={args.trigger_combiner or 'default'}")
     print(f"  wandb        : {args.wandb}"
         + ("  (learner logging disabled)" if args.wandb == "off" else ""))
+    if getattr(args, "wandb_tags", ""):
+        print(f"  wandb tags   : {args.wandb_tags}  (+ campaign, arm, tier, "
+              f"operator, seed per cell)")
     print(f"  ruler grid   : {len(grid['trials'])} trials "
         f"({grid['n_poses']} poses x {grid['reps']} reps), "
         f"sha256 {grid['sha256'][:12]}...")
@@ -2453,6 +2482,13 @@ def build_arg_parser():
                         "'online' needs WANDB_API_KEY in the environment. "
                         "Cells run with no TTY, so 'online' without a key "
                         "crashes the learner.")
+    p.add_argument("--wandb_tags", default="",
+                   help="extra W&B tags for every learner run, comma-separated "
+                        "(e.g. 'D3,RQ4'; YAML logging.wandb_tags). Each run is "
+                        "also tagged with its campaign, arm, base mode, tier, "
+                        "operator and seed. The tags travel in the "
+                        "AQI_WANDB_TAGS env var, so the training commands do "
+                        "not change.")
     p.add_argument("--ready_timeout", type=float, default=600.0)
     p.add_argument("--learner_stop_timeout", type=float, default=240.0)
     # flow control

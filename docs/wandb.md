@@ -57,6 +57,26 @@ and stores each run under the cell's `checkpoints/<cell>/wandb/` directory.
 `off` disables W&B; the repository's AQI JSONL and campaign artifacts are still
 written.
 
+### Tags
+
+Every learner run of a campaign is tagged with its description (e.g.
+`sim_peg_insertion_logged_op0`) and with its cell: campaign folder name, arm,
+base mode (for a named arm such as `ens-m1` → `logged`), tier, operator and
+`seed<N>`. Add campaign-wide tags, e.g. the thesis campaign ID and research
+question, in the YAML
+
+```yaml
+logging:
+  wandb: "online"
+  wandb_tags: [D3, RQ4]
+```
+
+or with `--wandb_tags D3,RQ4`. The runner passes the tags to the learner in the
+`AQI_WANDB_TAGS` environment variable, not as a flag, so the training commands
+(and every `--dry_run` listing) stay unchanged. A learner started by hand can
+use the same variable: `AQI_WANDB_TAGS=D3,RQ4 python train_aqi_rlpd.py ...`.
+Tags longer than 64 characters are cut (W&B's limit).
+
 To upload an offline run later:
 
 ```bash
