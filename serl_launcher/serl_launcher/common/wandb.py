@@ -23,6 +23,19 @@ def _resolve_wandb_mode(debug: bool) -> str:
     return mode
 
 
+def _as_tags(tag):
+    """Tags for wandb.init: None, or a list of strings.
+
+    wandb.init(tags=...) iterates its argument, so a plain string would turn
+    into one tag per character. Accept a string, a sequence of strings or None.
+    """
+    if tag is None:
+        return None
+    if isinstance(tag, str):
+        return [tag] if tag else None
+    return [str(t) for t in tag]
+
+
 def _recursive_flatten_dict(d: dict):
     keys, values = [], []
     for key, value in d.items():
@@ -88,7 +101,7 @@ class WandBLogger(object):
             project=project,
             entity=entity,
             group=group,
-            tags=self.config.tag,
+            tags=_as_tags(getattr(self.config, "tag", None)),
             dir=wandb_output_dir,
             id=self.config.experiment_id,
             name=self.config.experiment_id,

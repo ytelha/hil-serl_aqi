@@ -354,7 +354,9 @@ def make_wandb_logger(
         {
             "project": project,
             "exp_descriptor": description,
-            "tag": description,
+            # a list: wandb.init(tags=...) iterates its argument, so a bare
+            # string became one tag per character ("s", "i", "m", "_", ...)
+            "tag": [description],
         }
     )
     wandb_logger = WandBLogger(
