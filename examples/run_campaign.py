@@ -1833,16 +1833,20 @@ def render_report_md(report, campaign_meta, tiers, conv=None, paired=None,
              f"(peg `{campaign_meta['peg_shape']}`)")
     L.append(f"- grid sha256: `{campaign_meta['grid_sha256'][:16]}...` "
              f"({campaign_meta['n_grid_trials']} trials)")
-    L.append(f"- operators: {campaign_meta['n_operators']} "
-             f"({campaign_meta['ops_per_tier']}/tier x "
-             f"{len(tiers)} tiers), seeds/op: {campaign_meta['n_seeds']}, "
+    opt = campaign_meta["ops_per_tier"]
+    ops_txt = (", ".join(f"{t} {n}" for t, n in opt.items())
+               if isinstance(opt, dict) else f"{opt}/tier x {len(tiers)} tiers")
+    L.append(f"- operators: {campaign_meta['n_operators']} ({ops_txt}), "
+             f"seeds/op: {campaign_meta['n_seeds']}, "
              f"cap: {campaign_meta['steps']} env steps/cell\n")
     L.append("## Operator dependency per method (final autonomous SR)\n")
     L.append("Lower ICC and lower between-operator variance = the outcome "
              "depends LESS on who trained it. The thesis claim is that AQI "
-             "reduces these versus baseline HIL-SERL.\n")
+             "reduces these versus baseline HIL-SERL. ICC drop = baseline ICC "
+             "minus method ICC (> 0: less operator-dependent than the "
+             "baseline).\n")
     L.append("| method | mean SR | ICC | sigma2_between | sigma2_within | "
-             "dICC vs base | operators | cells |")
+             "ICC drop vs base | operators | cells |")
     L.append("|---|---|---|---|---|---|---|---|")
     for method, m in report["methods"].items():
         tag = " (baseline)" if method == report["baseline"] else ""
@@ -1962,16 +1966,34 @@ def render_report_md(report, campaign_meta, tiers, conv=None, paired=None,
         for method, m in report["methods"].items():
             if method == base:
                 continue
-            d = m.get("delta_icc_vs_baseline")
+            d = m.get("delta_icc_vs_baseline")      # base ICC - method ICC
             if d is None or d != d:
                 continue
-            verdict = ("reduces" if d > 0 else "increases")
-            L.append(f"- `{method}` {verdict} operator-dependency ICC by "
-                     f"{d:+.3f} vs `{base}` "
+            # the magnitude is printed unsigned; the verb carries the direction,
+            # and a change that rounds to 0.000 is reported as unchanged
+            if abs(d) < 5e-4:
+                change = "leaves operator-dependency ICC unchanged"
+            elif d > 0:
+                change = f"reduces operator-dependency ICC by {d:.3f}"
+            else:
+                change = f"increases operator-dependency ICC by {-d:.3f}"
+            L.append(f"- `{method}` {change} vs `{base}` "
                      f"(ICC {_fmt(report['methods'][base]['icc'])} -> "
                      f"{_fmt(m['icc'])}).")
     L.append("")
     return "\n".join(L)
+
+
+def _roster_tier_counts(roster, tiers):
+    """Operators per tier as analysed, counted from the roster (not from
+    ``--ops_per_tier``, whose default of 5 stays in place when the config gives
+    per-tier counts). Returns (int if all tiers are equal else the dict,
+    {tier: count})."""
+    per_tier = {t: 0 for t in tiers}
+    for th in roster:
+        per_tier[th.tier] = per_tier.get(th.tier, 0) + 1
+    counts = set(per_tier.values())
+    return (counts.pop() if len(counts) == 1 else per_tier), per_tier
 
 
 def analyze(args, campaign: Path, roster, methods, seeds, tiers):
@@ -2013,11 +2035,13 @@ def analyze(args, campaign: Path, roster, methods, seeds, tiers):
     conv = compute_convergence(steps_by_method, methods, tiers)
 
     meta = json.load(open(campaign / "campaign.json"))
+    ops_per_tier, per_tier = _roster_tier_counts(roster, tiers)
     campaign_meta = {
         "campaign_dir": str(campaign), "exp_name": args.exp_name,
         "peg_shape": args.peg_shape, "grid_sha256": meta["grid_sha256"],
         "n_grid_trials": meta["n_grid_trials"],
-        "n_operators": len(roster), "ops_per_tier": args.ops_per_tier,
+        "n_operators": len(roster), "ops_per_tier": ops_per_tier,
+        "operators_per_tier": per_tier,
         "n_seeds": len(seeds), "steps": args.steps,
     }
     (campaign / "report").mkdir(parents=True, exist_ok=True)

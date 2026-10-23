@@ -127,11 +127,11 @@ Under `runs/study1/report/`:
   σ²_between / σ²_within, operator‑spread CV and the "operator matters" p‑value,
   and steps‑to‑convergence — per method, with the change vs the baseline.
 - **`dependency.json`** — the same, machine‑readable.
-- **`plots/`** — six figures:
+- **`plots/`** — seven figures:
   `icc_by_method.png` (the headline), `sr_by_operator.png` (per‑operator spread
   = the dependency; error bars = within‑operator noise), `sr_by_tier.png` (skill
   gradient), `variance_decomposition.png`, `operator_spread.png`,
-  `steps_to_convergence.png`.
+  `steps_to_convergence.png`, `frontier.png` (success against human effort).
 
 Every artifact folder (`checkpoints/<cell>/`, `eval_runs/<cell>/`,
 `demos/<op>_s<seed>/`) also carries its own `README.md` explaining its settings,

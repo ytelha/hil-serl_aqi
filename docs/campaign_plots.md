@@ -31,6 +31,7 @@ stage.  This file must exist; nothing else is needed.
 | `variance_decomposition.png` | stacked bar: σ²_between-operator vs σ²_within-operator per method |
 | `operator_spread.png` | CV and permutation-p per method (operator spread diagnostic) |
 | `steps_to_convergence.png` | box + convergence fraction per method (training effort) |
+| `frontier.png` | mean autonomous SR against human effort (intervention rate) per method, mean ± SE over cells plus the single cells; rates from the report's `interventions` block, so every method sits at its measured rate. Skipped when the report has no intervention rates |
 
 All figures are saved as both `.png` and `.svg`.
 

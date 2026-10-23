@@ -12,6 +12,8 @@ stage) and renders PNGs into ``<campaign>/report/plots/``:
   * variance_decomposition.png sigma2_between vs sigma2_within, stacked
   * operator_spread.png        CV per method + the "operator matters" p-value
   * steps_to_convergence.png   training effort per method (+ converged fraction)
+  * frontier.png               mean SR vs human effort (intervention rate) per
+                               method, from the report's `interventions` block
 
 Import and call ``make_plots(campaign_dir)``, or run standalone:
 
@@ -223,6 +225,83 @@ def _fig_steps_to_convergence(plt, report, out):
     plt.close(fig)
 
 
+def _frontier_points(report):
+    """{method: (rates, srs, rate_mean, sr_mean)} with per-cell rates and SRs.
+
+    Per-cell rates come from the paired block of ``interventions`` (which holds
+    the method's AND the baseline's rate for every matched cell), the means
+    from its per-method block, so every method -- hilserl included -- sits at
+    its measured rate. Methods without an intervention rate are left out."""
+    import numpy as np
+    ivn = report.get("interventions") or {}
+    ivm = ivn.get("methods") or {}
+    base = ivn.get("baseline") or report.get("baseline")
+    cell_rate = {}
+    for m, pr in (ivn.get("paired") or {}).items():
+        for p in pr.get("pairs", []):
+            key = (str(p.get("operator")), str(p.get("seed")))
+            cell_rate[(m,) + key] = _num(p.get("method_rate"))
+            cell_rate[(base,) + key] = _num(p.get("baseline_rate"))
+    srbm = report.get("sr_by_method", {})
+    pts = {}
+    for m in _methods_ordered(report):
+        rate_mean = _num((ivm.get(m) or {}).get("rate_mean"))
+        if rate_mean is None or not (ivm.get(m) or {}).get("n_cells"):
+            continue
+        rates, srs = [], []
+        for op, d in srbm.get(m, {}).items():
+            for seed, sr in d.get("sr", {}).items():
+                r, v = cell_rate.get((m, str(op), str(seed))), _num(sr)
+                if r is not None and v is not None:
+                    rates.append(r)
+                    srs.append(v)
+        all_sr = [_num(v) for d in srbm.get(m, {}).values()
+                  for v in d.get("sr", {}).values()]
+        all_sr = [v for v in all_sr if v is not None]
+        sr_mean = float(np.mean(all_sr)) if all_sr else _num(
+            report["methods"][m].get("mean_sr"))
+        if sr_mean is not None:
+            pts[m] = (rates, srs, rate_mean, sr_mean)
+    return pts
+
+
+def _fig_frontier(plt, report, out):
+    import numpy as np
+    pts = _frontier_points(report)
+    if not pts:
+        return False                      # no intervention rates -> no figure
+    base = report.get("baseline")
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    fig, ax = plt.subplots(figsize=(8, 6))
+    k = 0
+    for m, (rates, srs, rate_mean, sr_mean) in pts.items():
+        if m == base:
+            color = _BASE_COLOR
+        else:
+            color, k = cycle[k % len(cycle)], k + 1
+        if rates:
+            ax.scatter([100 * r for r in rates], [100 * v for v in srs], s=18,
+                       color=color, alpha=0.3, lw=0)
+        se_x = (100 * float(np.std(rates, ddof=1)) / np.sqrt(len(rates))
+                if len(rates) > 1 else 0.0)
+        se_y = (100 * float(np.std(srs, ddof=1)) / np.sqrt(len(srs))
+                if len(srs) > 1 else 0.0)
+        ax.errorbar(100 * rate_mean, 100 * sr_mean, xerr=se_x, yerr=se_y,
+                    fmt="o", ms=9, color=color, mec="black", capsize=3,
+                    label=f"{m} ({100 * rate_mean:.0f} %, {100 * sr_mean:.0f} %)")
+    ax.set_xlabel("human intervention rate (% of env steps)")
+    ax.set_ylabel("autonomous success rate (frozen ruler, %)")
+    ax.set_xlim(left=0)
+    ax.set_ylim(-2, 102)
+    ax.grid(alpha=0.3)
+    ax.set_title("Success vs human effort per method\n"
+                 "(mean +/- SE over cells; light points = single cells)")
+    ax.legend(fontsize=8, title="method (rate, SR)")
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
 # ===========================================================================
 # entry point
 # ===========================================================================
@@ -233,6 +312,7 @@ _FIGURES = [
     ("variance_decomposition.png", _fig_variance_decomposition),
     ("operator_spread.png", _fig_operator_spread),
     ("steps_to_convergence.png", _fig_steps_to_convergence),
+    ("frontier.png", _fig_frontier),
 ]
 
 
@@ -255,8 +335,8 @@ def make_plots(campaign_dir) -> list:
     for name, fn in _FIGURES:
         out = plots_dir / name
         try:
-            fn(plt, report, out)
-            written.append(out)
+            if fn(plt, report, out) is not False:    # False = nothing to plot
+                written.append(out)
         except Exception as exc:  # one bad figure must not sink the rest
             print(f"[plots] {name} failed: {exc}")
 
