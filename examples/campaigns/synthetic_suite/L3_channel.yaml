@@ -1,0 +1,96 @@
+# =====================================================================
+# synthetic_suite/L3_channel.yaml -- + orientation channel
+#
+# Part of the synthetic-operator test suite (docs/synthetic_suite.md). It tests
+# the operator and platform changes of patches 0014-0016: rotation control
+# (behaviour), the orientation box and the orientation channel (signal), and
+# mini-eval convergence and a fixed update ratio (convergence).
+#
+# Stage 2 (pilot): plain HIL-SERL, 1 operator per tier x 1 seed = 3 cells, cuboid, 30 k-step cap.
+# Differs from the previous ladder step: L2 + the orientation channel in the operator's monitor.
+#
+# Run it through the suite driver (it passes the orientation limits measured
+# in stage 0 and keeps the campaign folders together):
+#   ./.venv/bin/python examples/synthetic_suite.py run L3_channel
+# or by hand (orientation limits then fall back to the shape defaults):
+#   ./.venv/bin/python examples/run_campaign.py \
+#       --config examples/campaigns/synthetic_suite/L3_channel.yaml \
+#       --campaign runs/synthetic_suite/L3_channel
+# Never run it in a folder of another campaign, and never mix its cells with
+# cells trained on another machine (updates per env step, finding F3).
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+  rpy_box: [0.1, 0.1, 0.4]     # orientation box (patch 0016): roll, pitch, yaw half-widths, rad
+
+operators:
+  expert: 1
+  intermediate: 1
+  novice: 1
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl
+
+replicates:
+  seeds: 1
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 30000
+  minutes_per_cell: 240           # wall-clock safety cap only (anti-hang)
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  converge_mode: rolling             # the original rule (default)
+  utd_ratio: 0                       # 0 = the original asynchronous loop
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_rotation_control: true        # patch 0014
+  synthetic_orientation_monitor: true    # patch 0016; limits: stage 0 (driver) or shape defaults
+  synthetic_orientation_tilt_rad: 0      # 0 = shape default; the driver passes the measured value
+  synthetic_orientation_yaw_rad: 0
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # the driver or the CLI may set online
+  takeover_channels: true          # logging only (patch 0015): channel + hand-back per takeover
+  wandb_tags: [synthetic_suite, L3_channel]
+
+analysis:
+  baseline: hilserl
+  plots: true
