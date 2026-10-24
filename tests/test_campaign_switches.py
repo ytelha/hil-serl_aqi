@@ -1,8 +1,11 @@
 """Tests for the campaign-wide platform switches in run_campaign.py:
 convergence by the mini-eval (converge_mode eval), a fixed update ratio
-(utd_ratio) and takeover-channel logging (log_takeover_channels). Off, every
-command is exactly as before; on, the flags reach the right process, are
-defined in train_aqi_rlpd.py, and pipeline (HiRIL / E2HiL) arms refuse them.
+(utd_ratio), takeover-channel logging (log_takeover_channels), the operator's
+orientation monitor (synthetic_orientation_monitor) and the sim env's
+orientation box (sim_rpy_box -> $SIM_RPY_BOX). Off, every command is exactly
+as before; on, the flags reach the right process, are defined in
+train_aqi_rlpd.py, and the HiRIL pipeline arm refuses the operator and
+training switches (the box is part of the task and reaches every process).
 No JAX needed.
 
 Run from the repo root with
@@ -22,7 +25,9 @@ import run_campaign as rc                     # noqa: E402
 
 CAMPAIGNS = REPO / "examples" / "campaigns"
 NEW_FLAGS = {"converge_mode", "converge_eval_every", "converge_eval_consecutive",
-             "utd_ratio", "log_takeover_channels"}
+             "utd_ratio", "log_takeover_channels", "synthetic_orientation_monitor",
+             "synthetic_orientation_tilt_rad", "synthetic_orientation_yaw_rad",
+             "sim_rpy_box"}
 
 
 def _parse(config, extra=(), yaml_text=None):
@@ -133,12 +138,91 @@ def test_run_readme_names_the_convergence_rule():
     assert "None" not in ev
 
 
+def test_orientation_monitor_reaches_the_actor_only():
+    args = _parse("rotfix_pilot_rot.yaml", extra=[
+        "--synthetic_orientation_monitor", "--synthetic_orientation_tilt_rad", "0.12"])
+    lcmd, acmd = _cmds(args, args.methods.split(",")[0])
+    a = " ".join(acmd)
+    assert "--synthetic_rotation_control --synthetic_orientation_monitor " \
+           "--synthetic_orientation_tilt_rad 0.12" in a
+    assert "yaw_rad" not in a                            # 0 = the shape's default
+    assert "orientation" not in " ".join(lcmd)
+    defined = _defined()
+    assert {"synthetic_orientation_monitor", "synthetic_orientation_tilt_rad",
+            "synthetic_orientation_yaw_rad"} <= defined
+    args = _parse("rq1_baseline.yaml", yaml_text=(
+        "aqi:\n  synthetic_rotation_control: true\n"
+        "  synthetic_orientation_monitor: true\n  synthetic_orientation_yaw_rad: 0.2\n"))
+    assert args.synthetic_orientation_monitor is True
+    assert args.synthetic_orientation_yaw_rad == 0.2
+    assert "synthetic_orientation_monitor" in rc._platform_switches(args)
+
+
+def test_orientation_box_reaches_every_process_through_the_environment():
+    args = _parse("rq1_baseline.yaml")
+    assert rc._rpy_box(args) is None
+    assert rc._sim_env(args) == {"SIM_RPY_BOX": ""}      # set even when off
+    args = _parse("rq1_baseline.yaml", yaml_text="task:\n  peg_shape: cuboid\n"
+                                                 "  rpy_box: [0.1, 0.1, 0.4]\n")
+    assert rc._sim_env(args) == {"SIM_RPY_BOX": "0.1,0.1,0.4"}
+    args = _parse("rq1_baseline.yaml", extra=["--sim_rpy_box", "0.05,0.05,0.2"],
+                  yaml_text="task:\n  rpy_box: [0.1, 0.1, 0.4]\n")
+    assert rc._sim_env(args) == {"SIM_RPY_BOX": "0.05,0.05,0.2"}   # CLI wins
+    # the commands do not change: the box travels in the environment of the
+    # demo, learner, actor and ruler processes
+    lcmd, acmd = _cmds(args, args.methods.split(",")[0])
+    assert "rpy" not in " ".join(lcmd + acmd)
+    src = (REPO / "examples" / "run_campaign.py").read_text(encoding="utf-8")
+    assert src.count("**_sim_env(args)") == 4
+    # the box is part of the task, so the HiRIL pipeline arm accepts it
+    args = _parse("hiril_comparison.yaml", extra=["--sim_rpy_box", "0.1,0.1,0.4"])
+    _cmds(args, "hiril")
+    # and every provenance record (demos, run, eval, campaign) names it
+    import provenance as prov
+    assert rc._task_dict(args)["rpy_box"] == [0.1, 0.1, 0.4]
+    assert "orientation box roll/pitch/yaw +/-0.1/0.1/0.4 rad" in \
+        prov.render_eval_readme({"task": rc._task_dict(args)})
+    off = rc._task_dict(_parse("hiril_comparison.yaml"))
+    assert "rpy_box" not in off
+    assert "orientation box" not in prov.render_eval_readme({"task": off})
+
+
+def test_plan_and_manifest_record_the_new_settings():
+    import contextlib
+    import io
+    import json
+    d = Path(tempfile.mkdtemp()) / "c"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc.main(["--campaign", str(d), "--config",
+                 str(CAMPAIGNS / "rotfix_pilot_rot.yaml"), "--plan",
+                 "--synthetic_orientation_monitor", "--sim_rpy_box", "0.1,0.1,0.4"])
+    text = out.getvalue()
+    assert "orientation channel (tilt shape default, yaw shape default)" in text
+    assert "orientation box roll +/-0.1, pitch +/-0.1, yaw +/-0.4 rad" in text
+    m = json.loads((d / "campaign.json").read_text())
+    assert m["sim_rpy_box"] == [0.1, 0.1, 0.4]
+    assert m["synthetic_orientation_monitor"] == {"tilt_rad": "shape default",
+                                                  "yaw_rad": "shape default"}
+    d2 = Path(tempfile.mkdtemp()) / "c"
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc.main(["--campaign", str(d2), "--config",
+                 str(CAMPAIGNS / "rotfix_pilot_rot.yaml"), "--plan"])
+    m2 = json.loads((d2 / "campaign.json").read_text())
+    assert "sim_rpy_box" not in m2 and "synthetic_orientation_monitor" not in m2
+
+
 def test_invalid_values_fail_before_any_work():
     d = tempfile.mkdtemp()
     for extra in (["--converge_mode", "eval"],                 # no threshold
                   ["--converge_mode", "eval", "--converge_eval_threshold", "0.6",
                    "--converge_eval_consecutive", "0"],
-                  ["--utd_ratio", "-1"]):
+                  ["--utd_ratio", "-1"],
+                  ["--synthetic_orientation_monitor"],           # no rotation control
+                  ["--sim_rpy_box", "0.1,0.1"],
+                  ["--sim_rpy_box", "a,b,c"],
+                  ["--sim_rpy_box", "0.1,0.1,0.05"],             # < the reset yaw 0.08
+                  ["--sim_rpy_box", "0.1,0.1,0.2", "--eval_yaw", "0,0.3"]):
         try:
             rc.main(["--campaign", str(Path(d) / "c"), "--plan", *extra])
         except SystemExit as exc:

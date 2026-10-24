@@ -11,6 +11,7 @@ import gymnasium as gym
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from franka_sim.envs.orientation_box import parse_rpy_box
 from franka_sim.envs.panda_peg_insert_gym_env import PandaPegInsertGymEnv
 from serl_launcher.aqi.operator_model import PhaseOracle
 
@@ -70,6 +71,26 @@ class SimPegRewardWrapper(gym.Wrapper):
 # drives both the operator's commit decision (commit_threshold = 0.8 x this)
 # and the monitor's corridor risk (saturates at this error).
 _CLEARANCE_MM = {"cylinder": 8.0, "cuboid": 5.0, "hex": 3.0}
+
+# Orientation tolerances (rad) of the operator monitor's optional orientation
+# channel: (tilt, yaw about the bore axis); yaw None = free (round bore). The
+# channel is 1.0 at these errors near the surface, like the corridor at the
+# bore clearance. Yaw: a centred cuboid (36 mm peg, 46 mm bore) touches the
+# wall at 19.6 deg (0.34 rad), so 0.25 leaves room for a lateral offset. Tilt
+# 0.10 and the hex yaw are placeholders below the geometric limits; replace
+# them with the measured ones (examples/oracle_insertion_test.py --sweep).
+_ORIENTATION_TOL = {"cylinder": (0.10, None), "cuboid": (0.10, 0.25),
+                    "hex": (0.10, 0.12)}
+
+
+def sim_rpy_box_from_env():
+    """The optional orientation box of the sim env from $SIM_RPY_BOX:
+    'roll,pitch,yaw' half-widths in rad around the aligned home orientation;
+    unset or empty = no box (the original, unbounded orientation). The
+    campaign runner sets it for every process of a campaign (demos, learner,
+    actor, ruler), so all of them see the same task."""
+    import os
+    return parse_rpy_box(os.environ.get("SIM_RPY_BOX", ""))
 
 
 class SimPegPhaseOracle(PhaseOracle):
@@ -160,6 +181,24 @@ class SimPegPhaseOracle(PhaseOracle):
         ``lateral_error``, because ``RelativeFrame`` rotates the operator's
         rotation command back to the world frame with the same R_ee."""
         _tip, _htop, _hbot, R_ee = self._geom()
+        return R_ee.inv().apply(self._orientation_error_world(R_ee))
+
+    def tilt_yaw_error(self, obs):
+        """(tilt, yaw) in rad: the same error as ``orientation_error``,
+        split about the WORLD axes into the tilt of the tool axis and the
+        yaw about the bore axis (folded by the bore symmetry; 0 for the
+        round bore). Read by the monitor's optional orientation channel."""
+        _tip, _htop, _hbot, R_ee = self._geom()
+        rv = self._orientation_error_world(R_ee)
+        return float(np.linalg.norm(rv[:2])), float(abs(rv[2]))
+
+    def orientation_tolerance(self):
+        """Default (tilt, yaw) limits of the orientation channel (rad)."""
+        return _ORIENTATION_TOL.get(self.peg_shape, (0.10, None))
+
+    def _orientation_error_world(self, R_ee):
+        """World-frame rotation vector from the tool to the nearest
+        insertable orientation."""
         R_tgt = Rotation.from_quat(np.asarray(self.env._reset_quat,
                                               dtype=np.float64))
         if self.symmetry is None:
@@ -170,7 +209,7 @@ class SimPegPhaseOracle(PhaseOracle):
             cands = [(Rotation.from_rotvec([0.0, 0.0, k * self.symmetry])
                       * R_tgt * R_ee.inv()).as_rotvec() for k in range(n)]
             rv = min(cands, key=lambda v: float(np.linalg.norm(v)))
-        return R_ee.inv().apply(rv)
+        return rv
 
     def rot_rad_per_env_unit(self):
         return float(self.env._action_scale[1])
@@ -241,7 +280,8 @@ class VerticalSignConditioner:
 
 
 def make_synthetic_sim_env(peg_shape: str = None, image_obs: bool = True,
-                           max_episode_length: int = 300):
+                           max_episode_length: int = 300,
+                           rpy_box="from_env"):
     """Build the sim_peg_insertion training env stack WITHOUT the SpaceMouse
     wrapper and attach a `phase_oracle` so `collect_synthetic_demos.py --env
     experiments.sim_peg_insertion.wrapper:make_synthetic_sim_env` can drive a
@@ -256,6 +296,9 @@ def make_synthetic_sim_env(peg_shape: str = None, image_obs: bool = True,
     insert less reliably unless the operator runs with rotation control
     (SyntheticOperator(..., rotation_control=True), which uses
     SimPegPhaseOracle.orientation_error).
+
+    `rpy_box` is the env's optional orientation box ('roll,pitch,yaw' rad or a
+    3-sequence); the default takes it from $SIM_RPY_BOX, None = no box.
     """
     import os
     peg_shape = peg_shape or os.environ.get("SIM_SYN_PEG_SHAPE", "cylinder")
@@ -268,10 +311,12 @@ def make_synthetic_sim_env(peg_shape: str = None, image_obs: bool = True,
                     "gripper_pose"]
     # fake_env=True keeps the env non-realtime (fast batch collection) while
     # still stepping full MuJoCo physics; it also means no SpaceMouse wrapper.
+    if isinstance(rpy_box, str) and rpy_box == "from_env":
+        rpy_box = sim_rpy_box_from_env()
     base = SimPegEnv(fake_env=True, image_obs=image_obs,
                      image_keys=("wrist_1", "wrist_2"),
                      max_episode_length=max_episode_length,
-                     peg_shape=peg_shape)
+                     peg_shape=peg_shape, rpy_box=rpy_box)
     oracle = SimPegPhaseOracle(base, peg_shape=peg_shape)
 
     env = GripperCloseEnv(base)

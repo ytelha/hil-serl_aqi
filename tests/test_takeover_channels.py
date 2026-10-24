@@ -62,7 +62,7 @@ from serl_launcher.aqi.operator_model import (SyntheticOperator,  # noqa: E402
 from serl_launcher.aqi.toy_insertion import (ToyInsertionEnv,  # noqa: E402
                                              ToyInsertionOracle)
 
-CHANNELS = {"time", "corridor", "stagnation", "hover", "off_bore", "force",
+CHANNELS = {"time", "corridor", "stagnation", "hover", "off_bore", "orientation", "force",
             "force_excess", "value", "sigma", "false_alarm", "request"}
 HANDBACKS = {"signal", "time_cap", "latch_success", "episode_end"}
 NEW_KEYS = {"takeover_channel", "handback_kind"}

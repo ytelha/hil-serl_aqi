@@ -63,6 +63,9 @@ class MonitoringSignal:
       * timeout: fraction of the episode budget consumed (weight 0.5 -
         pressure, not panic);
       * contact: normalized force magnitude when available;
+      * orientation (optional, off by default): the tool's tilt and yaw
+        error over their limits (oracle.tilt_yaw_error), 1.0 at the limit
+        near the surface; above it free up to the limit, 1.0 at twice it;
       * value_fn / sigma_fn: optional learner hooks returning already-
         normalized [0, 1] scores (doc note: these make the synthetic
         supervisor's competence depend on training progress - realistic
@@ -73,7 +76,8 @@ class MonitoringSignal:
                  stall_s: float = 1.2, force_norm: float = 4.0,
                  budget_steps: int = 150, dt: float = 1.0 / CONTROL_HZ,
                  value_fn=None, sigma_fn=None, force_fn=None,
-                 corridor_height_mm=None, hover_corridor_mm=None):
+                 corridor_height_mm=None, hover_corridor_mm=None,
+                 tilt_limit_rad=None, yaw_limit_rad=None):
         self.oracle = oracle
         self.corridor = corridor_mm
         self.hover_corridor = hover_corridor_mm
@@ -87,7 +91,31 @@ class MonitoringSignal:
         # approach height for the toy env; sim sets it explicitly because its
         # approach height ~= its reset height, which would fire at reset.
         self.corridor_height = corridor_height_mm
+        # orientation channel: None/None = off (z exactly as without it)
+        self.set_orientation_limits(tilt_limit_rad, yaw_limit_rad)
         self.reset()
+
+    def set_orientation_limits(self, tilt_rad=None, yaw_rad=None):
+        """Turn the orientation channel on with these limits (rad; None or
+        0 leaves that part out), or off with both None."""
+        self.tilt_limit = float(tilt_rad) if tilt_rad else None
+        self.yaw_limit = float(yaw_rad) if yaw_rad else None
+
+    def _orientation_ratio(self, obs):
+        """max(tilt / tilt limit, yaw / yaw limit), or None when off."""
+        if self.tilt_limit is None and self.yaw_limit is None:
+            return None
+        f = getattr(self.oracle, "tilt_yaw_error", None)
+        te = f(obs) if f is not None else None
+        if te is None:
+            return None
+        tilt, yaw = te
+        r = 0.0
+        if self.tilt_limit is not None:
+            r = max(r, float(tilt) / self.tilt_limit)
+        if self.yaw_limit is not None:
+            r = max(r, float(yaw) / self.yaw_limit)
+        return r
 
     def reset(self):
         self._best_h = np.inf
@@ -97,8 +125,8 @@ class MonitoringSignal:
 
     def __call__(self, obs, info=None) -> float:
         """z_t = max over the channels; `last_channel` names the largest one
-        (logging only: time, corridor, stagnation, hover, off_bore, force,
-        force_excess, value, sigma)."""
+        (logging only: time, corridor, stagnation, hover, off_bore,
+        orientation, force, force_excess, value, sigma)."""
         orc = self.oracle
         self._t += 1
         parts = [("time", min(1.0, self._t / self.budget) * 0.5)]
@@ -126,6 +154,13 @@ class MonitoringSignal:
                 if err > self.corridor:
                     self.last_channel = "off_bore"
                     return 1.0  # immediate intervention — no gate delay needed
+            if h > 0.0:
+                # a twisted tool jams even when centred; inside the bore the
+                # walls hold the orientation, so only above the opening
+                r = self._orientation_ratio(obs)
+                if r is not None:
+                    parts.append(("orientation", min(1.0, r) if h < near
+                                  else min(1.0, max(0.0, r - 1.0))))
         f = None
         if info is not None and "f_z" in info:
             f = abs(float(info["f_z"])) + abs(float(info.get("f_lat", 0.0)))

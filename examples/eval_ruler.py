@@ -269,6 +269,10 @@ def main(_):
     env = config.get_environment(fake_env=False,
                                  save_video=FLAGS.save_video,
                                  classifier=True)
+    _box = getattr(getattr(env, "unwrapped", env), "_rpy_box", None)
+    if _box is not None:              # $SIM_RPY_BOX (sim orientation box)
+        print(f"[ruler] orientation box: roll +/-{_box[0]:g}, pitch +/-{_box[1]:g}, "
+              f"yaw +/-{_box[2]:g} rad")
     if FLAGS.no_realtime:
         # offline eval: drop the 10 Hz operator pacing (dynamics unchanged).
         try:

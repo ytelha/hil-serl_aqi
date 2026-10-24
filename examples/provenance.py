@@ -309,7 +309,10 @@ def _task_line(task):
         return ""
     exp = task.get("exp_name", "?")
     peg = task.get("peg_shape")
-    return f"`{exp}`" + (f" (peg `{peg}`)" if peg else "")
+    box = task.get("rpy_box")       # sim orientation box (rad), when set
+    return (f"`{exp}`" + (f" (peg `{peg}`)" if peg else "")
+            + (f", orientation box roll/pitch/yaw +/-{box[0]:g}/{box[1]:g}/"
+               f"{box[2]:g} rad" if box else ""))
 
 
 def _conditions_table(conditions):

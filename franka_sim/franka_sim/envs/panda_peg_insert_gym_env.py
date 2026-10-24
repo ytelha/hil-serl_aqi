@@ -36,6 +36,7 @@ from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
 from franka_sim.controllers import opspace
+from franka_sim.envs.orientation_box import clip_to_rpy_box, parse_rpy_box
 
 _HERE = Path(__file__).parent
 # Arena XMLs keyed by peg_shape. "hex" is the exact reference task; "cylinder"
@@ -87,6 +88,11 @@ class PandaPegInsertGymEnv(gym.Env):
         success_depth: float = 0.05,
         # action scaling: [pos (m), ori (rad)] per unit action
         action_scale: Tuple[float, float] = (0.01, 0.05),
+        # optional orientation safety box: half-widths (rad) of roll, pitch
+        # and yaw about the world axes around the aligned home orientation,
+        # like the real envs' rpy limits (FrankaEnv.clip_safety_box). None =
+        # unbounded orientation (the original behaviour).
+        rpy_box=None,
         seed: int = 0,
         render_mode: str = "rgb_array",
         **kwargs,
@@ -95,6 +101,8 @@ class PandaPegInsertGymEnv(gym.Env):
         self.image_obs = image_obs
         self.image_keys = tuple(image_keys) if image_obs else ()
         self._action_scale = np.asarray(action_scale, dtype=np.float64)
+        self._rpy_box = parse_rpy_box(rpy_box)
+        self.rpy_clip_steps = 0        # steps of this episode the box clipped
         self.max_episode_length = max_episode_length
         self.randomize_reset = randomize_reset
         self.random_xy_range = random_xy_range
@@ -260,6 +268,7 @@ class PandaPegInsertGymEnv(gym.Env):
         self._run_controller(settle_steps=400)
 
         self.curr_path_length = 0
+        self.rpy_clip_steps = 0
         self.success = False
         self._next_step_wall = None
         obs = self._get_obs()
@@ -276,6 +285,10 @@ class PandaPegInsertGymEnv(gym.Env):
         # orientation delta (world frame, applied on the left)
         drot = Rotation.from_rotvec(action[3:6] * self._action_scale[1])
         self._des_quat = (drot * Rotation.from_quat(self._des_quat)).as_quat()
+        if self._rpy_box is not None:
+            self._des_quat, clipped = clip_to_rpy_box(
+                self._des_quat, self._reset_quat, self._rpy_box)
+            self.rpy_clip_steps += int(clipped)
 
         # action[6] (gripper) is ignored: the peg is pregrasped/welded.
         self._run_controller(settle_steps=self._n_substeps)

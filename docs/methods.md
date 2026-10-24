@@ -210,6 +210,12 @@ a novice takes ~50 — the same geometry, filtered through different `θ`.
 > for the cylinder), commits only once position and orientation are aligned, and
 > treats a twisted tool in contact like a jam. Off by default, so every earlier
 > campaign keeps its operator; see [oracle_and_synthetic_operator.md §6.4](oracle_and_synthetic_operator.md).
+> Two further optional pieces (§6.6 there): an orientation box for the sim env
+> (`--sim_rpy_box`, YAML `task.rpy_box`), which clips roll, pitch and yaw like the
+> real robots' safety box, and an orientation channel in the operator's monitor
+> (`--synthetic_orientation_monitor`), which takes over a twisted but centred peg
+> before it jams. `examples/oracle_insertion_test.py --sweep tilt,yaw` measures
+> the orientation tolerance that sets the channel's limits.
 
 ---
 

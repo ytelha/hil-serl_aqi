@@ -444,6 +444,7 @@ normalized channels (trouble on *any one* = trouble):
 | corridor (lateral) | `‖e_lat‖ / clearance`, **only** once the tip is near the surface (off-axis high up is normal; an optional wider *hover* corridor allows some drift above `approach_height`) |
 | stagnation | no downward progress for `stall_s` while not yet inserted |
 | contact / force | normalized force magnitude when available |
+| orientation (optional, §6.6) | tilt and yaw error over their limits; off by default |
 
 If the peg is below the opening and clearly off-axis it returns `1.0` immediately
 (urgent). The operator does **not** see `z_t` directly — it sees a noisy, smoothed
@@ -579,7 +580,7 @@ step by step against the previous code):
 
 | where | key | values |
 |---|---|---|
-| `info["synthetic_operator"]`, on the step a takeover starts | `takeover_channel` | `time`, `corridor`, `stagnation`, `hover`, `off_bore`, `force`, `force_excess`, `value`, `sigma`, `false_alarm`, `request` |
+| `info["synthetic_operator"]`, on the step a takeover starts | `takeover_channel` | `time`, `corridor`, `stagnation`, `hover`, `off_bore`, `orientation` (§6.6), `force`, `force_excess`, `value`, `sigma`, `false_alarm`, `request` |
 | `info["synthetic_operator"]`, on the step a takeover ends | `handback_kind` | `signal` (hysteresis), `time_cap` (`d_max`), `latch_success`, `episode_end` (still in control when the episode ended) |
 | `<checkpoint>/episodes.jsonl`, per episode | `takeover_channels`, `handbacks` | counts per channel and per kind |
 
@@ -589,6 +590,47 @@ spontaneous trigger is `false_alarm`; in active modes, where the operator
 answers the robot's request, it is `request`. `MonitoringSignal.last_channel`
 names the largest channel of the latest `z_t`. Campaign-wide YAML key:
 `logging.takeover_channels`.
+
+### 6.6 Orientation: the env's box and the monitor's channel
+
+**Why.** The monitor's geometric channels watch **position** only: a cylinder
+around the bore axis (the corridor near the surface, the wider hover corridor
+higher up, `off_bore` below the opening). A peg twisted by 20° but centred over
+the hole gives `z_t ≈ 0`; the operator reacts only once it jams (stagnation,
+force). And the sim env bounded only the position (`_CARTESIAN_BOUNDS`), while
+the real HIL-SERL envs also clip roll/pitch/yaw
+(`FrankaEnv.clip_safety_box`, e.g. `ram_insertion`: roll ±0.01, pitch ±0.1,
+yaw ±0.4 rad). With 0.05 rad per action unit, an untrained policy's
+near-random rotation commands drift the tool by about 16° per axis in 10 s.
+A centred cuboid fits only up to 19.6° of yaw.
+
+Three optional pieces, all off by default:
+
+| piece | what it does | switch |
+|---|---|---|
+| **orientation box** (env) | clips the *commanded* orientation to ± half-widths of roll, pitch and yaw about the world axes around the aligned home orientation, like the real envs' rpy limits (`franka_sim/.../orientation_box.py`). Part of the task: every process of a campaign gets it (demos, learner, actor, ruler) through `$SIM_RPY_BOX`, for every arm including HiRIL | `--sim_rpy_box roll,pitch,yaw` (YAML `task.rpy_box`) |
+| **orientation channel** (monitor) | `r = max(tilt / tilt_limit, yaw / yaw_limit)` from `oracle.tilt_yaw_error` (world-frame split of the 0014 orientation error; yaw folded by the bore symmetry, free for the round bore). Near the surface `z = min(1, r)`, 1.0 at the limit, like the corridor at the clearance; higher up `z = min(1, max(0, r − 1))`, free up to the limit, 1.0 at twice it; inside the bore none (the walls hold the orientation). Logged as channel `orientation` | `--synthetic_orientation_monitor` (YAML `aqi.synthetic_orientation_monitor`); limits `--synthetic_orientation_tilt_rad` / `_yaw_rad`, 0 = the shape's default |
+| **tolerance sweep** | `examples/oracle_insertion_test.py --sweep tilt,yaw`: each episode starts centred over the bore, tilted (random direction) or yawed by a set angle; success against the angle with rotation control **off** is the task's orientation tolerance, which sets the channel's limits | — (training-free, CPU) |
+
+**Defaults** (`_ORIENTATION_TOL` in the sim wrapper): tilt 0.10 rad for every
+shape; yaw 0.25 rad for the cuboid (below the 0.34 rad geometric limit, room for a
+lateral offset), 0.12 rad for the hex, free for the cylinder. The tilt and hex
+values are placeholders until the sweep has run.
+
+**Rules.**
+- The channel needs rotation control (§6.4): a takeover for a twisted tool
+  must be able to undo the twist, otherwise it ends at the `d_max` cap. The
+  runner and the actor refuse it without.
+- The box must hold every start pose: the random reset yaw (±0.08 rad), the
+  ruler's yaw grid and the mini-eval poses (the runner checks).
+- Both change the platform: new campaigns only, never added to a finished or
+  resumed one.
+- In active/aqi arms the operator answers the robot's requests instead of its
+  own monitor (§6.2), so the channel changes only the baseline, ensemble and
+  quality arms. The box applies to every arm.
+- Off, both are exactly as before: the monitor gives the same `z_t` (checked on
+  30 000 random steps against the previous code), and an env without a box
+  never touches the orientation.
 
 ---
 

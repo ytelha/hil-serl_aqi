@@ -27,7 +27,8 @@ from serl_launcher.wrappers.serl_obs_wrappers import SERLObsWrapper
 from serl_launcher.wrappers.chunking import ChunkingWrapper
 
 from experiments.config import DefaultTrainingConfig
-from experiments.sim_peg_insertion.wrapper import SimPegEnv, SimPegRewardWrapper
+from experiments.sim_peg_insertion.wrapper import (SimPegEnv, SimPegRewardWrapper,
+                                                   sim_rpy_box_from_env)
 
 
 class TrainConfig(DefaultTrainingConfig):
@@ -90,6 +91,8 @@ class TrainConfig(DefaultTrainingConfig):
             max_episode_length=self.max_traj_length,
             peg_shape=self.peg_shape,
             success_lateral=success_lateral,
+            # optional orientation box ($SIM_RPY_BOX; unset = unbounded)
+            rpy_box=sim_rpy_box_from_env(),
         )
         env = GripperCloseEnv(sim_base)
         disable_spacemouse = os.environ.get("SIM_DISABLE_SPACEMOUSE", "0") == "1"

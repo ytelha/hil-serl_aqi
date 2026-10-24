@@ -242,6 +242,21 @@ flags.DEFINE_boolean(
     "once position and orientation are aligned. Off = the original "
     "translation-only operator, so finished campaigns stay reproducible; "
     "needed for pegs that must be turned into the bore (cuboid, hex).")
+flags.DEFINE_boolean(
+    "synthetic_orientation_monitor", False,
+    "The synthetic operator's monitor also watches the tool orientation: a "
+    "tilt or yaw error raises z_t (channel 'orientation'; near the surface "
+    "1.0 at the limit, above it free up to the limit and 1.0 at twice it), "
+    "so a twisted but centred peg is taken over before it jams. Needs "
+    "--synthetic_rotation_control, or the takeover could not undo the "
+    "twist. Off = the original monitor.")
+flags.DEFINE_float("synthetic_orientation_tilt_rad", 0.0,
+                   "--synthetic_orientation_monitor: tilt limit (rad); 0 = "
+                   "the oracle's default for the peg shape.")
+flags.DEFINE_float("synthetic_orientation_yaw_rad", 0.0,
+                   "--synthetic_orientation_monitor: yaw limit about the "
+                   "bore axis (rad); 0 = the shape's default (none for the "
+                   "round cylinder).")
 flags.DEFINE_integer("env_seed", -1,
                      "Seed for the TRAINING env's reset randomization (start "
                      "pose / yaw) and random-exploration sampler; -1 = use "
@@ -531,6 +546,26 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         rng=np.random.default_rng(FLAGS.synthetic_seed + 17),
         action_scale=op_action_scale,
         rotation_control=FLAGS.synthetic_rotation_control)
+    orientation_note = ""
+    if FLAGS.synthetic_orientation_monitor:
+        if not op.rotation_control:
+            raise ValueError(
+                "--synthetic_orientation_monitor needs rotation control "
+                "(--synthetic_rotation_control and the geometric oracle): a "
+                "takeover for a twisted tool must be able to undo the twist")
+        mon_orc = getattr(monitor, "oracle", None)
+        if not (hasattr(mon_orc, "tilt_yaw_error")
+                and hasattr(mon_orc, "orientation_tolerance")):
+            raise ValueError(
+                "--synthetic_orientation_monitor: this env's monitor oracle "
+                "has no tilt_yaw_error / orientation_tolerance")
+        tilt0, yaw0 = mon_orc.orientation_tolerance()
+        monitor.set_orientation_limits(
+            FLAGS.synthetic_orientation_tilt_rad or tilt0,
+            FLAGS.synthetic_orientation_yaw_rad or yaw0)
+        orientation_note = (
+            f", orientation monitor (tilt {monitor.tilt_limit} rad, yaw "
+            f"{monitor.yaw_limit if monitor.yaw_limit else 'free'})")
 
     if FLAGS.synthetic_intervention_mode == "legacy":
         intervention_mode = ("always_latch"
@@ -542,7 +577,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
     print_green(f"synthetic operator '{FLAGS.synthetic_operator}' "
                 f"(exec s={theta.s_exec:.2f}, mon s={theta.s_mon:.2f}, "
                 f"{kind} oracle, intervention={intervention_mode}"
-                f"{', rotation control' if op.rotation_control else ''}) "
+                f"{', rotation control' if op.rotation_control else ''}"
+                f"{orientation_note}) "
                 f"wrapping the env; theta -> meta.json")
     return SyntheticOperatorWrapper(
         env, op, monitor,
@@ -1797,6 +1833,10 @@ def main(_):
         save_video=FLAGS.save_video,
         classifier=True,
     )
+    _box = getattr(getattr(env, "unwrapped", env), "_rpy_box", None)
+    if _box is not None:              # $SIM_RPY_BOX (sim orientation box)
+        print_green(f"orientation box: roll +/-{_box[0]:g}, pitch +/-{_box[1]:g}, "
+                    f"yaw +/-{_box[2]:g} rad around the aligned home pose")
     env = RecordEpisodeStatistics(env)
 
     rng, sampling_rng = jax.random.split(rng)

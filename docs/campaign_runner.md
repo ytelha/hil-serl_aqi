@@ -117,6 +117,8 @@ Re‑run only a later stage (e.g. after all cells trained):
 | `--utd_ratio` | 0 (off) | fix the learner steps per env step (actor and learner wait for each other; env without real‑time pacing); YAML `budget.utd_ratio` |
 | `--log_takeover_channels` | off | log per episode which monitor channel caused each takeover and how it ended (logging only); YAML `logging.takeover_channels` |
 | `--synthetic_rotation_control` | off | the synthetic operator also corrects the tool's orientation; YAML `aqi.synthetic_rotation_control` |
+| `--synthetic_orientation_monitor` | off | the operator's monitor also watches tilt and yaw (needs rotation control); limits `--synthetic_orientation_tilt_rad` / `--synthetic_orientation_yaw_rad`, 0 = the shape's default; YAML `aqi.synthetic_orientation_*` |
+| `--sim_rpy_box` | empty (off) | `roll,pitch,yaw` half-widths (rad) of the sim env's orientation box, set for every process through `$SIM_RPY_BOX` and checked against all start poses; YAML `task.rpy_box` |
 | `--eval_dx_mm` | `-16…16` (9) | lateral offsets swept by the ruler |
 | `--jax_platform` | `cuda` | `cuda` or `cpu` |
 | `--gpu_mem_learner` / `--gpu_mem_actor` | 0.6 / 0.2 | VRAM fraction ceilings |

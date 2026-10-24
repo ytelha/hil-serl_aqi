@@ -165,6 +165,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     task = cfg.get("task") or {}
     setk("exp_name", task.get("exp_name"))
     setk("peg_shape", task.get("peg_shape"))
+    if task.get("rpy_box") is not None and "sim_rpy_box" not in explicit:
+        v = task["rpy_box"]
+        args.sim_rpy_box = (",".join(str(x) for x in v)
+                            if isinstance(v, (list, tuple)) else str(v))
 
     ops = cfg.get("operators") or {}
     tier_keys = [k for k in ops if k not in ("jitter", "sample_seed",
@@ -315,6 +319,13 @@ def apply_config(args, cfg: dict, explicit) -> dict:
             and "synthetic_rotation_control" not in explicit):
         args.synthetic_rotation_control = _to_bool(
             aqi["synthetic_rotation_control"])
+    if (aqi.get("synthetic_orientation_monitor") is not None
+            and "synthetic_orientation_monitor" not in explicit):
+        args.synthetic_orientation_monitor = _to_bool(
+            aqi["synthetic_orientation_monitor"])
+    for k in ("synthetic_orientation_tilt_rad", "synthetic_orientation_yaw_rad"):
+        if aqi.get(k) is not None and k not in explicit:
+            setattr(args, k, float(aqi[k]))
     if (aqi.get("critic_ensemble_size") is not None
             and "critic_ensemble_size" not in explicit):
         args.critic_ensemble_size = int(aqi["critic_ensemble_size"])
@@ -429,11 +440,14 @@ def _operator_profile(campaign: Path, operator: str) -> str:
 
 
 def _task_dict(args):
-    return {"exp_name": args.exp_name, "peg_shape": args.peg_shape,
-            "reward": "sim ground truth (lateral < 12 mm and depth > 50 mm)"
-            if args.exp_name == "sim_peg_insertion" else None,
-            "train_reset": "randomized +/-15 mm xy, +/-0.08 rad yaw"
-            if args.exp_name == "sim_peg_insertion" else None}
+    d = {"exp_name": args.exp_name, "peg_shape": args.peg_shape,
+         "reward": "sim ground truth (lateral < 12 mm and depth > 50 mm)"
+         if args.exp_name == "sim_peg_insertion" else None,
+         "train_reset": "randomized +/-15 mm xy, +/-0.08 rad yaw"
+         if args.exp_name == "sim_peg_insertion" else None}
+    if _rpy_box(args):              # sim orientation box: part of the task
+        d["rpy_box"] = _rpy_box(args)
+    return d
 
 
 def _operator_dict(th, campaign: Path):
@@ -855,7 +869,8 @@ def collect_demos_job(args, campaign: Path, operator: str, seed: int):
     rc = _launch(pyargs, campaign / "logs" / f"demos_{operator}_s{seed}.log",
                  # demo collection is pure MuJoCo+numpy -> keep it off the GPU
                  extra_env={"JAX_PLATFORMS": "cpu",
-                            "SIM_SYN_PEG_SHAPE": args.peg_shape})
+                            "SIM_SYN_PEG_SHAPE": args.peg_shape,
+                            **_sim_env(args)})
     if rc != 0 or not out.exists():
         _red(f"[demos] FAILED for {operator} s{seed} (rc={rc}); see the log.")
         return False
@@ -1210,6 +1225,21 @@ def _pipeline_learner_cmd(args, ckpt, demo_path, method, seed, run_name):
             ] + _pipeline_flags(args, method) + _wandb_flags(args)
 
 
+def _rpy_box(args):
+    """The sim orientation box as three floats (roll, pitch, yaw half-widths,
+    rad), or None when off. Validated in main()."""
+    vals = _parse_floats(str(getattr(args, "sim_rpy_box", "") or "").replace(";", ","))
+    return vals or None
+
+
+def _sim_env(args):
+    """Environment of every process of a cell (demos, learner, actor, ruler):
+    $SIM_RPY_BOX is always set, empty when the box is off, so a value
+    exported in the user's shell cannot leak into a campaign."""
+    box = _rpy_box(args)
+    return {"SIM_RPY_BOX": ",".join(f"{v:g}" for v in box) if box else ""}
+
+
 def _platform_switches(args):
     """Campaign-wide switches (patches 0014/0015) that differ from their
     defaults. They are passed to train_aqi_rlpd.py only when set, so every
@@ -1217,6 +1247,8 @@ def _platform_switches(args):
     on = []
     if getattr(args, "synthetic_rotation_control", False):
         on.append("synthetic_rotation_control")
+    if getattr(args, "synthetic_orientation_monitor", False):
+        on.append("synthetic_orientation_monitor")
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         on.append("converge_mode")
     if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0:
@@ -1230,6 +1262,11 @@ def _platform_actor_flags(args):
     out = []
     if getattr(args, "synthetic_rotation_control", False):
         out += ["--synthetic_rotation_control"]
+    if getattr(args, "synthetic_orientation_monitor", False):
+        out += ["--synthetic_orientation_monitor"]
+        for k in ("synthetic_orientation_tilt_rad", "synthetic_orientation_yaw_rad"):
+            if float(getattr(args, k, 0.0) or 0.0) > 0.0:
+                out += [f"--{k}", str(getattr(args, k))]
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         out += ["--converge_mode", str(args.converge_mode),
                 "--converge_eval_every", str(args.converge_eval_every),
@@ -1401,7 +1438,8 @@ def train_cell(args, campaign: Path, cell: Cell):
     lp, lf = _launch(lcmd, llog, background=True, extra_env={
         "JAX_PLATFORMS": args.jax_platform,
         "XLA_PYTHON_CLIENT_MEM_FRACTION": args.gpu_mem_learner,
-        **_wandb_env(args), **_wandb_tag_env(args, campaign, cell)})
+        **_wandb_env(args), **_wandb_tag_env(args, campaign, cell),
+        **_sim_env(args)})
     try:
         # Demo pretraining runs BEFORE the learner prints "LEARNER READY", so
         # the ready wait must budget for it (a crash still returns early via
@@ -1422,7 +1460,8 @@ def train_cell(args, campaign: Path, cell: Cell):
                    f"(budget {actor_steps} env steps) ...")
         ap, af = _launch(acmd, alog, background=True, extra_env={
             "JAX_PLATFORMS": args.jax_platform,
-            "XLA_PYTHON_CLIENT_MEM_FRACTION": args.gpu_mem_actor})
+            "XLA_PYTHON_CLIENT_MEM_FRACTION": args.gpu_mem_actor,
+            **_sim_env(args)})
         # Wall-clock safety net: the actor enforces --max_minutes itself, but if
         # it ever hangs, terminate it a few minutes past its budget so the
         # campaign can never stall on one cell.
@@ -1573,7 +1612,8 @@ def eval_cell(args, campaign: Path, cell: Cell):
     rc = _launch(pyargs, campaign / "logs" / f"{cell.id}.eval.log",
                  extra_env={"JAX_PLATFORMS": args.jax_platform,
                             "XLA_PYTHON_CLIENT_MEM_FRACTION": args.gpu_mem_actor,
-                            "SIM_DISABLE_SPACEMOUSE": "1"})
+                            "SIM_DISABLE_SPACEMOUSE": "1",
+                            **_sim_env(args)})
     if rc != 0 or not (out / "cell.json").exists():
         _red(f"[eval] {cell.id}: FAILED (rc={rc}); see the log.")
         return False
@@ -2179,6 +2219,12 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
     }
     if getattr(args, "synthetic_rotation_control", False):
         manifest["synthetic_rotation_control"] = True   # absent = original operator
+    if getattr(args, "synthetic_orientation_monitor", False):
+        manifest["synthetic_orientation_monitor"] = {   # absent = original monitor
+            "tilt_rad": float(args.synthetic_orientation_tilt_rad) or "shape default",
+            "yaw_rad": float(args.synthetic_orientation_yaw_rad) or "shape default"}
+    if _rpy_box(args):
+        manifest["sim_rpy_box"] = _rpy_box(args)        # absent = unbounded orientation
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         manifest["converge_mode"] = {"mode": args.converge_mode,
                                      "every": args.converge_eval_every,
@@ -2238,6 +2284,15 @@ def print_plan(args, roster, cells, seeds, grid):
               f"(skill varies only in EXECUTION)")
     if getattr(args, "synthetic_rotation_control", False):
         print("  operator     : rotation control (corrects orientation too)")
+    if getattr(args, "synthetic_orientation_monitor", False):
+        lim = lambda v: f"{v:g} rad" if v else "shape default"
+        print(f"  monitor      : orientation channel (tilt "
+              f"{lim(args.synthetic_orientation_tilt_rad)}, yaw "
+              f"{lim(args.synthetic_orientation_yaw_rad)})")
+    if _rpy_box(args):
+        r, pt, y = _rpy_box(args)
+        print(f"  env          : orientation box roll +/-{r:g}, pitch +/-{pt:g}, "
+              f"yaw +/-{y:g} rad (every process: demos, training, ruler)")
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         print(f"  convergence  : mini-eval SR >= {args.converge_eval_threshold} in "
               f"{args.converge_eval_consecutive} evaluations in a row, every "
@@ -2424,6 +2479,25 @@ def build_arg_parser():
                    help="log the monitor channel behind each takeover and how it "
                         "ended, per episode (logging only). YAML: "
                         "logging.takeover_channels.")
+    p.add_argument("--sim_rpy_box", default="",
+                   help="'roll,pitch,yaw' half-widths (rad) of the sim env's "
+                        "orientation box around the aligned home orientation, "
+                        "like the real envs' rpy limits; empty = unbounded (the "
+                        "original task). Set for every process of the campaign "
+                        "(demos, training, ruler) via $SIM_RPY_BOX. YAML: "
+                        "task.rpy_box.")
+    p.add_argument("--synthetic_orientation_monitor", action="store_true",
+                   default=False,
+                   help="the synthetic operator's monitor also watches the tool "
+                        "orientation (channel 'orientation'); needs "
+                        "--synthetic_rotation_control. YAML: "
+                        "aqi.synthetic_orientation_monitor.")
+    p.add_argument("--synthetic_orientation_tilt_rad", type=float, default=0.0,
+                   help="orientation monitor: tilt limit (rad); 0 = the shape's "
+                        "default. YAML: aqi.synthetic_orientation_tilt_rad.")
+    p.add_argument("--synthetic_orientation_yaw_rad", type=float, default=0.0,
+                   help="orientation monitor: yaw limit (rad); 0 = the shape's "
+                        "default. YAML: aqi.synthetic_orientation_yaw_rad.")
     p.add_argument("--synthetic_rotation_control", action="store_true",
                    default=False,
                    help="the geometric synthetic operator also corrects the "
@@ -2646,6 +2720,35 @@ def build_arg_parser():
     return p
 
 
+# the env's random reset yaw (PandaPegInsertGymEnv.random_rz_range, rad)
+RESET_YAW_RANGE = 0.08
+
+
+def _validate_rpy_box(args):
+    """The box must hold every start pose of the campaign: the random training
+    reset yaw, the ruler's yaw grid and the convergence mini-eval's poses.
+    Otherwise the first step would clip the start pose."""
+    try:
+        box = _rpy_box(args)
+    except ValueError:
+        raise SystemExit(f"[config] --sim_rpy_box {args.sim_rpy_box!r}: three "
+                         f"numbers 'roll,pitch,yaw' (rad) expected.")
+    if box is None:
+        return
+    if len(box) != 3 or min(box) <= 0.0 or max(box) >= 1.5:
+        raise SystemExit(f"[config] --sim_rpy_box {args.sim_rpy_box!r}: three "
+                         f"half-widths in (0, 1.5) rad expected (roll, pitch, yaw).")
+    yaws = [RESET_YAW_RANGE] + [abs(y) for y in _parse_floats(args.eval_yaw)]
+    for pose in str(args.converge_eval_poses or "").split(";"):
+        parts = [x for x in pose.split(",") if x.strip()]
+        if len(parts) == 2:
+            yaws.append(abs(float(parts[1])))
+    if max(yaws) > box[2]:
+        raise SystemExit(f"[config] --sim_rpy_box yaw +/-{box[2]:g} rad is smaller "
+                         f"than a start pose of this campaign ({max(yaws):g} rad: "
+                         f"reset yaw, ruler yaw grid or mini-eval poses).")
+
+
 def main(argv=None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -2679,6 +2782,14 @@ def main(argv=None):
                          "> 0 and --converge_eval_consecutive >= 1.")
     if args.utd_ratio < 0:
         raise SystemExit("[config] --utd_ratio must be >= 0 (0 = off).")
+    if args.synthetic_orientation_monitor and not args.synthetic_rotation_control:
+        raise SystemExit("[config] --synthetic_orientation_monitor needs "
+                         "--synthetic_rotation_control: a takeover for a twisted "
+                         "tool must be able to undo the twist.")
+    if (args.synthetic_orientation_tilt_rad < 0
+            or args.synthetic_orientation_yaw_rad < 0):
+        raise SystemExit("[config] orientation limits must be >= 0 (0 = default).")
+    _validate_rpy_box(args)
     campaign = Path(args.campaign).resolve()
     campaign.mkdir(parents=True, exist_ok=True)
     (campaign / "logs").mkdir(exist_ok=True)

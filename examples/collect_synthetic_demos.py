@@ -178,7 +178,9 @@ def main(_):
             os.path.dirname(os.path.abspath(FLAGS.out)) or ".", "demo",
             quiet=True,
             task={"exp_name": FLAGS.env or "toy_insertion",
-                  "peg_shape": os.environ.get("SIM_SYN_PEG_SHAPE")},
+                  "peg_shape": os.environ.get("SIM_SYN_PEG_SHAPE"),
+                  **({"rpy_box": os.environ["SIM_RPY_BOX"]}    # sim orientation box
+                     if os.environ.get("SIM_RPY_BOX") else {})},
             operator={"operator_id": th.get("operator_id", FLAGS.profile),
                       "tier": th.get("tier"), "s_exec": th.get("s_exec"),
                       "s_mon": th.get("s_mon"),
