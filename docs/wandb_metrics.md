@@ -127,6 +127,7 @@ from the learner. `request_rate` ≈ 0 after `tau_risk` is set is finding F2.
 | `timer/total` | actor, one env step | ≈ 0.1 s (10 Hz) | **≫ 0.1 s → the actor is slow**: rendering (F5), a slow AQI section, CPU starvation |
 | `timer/step_env`, `timer/sample_actions`, `timer/aqi_trigger` | actor parts | `step_env` dominates | `aqi_trigger` large → a costly gate section (e.g. a huge OOD buffer) |
 | `timer/train`, `timer/train_critics`, `timer/sample_replay_buffer` | learner, one update | milliseconds | 1 / (`train` + `train_critics` + sampling) ≈ updates per second; prioritised sampling is slower |
+| `timer/utd_wait` | actor, only with `--utd_ratio > 0` | the actor's wait for the learner per env step | large on a slow GPU (the env then runs at the learner's pace); the learner's Step at the end ≈ the ratio × the actor's env steps |
 | `demo_pretrain/step` | learner | counts up to `demo_pretrain_steps` | — |
 
 ## 3. Reading one run: a 10-minute checklist
