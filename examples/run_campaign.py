@@ -200,6 +200,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     setk("converge_min_steps", bud.get("converge_min_steps"))
     setk("converge_eval_threshold", bud.get("converge_eval_threshold"))
     setk("converge_eval_max_steps", bud.get("converge_eval_max_steps"))
+    setk("converge_mode", bud.get("converge_mode"))
+    setk("converge_eval_every", bud.get("converge_eval_every"))
+    setk("converge_eval_consecutive", bud.get("converge_eval_consecutive"))
+    setk("utd_ratio", bud.get("utd_ratio"))
     if bud.get("converge_eval_poses") is not None and "converge_eval_poses" not in explicit:
         v = bud["converge_eval_poses"]
         args.converge_eval_poses = (";".join(str(x) for x in v)
@@ -252,6 +256,9 @@ def apply_config(args, cfg: dict, explicit) -> dict:
         args.wandb = w
     if log.get("wandb_tags") is not None and "wandb_tags" not in explicit:
         args.wandb_tags = _csv(log["wandb_tags"])
+    if (log.get("takeover_channels") is not None
+            and "log_takeover_channels" not in explicit):
+        args.log_takeover_channels = _to_bool(log["takeover_channels"])
 
     aqi = cfg.get("aqi") or {}
     if aqi.get("trigger_terms") is not None and "trigger_terms" not in explicit:
@@ -1203,15 +1210,46 @@ def _pipeline_learner_cmd(args, ckpt, demo_path, method, seed, run_name):
             ] + _pipeline_flags(args, method) + _wandb_flags(args)
 
 
+def _platform_switches(args):
+    """Campaign-wide switches (patches 0014/0015) that differ from their
+    defaults. They are passed to train_aqi_rlpd.py only when set, so every
+    older config keeps byte-identical commands."""
+    on = []
+    if getattr(args, "synthetic_rotation_control", False):
+        on.append("synthetic_rotation_control")
+    if str(getattr(args, "converge_mode", "rolling")) != "rolling":
+        on.append("converge_mode")
+    if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0:
+        on.append("utd_ratio")
+    if getattr(args, "log_takeover_channels", False):
+        on.append("log_takeover_channels")
+    return on
+
+
+def _platform_actor_flags(args):
+    out = []
+    if getattr(args, "synthetic_rotation_control", False):
+        out += ["--synthetic_rotation_control"]
+    if str(getattr(args, "converge_mode", "rolling")) != "rolling":
+        out += ["--converge_mode", str(args.converge_mode),
+                "--converge_eval_every", str(args.converge_eval_every),
+                "--converge_eval_consecutive", str(args.converge_eval_consecutive)]
+    if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0:
+        out += ["--utd_ratio", str(args.utd_ratio)]
+    if getattr(args, "log_takeover_channels", False):
+        out += ["--log_takeover_channels"]
+    return out
+
+
 def _pipeline_actor_cmd(args, ckpt, method, tier, operator, theta_json, seed,
                         run_name):
     """Actor command of a PIPELINES arm: the same operator / budget /
     convergence flags as the AQI actor, without --aqi_mode and AQI knobs."""
-    if getattr(args, "synthetic_rotation_control", False):
+    if _platform_switches(args):
         raise SystemExit(
-            f"[arms] '{method}': synthetic_rotation_control is not wired into "
-            f"the {PIPELINES[_arm_mode(args, method)]} pipeline; the operator "
-            f"would differ between arms. Run that arm without it.")
+            f"[arms] '{method}': {', '.join(_platform_switches(args))} is not "
+            f"wired into the {PIPELINES[_arm_mode(args, method)]} pipeline; the "
+            f"arms would differ in more than the method. Run that arm without it.")
     actor_steps, actor_minutes = _actor_budget(args)
     cmd = [PIPELINES[_arm_mode(args, method)], "--exp_name", args.exp_name,
            "--actor", "--checkpoint_path", str(ckpt),
@@ -1267,6 +1305,8 @@ def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
         "--demo_pretrain_steps", str(dps),
         "--demo_pretrain_batch_size", str(dpb),
             "--run_name", run_name] + (
+        ["--utd_ratio", str(args.utd_ratio)]
+        if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0 else []) + (
         ["--learning_rate", str(lr)] if lr and lr > 0 else []
     ) + _arm_flag(args, method) + _aqi_flags(args, method) + _wandb_flags(args)
 
@@ -1310,8 +1350,7 @@ def _actor_cmd(args, ckpt: Path, method: str, tier: str, operator: str,
             "--run_name", run_name,
             "--aqi_log_dir", str((ckpt.parent.parent / "aqi_logs").resolve()),
             ] + _arm_flag(args, method) + _aqi_flags(args, method)
-    if getattr(args, "synthetic_rotation_control", False):
-        cmd += ["--synthetic_rotation_control"]
+    cmd += _platform_actor_flags(args)
     if args.policy_oracle_checkpoint:
         cmd += ["--oracle_checkpoint", str(args.policy_oracle_checkpoint)]
     if getattr(args, "training_oracle", "auto") != "auto":
@@ -1465,6 +1504,10 @@ def _document_run(args, campaign: Path, cell, conv, cmds=None):
         term.update(converged=True, step=conv.get("step"),
                     rolling_success=conv.get("rolling_success"),
                     window=conv.get("window"), autonomous=conv.get("autonomous"))
+        if conv.get("mode") == "eval":          # --converge_mode eval
+            term.update(mode="eval",
+                        mini_eval_threshold=conv.get("mini_eval_threshold"),
+                        consecutive=conv.get("consecutive"))
     else:
         term["converged"] = False
     if cmds is None:
@@ -2136,6 +2179,15 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
     }
     if getattr(args, "synthetic_rotation_control", False):
         manifest["synthetic_rotation_control"] = True   # absent = original operator
+    if str(getattr(args, "converge_mode", "rolling")) != "rolling":
+        manifest["converge_mode"] = {"mode": args.converge_mode,
+                                     "every": args.converge_eval_every,
+                                     "consecutive": args.converge_eval_consecutive,
+                                     "threshold": args.converge_eval_threshold}
+    if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0:
+        manifest["utd_ratio"] = float(args.utd_ratio)
+    if getattr(args, "log_takeover_channels", False):
+        manifest["log_takeover_channels"] = True
     json.dump(manifest, open(campaign / "campaign.json", "w"), indent=2)
 
 
@@ -2186,6 +2238,15 @@ def print_plan(args, roster, cells, seeds, grid):
               f"(skill varies only in EXECUTION)")
     if getattr(args, "synthetic_rotation_control", False):
         print("  operator     : rotation control (corrects orientation too)")
+    if str(getattr(args, "converge_mode", "rolling")) != "rolling":
+        print(f"  convergence  : mini-eval SR >= {args.converge_eval_threshold} in "
+              f"{args.converge_eval_consecutive} evaluations in a row, every "
+              f"{args.converge_eval_every} env steps")
+    if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0:
+        print(f"  update ratio : fixed at {args.utd_ratio:g} learner steps per env "
+              f"step (env without real-time pacing)")
+    if getattr(args, "log_takeover_channels", False):
+        print("  logging      : takeover channels and hand-backs per episode")
     print(f"  seeds/op     : {len(seeds)}  {list(seeds)}")
     print(f"  methods      : {args.methods}")
     for arm, a in _arms_summary(args).items():
@@ -2347,6 +2408,22 @@ def build_arg_parser():
     p.add_argument("--per_is_beta", type=float, default=None,
                    help="importance-sampling exponent for prioritised replay "
                         "(quality/aqi; 0 = off).")
+    p.add_argument("--converge_mode", choices=["rolling", "eval"], default="rolling",
+                   help="rolling = the original convergence rule; eval = the "
+                        "autonomous fixed-pose mini-eval decides (needs "
+                        "--converge_eval_threshold > 0). YAML: budget.converge_mode.")
+    p.add_argument("--converge_eval_every", type=int, default=2000,
+                   help="converge_mode eval: env steps between mini-evals.")
+    p.add_argument("--converge_eval_consecutive", type=int, default=2,
+                   help="converge_mode eval: passes in a row needed to stop.")
+    p.add_argument("--utd_ratio", type=float, default=0.0,
+                   help="> 0: fixed learner steps per env step (actor and learner "
+                        "wait for each other; env without real-time pacing). "
+                        "0 = the original asynchronous loop. YAML: budget.utd_ratio.")
+    p.add_argument("--log_takeover_channels", action="store_true", default=False,
+                   help="log the monitor channel behind each takeover and how it "
+                        "ended, per episode (logging only). YAML: "
+                        "logging.takeover_channels.")
     p.add_argument("--synthetic_rotation_control", action="store_true",
                    default=False,
                    help="the geometric synthetic operator also corrects the "
@@ -2594,6 +2671,14 @@ def main(argv=None):
     if args.cell_budget_mode == "time" and args.minutes_per_cell <= 0:
         raise SystemExit("[config] --minutes_per_cell must be > 0 when "
                          "--cell_budget_mode=time.")
+    if args.converge_mode == "eval" and (
+            args.converge_eval_threshold <= 0 or args.converge_eval_every <= 0
+            or args.converge_eval_consecutive < 1):
+        raise SystemExit("[config] --converge_mode eval needs "
+                         "--converge_eval_threshold > 0, --converge_eval_every "
+                         "> 0 and --converge_eval_consecutive >= 1.")
+    if args.utd_ratio < 0:
+        raise SystemExit("[config] --utd_ratio must be >= 0 (0 = off).")
     campaign = Path(args.campaign).resolve()
     campaign.mkdir(parents=True, exist_ok=True)
     (campaign / "logs").mkdir(exist_ok=True)

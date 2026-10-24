@@ -113,6 +113,10 @@ Re‑run only a later stage (e.g. after all cells trained):
 | `--converge_window` | 20 | episodes in the rolling success window |
 | `--converge_min_steps` | 500 | do not converge before this many env steps |
 | `--converge_allow_assisted` | off | count operator‑assisted successes too (default: autonomous only) |
+| `--converge_mode` | `rolling` | `eval`: the autonomous fixed‑pose mini‑eval decides convergence (needs `--converge_eval_threshold > 0`; `--converge_eval_every`, `--converge_eval_consecutive`); YAML `budget.converge_mode` |
+| `--utd_ratio` | 0 (off) | fix the learner steps per env step (actor and learner wait for each other; env without real‑time pacing); YAML `budget.utd_ratio` |
+| `--log_takeover_channels` | off | log per episode which monitor channel caused each takeover and how it ended (logging only); YAML `logging.takeover_channels` |
+| `--synthetic_rotation_control` | off | the synthetic operator also corrects the tool's orientation; YAML `aqi.synthetic_rotation_control` |
 | `--eval_dx_mm` | `-16…16` (9) | lateral offsets swept by the ruler |
 | `--jax_platform` | `cuda` | `cuda` or `cpu` |
 | `--gpu_mem_learner` / `--gpu_mem_actor` | 0.6 / 0.2 | VRAM fraction ceilings |

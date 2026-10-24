@@ -34,6 +34,7 @@ Three pieces:
 Determinism (R6): all randomness flows through the RNGs handed in.
 """
 
+from collections import Counter, deque
 from typing import Optional
 
 import numpy as np
@@ -92,11 +93,15 @@ class MonitoringSignal:
         self._best_h = np.inf
         self._stall = 0
         self._t = 0
+        self.last_channel = "time"
 
     def __call__(self, obs, info=None) -> float:
+        """z_t = max over the channels; `last_channel` names the largest one
+        (logging only: time, corridor, stagnation, hover, off_bore, force,
+        force_excess, value, sigma)."""
         orc = self.oracle
         self._t += 1
-        parts = [min(1.0, self._t / self.budget) * 0.5]
+        parts = [("time", min(1.0, self._t / self.budget) * 0.5)]
         if orc is not None:
             h = orc.height(obs)
             err = float(np.linalg.norm(orc.lateral_error(obs)))
@@ -107,30 +112,35 @@ class MonitoringSignal:
             near = (self.corridor_height if self.corridor_height is not None
                     else orc.approach_height() * 1.5)
             if 0.0 < h < near:
-                parts.append(min(1.0, err / self.corridor))
-                parts.append(min(1.0, self._stall / self.stall_steps))
+                parts.append(("corridor", min(1.0, err / self.corridor)))
+                parts.append(("stagnation",
+                              min(1.0, self._stall / self.stall_steps)))
             elif h >= near and self.hover_corridor is not None \
                     and self.hover_corridor > 0.0 and err > self.hover_corridor:
                 # Above approach we allow wider roaming than near-contact,
                 # but not unlimited drift away from the hole.
-                parts.append(min(1.0, (err - self.hover_corridor)
-                                 / self.hover_corridor))
+                parts.append(("hover", min(1.0, (err - self.hover_corridor)
+                                           / self.hover_corridor)))
             elif h <= 0.0:
                 # below the opening but off-axis: peg missed the bore entirely
                 if err > self.corridor:
+                    self.last_channel = "off_bore"
                     return 1.0  # immediate intervention — no gate delay needed
         f = None
         if info is not None and "f_z" in info:
             f = abs(float(info["f_z"])) + abs(float(info.get("f_lat", 0.0)))
         if f is not None:
-            parts.append(min(1.0, f / self.force_norm))
+            parts.append(("force", min(1.0, f / self.force_norm)))
         if self.force_fn is not None:
-            parts.append(float(np.clip(self.force_fn(obs), 0.0, 1.0)))
+            parts.append(("force_excess",
+                          float(np.clip(self.force_fn(obs), 0.0, 1.0))))
         if self.value_fn is not None:
-            parts.append(float(np.clip(self.value_fn(obs), 0.0, 1.0)))
+            parts.append(("value", float(np.clip(self.value_fn(obs), 0.0, 1.0))))
         if self.sigma_fn is not None:
-            parts.append(float(np.clip(self.sigma_fn(obs), 0.0, 1.0)))
-        return float(max(parts))
+            parts.append(("sigma", float(np.clip(self.sigma_fn(obs), 0.0, 1.0))))
+        name, z = max(parts, key=lambda p: p[1])
+        self.last_channel = name
+        return float(z)
 
 
 # ===========================================================================
@@ -243,13 +253,19 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                  action_conditioner=None,
                  intervention_mode: str = "signal",
                  latch_until_success: bool = False,
-                 log_ground_truth: bool = False):
+                 log_ground_truth: bool = False,
+                 log_takeover_channels: bool = False):
         super().__init__(env)
         self.op = operator
         self.monitor = monitor
         # diagnostics only: add the oracle's simulator ground truth
         # (gt_lat_err_mm, gt_height_mm, gt_jammed) to info each step
         self.log_ground_truth = bool(log_ground_truth)
+        # diagnostics only: name the monitor channel behind each takeover and
+        # how it ended (info['synthetic_operator'] takeover_channel /
+        # handback_kind); off = info exactly as before
+        self.log_takeover_channels = bool(log_takeover_channels)
+        self._chan_hist = deque(maxlen=64)
         self.gate = SyntheticInterventionGate(
             operator.th, rng or np.random.default_rng(0), dt=dt)
         # active/aqi: the operator RESPONDS to the robot's active-learning
@@ -305,6 +321,7 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         self._ext_request = 0.0
         self._ext_a_score = 0.0
         self._episode_had_takeover = False
+        self._chan_hist.clear()
         self._last_obs, self._last_info = obs, info
         return obs, info
 
@@ -316,6 +333,8 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         # baseline/quality it responds to this task-derived risk.
         z_task = self.monitor(self._last_obs, self._last_info)
         z = self._ext_request if self.respond_to_request else z_task
+        if self.log_takeover_channels:
+            self._chan_hist.append(getattr(self.monitor, "last_channel", ""))
         if latch_active and was_over:
             # Keep intervening continuously once takeover starts; handback
             # happens only after a successful insertion.
@@ -347,9 +366,11 @@ class SyntheticOperatorWrapper(gym.Wrapper):
             a_exec = np.asarray(action, dtype=np.float32)
 
         obs, rew, terminated, truncated, info = self.env.step(a_exec)
+        latch_released = False
         if self.gate.taking_over and latch_active and \
                 bool(info.get("succeed", False)):
             self.gate.taking_over = False
+            latch_released = True
             self.episode_events.append(
                 dict(t=self.monitor._t, event="handback_latch_success",
                      z=z, zhat=self.gate.zhat))
@@ -378,6 +399,18 @@ class SyntheticOperatorWrapper(gym.Wrapper):
             handback=bool(event.startswith("handback")),
             false_alarm=bool(event == "trigger_fa"),
         )
+        if self.log_takeover_channels:
+            extra = {}
+            if event.startswith("trigger"):
+                extra["takeover_channel"] = self._takeover_cause(event)
+            if event in ("handback", "handback_dmax"):
+                extra["handback_kind"] = ("signal" if event == "handback"
+                                         else "time_cap")
+            elif latch_released:
+                extra["handback_kind"] = "latch_success"
+            elif ended and self.gate.taking_over:
+                extra["handback_kind"] = "episode_end"
+            info["synthetic_operator"].update(extra)
         if self.log_ground_truth and self.op.phase_based:
             try:        # state AFTER this step, read from the simulator
                 orc = self.op.oracle
@@ -389,3 +422,15 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                 pass
         self._last_obs, self._last_info = obs, info
         return obs, rew, terminated, truncated, info
+
+    def _takeover_cause(self, event):
+        """The channel behind a takeover: a spontaneous false alarm, the
+        robot's request (active modes), or the monitor channel that dominated
+        z most often over the detection + reaction window before it."""
+        if event == "trigger_fa":
+            return "false_alarm"
+        if self.respond_to_request:
+            return "request"
+        th = self.op.th
+        win = list(self._chan_hist)[-(int(th.m_in) + int(th.l_react) + 1):]
+        return Counter(win).most_common(1)[0][0] if win else ""

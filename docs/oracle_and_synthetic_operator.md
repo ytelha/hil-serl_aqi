@@ -566,6 +566,30 @@ takeover), per shape, tier and setting; on CLAIX `cluster/claix/oracle_test.sbat
 runs it on the free CPU partition. The training pilot is
 `examples/campaigns/rotfix_pilot_{base,rot,rotlatch}.yaml`.
 
+### 6.5 Takeover-channel logging (`--log_takeover_channels`)
+
+**Why.** `z_t` is the maximum over several channels (§6.1), so a takeover
+count alone does not say *why* the operator stepped in: the time pressure, a
+lateral error near the hole, a stall, a missed bore, force, or a false alarm.
+Nor does it say how a takeover ended: the gate handing back early on the
+signal, the `d_max` cap, a latched success, or the episode limit.
+
+**What it logs** (logging only; the operator acts exactly as without it, checked
+step by step against the previous code):
+
+| where | key | values |
+|---|---|---|
+| `info["synthetic_operator"]`, on the step a takeover starts | `takeover_channel` | `time`, `corridor`, `stagnation`, `hover`, `off_bore`, `force`, `force_excess`, `value`, `sigma`, `false_alarm`, `request` |
+| `info["synthetic_operator"]`, on the step a takeover ends | `handback_kind` | `signal` (hysteresis), `time_cap` (`d_max`), `latch_success`, `episode_end` (still in control when the episode ended) |
+| `<checkpoint>/episodes.jsonl`, per episode | `takeover_channels`, `handbacks` | counts per channel and per kind |
+
+The channel of a takeover is the one that set `z_t` most often over the
+detection and reaction window before it (`m_in + l_react + 1` steps); a
+spontaneous trigger is `false_alarm`; in active modes, where the operator
+answers the robot's request, it is `request`. `MonitoringSignal.last_channel`
+names the largest channel of the latest `z_t`. Campaign-wide YAML key:
+`logging.takeover_channels`.
+
 ---
 
 ## 7. Geometric oracle vs policy oracle: demo path vs training path

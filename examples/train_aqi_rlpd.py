@@ -53,6 +53,7 @@ from serl_launcher.agents.continuous.sac import SACAgent
 from serl_launcher.agents.continuous.sac_hybrid_single import SACAgentHybridSingleArm
 from serl_launcher.agents.continuous.sac_hybrid_dual import SACAgentHybridDualArm
 from serl_launcher.utils.timer_utils import Timer
+from serl_launcher.utils.update_ratio import UpdateRatio
 from serl_launcher.utils.train_utils import concat_batches
 from serl_launcher.utils.sharding import DeviceSharding
 from serl_launcher.utils.obs_view import compose_obs_view, resolve_state_slices
@@ -161,6 +162,37 @@ flags.DEFINE_string(
     "converge_eval_poses", "0.000,0.000;0.005,0.000;0.010,0.000;0.005,0.080;0.010,-0.080",
     "semicolon-separated fixed reset poses for the convergence mini-eval: "
     "each pose is 'dx_m,dyaw_rad'.")
+flags.DEFINE_enum(
+    "converge_mode", "rolling", ["rolling", "eval"],
+    "'rolling' = the original rule (--converge_success over the last "
+    "--converge_window training episodes, then the optional mini-eval gate); "
+    "'eval' = decide convergence with the autonomous fixed-pose mini-eval "
+    "alone: every --converge_eval_every env steps (at episode ends, once the "
+    "policy has succeeded without help at least once) and stop after "
+    "--converge_eval_consecutive passes of --converge_eval_threshold in a row. "
+    "Independent of how often the operator steps in during training.")
+flags.DEFINE_integer("converge_eval_every", 2000,
+                     "--converge_mode eval: env steps between mini-evals.")
+flags.DEFINE_integer("converge_eval_consecutive", 2,
+                     "--converge_mode eval: passes in a row needed to stop.")
+flags.DEFINE_float(
+    "utd_ratio", 0.0,
+    "> 0: fix the learner steps per env step at this value (each learner "
+    "step = cta_ratio-1 critic updates + 1 critic+actor update). The actor "
+    "waits for the learner and the learner for data, through "
+    "<checkpoint_path>/learner_progress.json, and the env runs without "
+    "real-time pacing. 0 = the original asynchronous loop (the ratio then "
+    "depends on the GPU, finding F3).")
+flags.DEFINE_float("utd_timeout_s", 600.0,
+                   "--utd_ratio: the actor stops waiting if the learner has "
+                   "not advanced for this long (warning; no hang).")
+flags.DEFINE_boolean(
+    "log_takeover_channels", False,
+    "Synthetic operator diagnostics: record, per episode in episodes.jsonl, "
+    "which monitor channel caused each takeover (time, corridor, stagnation, "
+    "hover, off_bore, force, force_excess, false_alarm, request) and how each "
+    "takeover ended (signal, time_cap, latch_success, episode_end). Logging "
+    "only; training is unchanged.")
 flags.DEFINE_enum(
     "resume", "continue", ["continue", "scratch"],
     "Learner start policy when a checkpoint for this task+method already "
@@ -519,7 +551,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         action_conditioner=action_conditioner,
         intervention_mode=intervention_mode,
         latch_until_success=FLAGS.synthetic_latch_until_success,
-        log_ground_truth=aqi_cfg.quality_cf_diag), theta
+        log_ground_truth=aqi_cfg.quality_cf_diag,
+        log_takeover_channels=FLAGS.log_takeover_channels), theta
 
 
 def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
@@ -659,6 +692,7 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
     intervention_steps = 0
     request_cue_on = False
     hard_cue_on = False
+    takeover_channels, handbacks = {}, {}     # --log_takeover_channels
 
     # ---- convergence-based early stop (actor) -----------------------------
     # A rolling window of recent episode outcomes lets the actor stop as soon as
@@ -689,6 +723,16 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
     converge_eval_on = FLAGS.converge_eval_threshold > 0.0
     converge_eval_poses = _parse_eval_poses(FLAGS.converge_eval_poses) if converge_eval_on else []
 
+    # ---- convergence by the fixed-pose mini-eval (--converge_mode eval) -----
+    # The rolling rule counts only training episodes the operator never
+    # touched, so an operator who keeps stepping in delays it although the
+    # policy may already succeed alone. In eval mode the mini-eval decides.
+    eval_mode = FLAGS.converge_mode == "eval"
+    if eval_mode and not converge_eval_on:
+        raise ValueError("--converge_mode eval needs --converge_eval_threshold > 0")
+    eval_passes, eval_history, last_eval_step = 0, [], None
+    seen_autonomous = False
+
     def _run_convergence_mini_eval(eval_env, rng_key):
         """Small fixed-pose autonomous check that mirrors the ruler's reset semantics."""
         if not hasattr(eval_env, "set_eval_reset_pose"):
@@ -717,6 +761,38 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             eval_env.set_eval_reset_pose(None, None)
         return successes / float(len(converge_eval_poses))
 
+    def _mini_eval_unpaced(eval_env, rng_key):
+        """The mini-eval without real-time pacing (eval mode only)."""
+        base = getattr(eval_env, "unwrapped", eval_env)
+        was = getattr(base, "realtime", None)
+        if was is not None:
+            base.realtime = False
+        try:
+            return _run_convergence_mini_eval(eval_env, rng_key)
+        finally:
+            if was is not None:
+                base.realtime = was
+
+    def _record_convergence(step, payload):
+        """Certified checkpoint + CONVERGED.json, as in the rolling rule."""
+        if not FLAGS.checkpoint_path:
+            return
+        try:
+            _agent_state = jax.block_until_ready(agent.state)
+            checkpoints.save_checkpoint(
+                os.path.join(os.path.abspath(FLAGS.checkpoint_path), "certified"),
+                _agent_state, step=int(step), keep=1, overwrite=True)
+            payload["certified_checkpoint_step"] = int(step)
+            print_green(f">>> certified checkpoint saved at step {int(step)} -> certified/")
+        except Exception as _e:
+            print_yellow(f">>> could not save certified checkpoint: {_e}")
+        try:
+            with open(os.path.join(os.path.abspath(FLAGS.checkpoint_path),
+                                   "CONVERGED.json"), "w") as _cf:
+                json.dump(payload, _cf, indent=2)
+        except OSError:
+            pass
+
     # ---- fixed wall-clock training budget (actor) -------------------------
     # A hard time budget guarantees the cell terminates even if it never
     # converges and the step cap is huge. The actor stops at whichever comes
@@ -738,9 +814,23 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
     # 'continue' so the actor's query_behavior choice cannot change the run.
     query_behavior = FLAGS.query_behavior if aqi_cfg.active_on else "continue"
 
+    # ---- fixed learner updates per env step (--utd_ratio) --------------------
+    utd = None
+    if FLAGS.utd_ratio > 0.0 and FLAGS.checkpoint_path:
+        utd = UpdateRatio(FLAGS.checkpoint_path, FLAGS.utd_ratio,
+                          timeout_s=FLAGS.utd_timeout_s, warn=print_yellow)
+        _base_env = getattr(env, "unwrapped", env)
+        if hasattr(_base_env, "realtime"):
+            _base_env.realtime = False
+        print_green(f"fixed update ratio: {FLAGS.utd_ratio:g} learner steps per "
+                    f"env step; the env runs without real-time pacing")
+
     pbar = tqdm.tqdm(range(start_step, config.max_steps), dynamic_ncols=True)
     for step in pbar:
         timer.tick("total")
+        if utd is not None:
+            with timer.context("utd_wait"):
+                utd.actor_wait()
 
         # fixed wall-clock budget: stop promptly (checked every step) once the
         # time limit is hit, regardless of how many steps remain.
@@ -804,6 +894,14 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             next_obs, reward, done, truncated, info = env.step(exec_action)
             if aqi_cfg.quality_cf_diag:     # logging only (diagnostics)
                 aqi.note_ground_truth(info.get("synthetic_operator"))
+            if FLAGS.log_takeover_channels:  # logging only (diagnostics)
+                _syn = info.get("synthetic_operator") or {}
+                if _syn.get("takeover_channel"):
+                    _c = _syn["takeover_channel"]
+                    takeover_channels[_c] = takeover_channels.get(_c, 0) + 1
+                if _syn.get("handback_kind"):
+                    _k = _syn["handback_kind"]
+                    handbacks[_k] = handbacks.get(_k, 0) + 1
             if "left" in info:
                 info.pop("left")
             if "right" in info:
@@ -990,20 +1088,24 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                         with open(os.path.join(
                                 os.path.abspath(FLAGS.checkpoint_path),
                                 "episodes.jsonl"), "a") as _ef:
-                            _ef.write(json.dumps({
+                            _rec = {
                                 "step": int(step),
                                 "intervention_count": int(intervention_count),
                                 "intervention_steps": int(intervention_steps),
                                 "success": bool(episode_success),
                                 "length": int(info["episode"].get("l", 0)),
-                            }) + "\n")
+                            }
+                            if FLAGS.log_takeover_channels:
+                                _rec["takeover_channels"] = dict(takeover_channels)
+                                _rec["handbacks"] = dict(handbacks)
+                            _ef.write(json.dumps(_rec) + "\n")
                     except Exception:
                         pass
                 # rolling-window convergence check (actor early stop). An
                 # episode "counts" toward convergence when it succeeded and --
                 # if --converge_require_autonomous -- the operator never took
                 # over, i.e. the POLICY solved it unaided.
-                if converge_on:
+                if converge_on and not eval_mode:
                     episodes_total += 1
                     counted = episode_success and (
                         not FLAGS.converge_require_autonomous
@@ -1087,6 +1189,45 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                                         json.dump(payload, _cf, indent=2)
                                 except OSError:
                                     pass
+                if eval_mode:
+                    episodes_total += 1
+                    if episode_success and intervention_count == 0:
+                        seen_autonomous = True
+                    if (seen_autonomous and step >= FLAGS.converge_min_steps
+                            and (last_eval_step is None
+                                 or step - last_eval_step >= FLAGS.converge_eval_every)):
+                        last_eval_step = step
+                        ruler_sr = _mini_eval_unpaced(getattr(env, "env", env), sampling_rng)
+                        eval_history.append([int(step), float(ruler_sr)])
+                        eval_passes = (eval_passes + 1
+                                       if ruler_sr >= FLAGS.converge_eval_threshold else 0)
+                        if FLAGS.checkpoint_path:
+                            try:
+                                with open(os.path.join(os.path.abspath(FLAGS.checkpoint_path),
+                                                       "convergence_evals.jsonl"), "a") as _cv:
+                                    _cv.write(json.dumps({"step": int(step), "sr": float(ruler_sr),
+                                                          "passes": int(eval_passes)}) + "\n")
+                            except OSError:
+                                pass
+                        pbar.write(f">>> mini-eval at step {step}: SR {ruler_sr:.2f} "
+                                   f"(pass {eval_passes}/{FLAGS.converge_eval_consecutive})")
+                        if eval_passes >= FLAGS.converge_eval_consecutive:
+                            converged = True
+                            print_green(
+                                f"\n>>> CONVERGED at step {step}: fixed-pose mini-eval SR >= "
+                                f"{FLAGS.converge_eval_threshold:.2f} in "
+                                f"{eval_passes} evaluations in a row "
+                                f"({episodes_total} episodes) -> stopping the actor.")
+                            _record_convergence(step, dict(
+                                step=int(step), episodes=int(episodes_total),
+                                mode="eval",
+                                mini_eval_sr=float(ruler_sr),
+                                mini_eval_threshold=float(FLAGS.converge_eval_threshold),
+                                consecutive=int(FLAGS.converge_eval_consecutive),
+                                every=int(FLAGS.converge_eval_every),
+                                mini_eval_history=eval_history,
+                                mini_eval_poses=[[float(dx), float(dyaw)]
+                                                 for dx, dyaw in converge_eval_poses]))
                 if aqi.enabled:
                     info["episode"]["aqi_requests"] = aqi._ep_requests if hasattr(aqi, "_ep_requests") else 0
                     info["episode"]["aqi_mode"] = aqi_cfg.mode
@@ -1096,9 +1237,12 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                 running_return = 0.0
                 intervention_count = 0
                 intervention_steps = 0
+                takeover_channels, handbacks = {}, {}
                 already_intervened = False
                 request_cue_on = False
                 client.update()
+                if utd is not None:
+                    utd.actor_note_sent(step - start_step + 1)
                 obs, _ = env.reset()
                 aqi.begin_episode()
 
@@ -1128,13 +1272,25 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             stats = {"timer": timer.get_average_times()}
             client.request("send-stats", stats)
 
-    if converge_on and not converged and not timed_out:
+    if utd is not None:
+        print_green(f"fixed update ratio: the actor waited {utd.waited_s / 60.0:.1f} min "
+                    f"for the learner{' (stopped waiting: learner silent)' if utd.disabled else ''}")
+    if converge_on and not converged and not timed_out and not eval_mode:
         print_yellow(
             f"\n>>> actor reached the {config.max_steps}-step budget WITHOUT "
             f"converging (rolling success "
             f"{sum(recent_outcomes) / max(len(recent_outcomes), 1):.2f} < "
             f"{FLAGS.converge_success:.2f}). This cell 'did not converge' -- a "
             f"real operator-dependency signal; no CONVERGED.json is written.")
+    if eval_mode and not converged and not timed_out:
+        print_yellow(
+            f"\n>>> actor reached the {config.max_steps}-step budget WITHOUT "
+            f"converging: "
+            + (f"{len(eval_history)} mini-evals, last SR {eval_history[-1][1]:.2f}"
+               if eval_history else "no mini-eval (no autonomous success yet)")
+            + f" (needs >= {FLAGS.converge_eval_threshold:.2f} in "
+              f"{FLAGS.converge_eval_consecutive} evaluations in a row); no "
+              f"CONVERGED.json is written.")
     if render_win:
         cv2.destroyAllWindows()
     aqi.close()
@@ -1244,6 +1400,22 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
                  if FLAGS.checkpoint_path else None)
     def _should_stop():
         return _stop["flag"] or (stop_file is not None and os.path.exists(stop_file))
+
+    # --utd_ratio: fixed learner steps per env step (serl_launcher/utils/
+    # update_ratio.py). Off: the original loop, unchanged. Set up before the
+    # banner so a progress file left by an earlier run is gone before the
+    # actor can read it; env steps count from here (a resumed buffer is not
+    # new data).
+    utd = (UpdateRatio(FLAGS.checkpoint_path, FLAGS.utd_ratio)
+           if FLAGS.utd_ratio > 0.0 and FLAGS.checkpoint_path else None)
+    if utd is not None:
+        utd.learner_reset()
+        _rb0 = len(replay_buffer)
+        _rb_cap = getattr(replay_buffer, "_capacity", None)
+
+        def _received():
+            n = len(replay_buffer)
+            return float("inf") if _rb_cap and n >= _rb_cap else n - _rb0
 
     if isinstance(agent, SACAgent):
         train_critic_networks_to_update = frozenset({"critic"})
@@ -1398,6 +1570,11 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
     # cost and on the GPU. Measured on an H100: quality/aqi ~2.6, hiril ~2.1,
     # e2hil ~1.3 learner steps per env step. Report it per method; changing
     # it here would make new cells incomparable with every finished one.
+    online_start = step
+    if utd is not None:             # training begins: the actor may now wait
+        utd.learner_report(0)
+        print_green(f"fixed update ratio: {FLAGS.utd_ratio:g} learner steps per env step")
+
     for step in tqdm.tqdm(
         range(step, config.max_steps), dynamic_ncols=True, desc="learner"
     ):
@@ -1429,6 +1606,11 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
                 batch,
                 networks_to_update=train_networks_to_update,
             )
+        if utd is not None:
+            _n_online = step - online_start + 1
+            utd.learner_report(_n_online)
+            utd.learner_wait(_n_online, _received, _should_stop)
+
         # publish the updated network
         if step > 0 and step % (config.steps_per_update) == 0:
             agent = jax.block_until_ready(agent)

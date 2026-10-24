@@ -341,6 +341,35 @@ dependency, or both.
 > The actor stops at whichever comes first: convergence, the `--max_steps` cap, or
 > `--max_minutes`.
 
+> **Convergence by the mini-eval (`--converge_mode eval`, off by default).**
+> The rolling rule only counts training episodes the operator never touched, so
+> an operator who keeps stepping in delays it even when the policy would already
+> succeed alone. With `--converge_mode eval` (YAML `budget.converge_mode`) the
+> autonomous fixed-pose mini-eval decides instead: once the policy has succeeded
+> without help at least once and `step ≥ --converge_min_steps`, the actor runs
+> the mini-eval (`--converge_eval_poses`, without real-time pacing) every
+> `--converge_eval_every` env steps (default 2000) at an episode end and stops
+> after `--converge_eval_consecutive` (default 2) passes of
+> `--converge_eval_threshold` in a row (which must be > 0). Each evaluation is
+> appended to `<checkpoint>/convergence_evals.jsonl`; `CONVERGED.json` records
+> `mode: eval` and the evaluation history. The rolling rule is not used then.
+>
+> **Fixed update ratio (`--utd_ratio`, off by default).** The learner normally
+> runs as fast as its GPU allows while the actor is paced at 10 Hz, so the
+> learner steps per env step depend on the hardware (≈ 0.45 on the training
+> machine, 1.3–2.7 on an H100, finding F3). With `--utd_ratio U > 0` (YAML
+> `budget.utd_ratio`) the two processes of a cell hold it at `U`
+> ([`update_ratio.py`](../serl_launcher/serl_launcher/utils/update_ratio.py)):
+> the learner writes its update count to `<checkpoint>/learner_progress.json`
+> and waits while it already has `U` updates per received env step; the actor
+> waits before each env step until the learner has done `U` updates per step of
+> every episode but the one it is collecting, and the env runs without
+> real-time pacing. Nothing waits while the learner fills its buffer, and a
+> learner silent for `--utd_timeout_s` (600 s) releases the actor with a
+> warning. A cell then takes `env steps × U / learner steps per second`:
+> about 100 min for 30 000 steps at `U = 1` on the training machine
+> (≈ 5 learner steps/s) unless it converges earlier.
+
 ### 3.7 Reading the report
 
 `report/dependency.md` (and `.json`) contains four blocks:

@@ -399,7 +399,12 @@ def render_run_readme(m):
     if term:
         L += ["## Termination", ""]
         reason = term.get("reason")
-        if term.get("converged"):
+        if term.get("converged") and term.get("mode") == "eval":
+            L.append(f"- **converged** at step {term.get('step')} "
+                     f"(autonomous fixed-pose mini-eval SR >= "
+                     f"{term.get('mini_eval_threshold')} in "
+                     f"{term.get('consecutive')} evaluations in a row)")
+        elif term.get("converged"):
             L.append(f"- **converged** at step {term.get('step')} "
                      f"(rolling {'autonomous ' if term.get('autonomous') else ''}"
                      f"success {term.get('rolling_success')} over "
