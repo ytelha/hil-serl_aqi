@@ -200,9 +200,16 @@ and the bore 28 mm (an **8 mm** radial clearance); one action unit = 0.01 m per
 step = 100 mm/s at 10 Hz. This is why an expert inserts in ~13 control steps and
 a novice takes ~50 — the same geometry, filtered through different `θ`.
 
-> **Supported geometry.** The synthetic operator commands translation only, so
-> the **cylinder** (no yaw alignment needed) is the supported task; cuboid/hex
-> need yaw and insert less reliably.
+> **Supported geometry.** By default the synthetic operator commands translation
+> only, so the **cylinder** (no yaw alignment needed) is the supported task;
+> cuboid/hex need yaw and insert less reliably. Its motor noise still reaches the
+> rotation dims, so a twist from the policy or from its own tremor is never
+> undone. `--synthetic_rotation_control` (YAML `aqi.synthetic_rotation_control`)
+> adds orientation control: the operator turns the tool back to the nearest
+> insertable orientation (90° symmetry for the cuboid, 60° for the hex, yaw free
+> for the cylinder), commits only once position and orientation are aligned, and
+> treats a twisted tool in contact like a jam. Off by default, so every earlier
+> campaign keeps its operator; see [oracle_and_synthetic_operator.md §6.4](oracle_and_synthetic_operator.md).
 
 ---
 

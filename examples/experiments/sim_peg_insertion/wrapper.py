@@ -92,11 +92,16 @@ class SimPegPhaseOracle(PhaseOracle):
 
     lateral_dims = (0, 1)     # EE x, y translation action dims
     vertical_dim = 2          # EE z translation action dim
+    rotation_dims = (3, 4, 5)  # EE rx, ry, rz rotation action dims
+    # rotational symmetry of the bore about its axis (rad); None = round bore
+    _SYMMETRY = {"cylinder": None, "cuboid": np.pi / 2, "hex": np.pi / 3}
 
     def __init__(self, base_env, peg_shape="cylinder",
                  approach_h_mm=25.0, contact_h_mm=4.0,
                  force_baseline=12.0):
         self.env = base_env
+        self.peg_shape = peg_shape
+        self.symmetry = self._SYMMETRY.get(peg_shape)
         self.clearance_mm = _CLEARANCE_MM.get(peg_shape, 8.0)
         self.approach_h_mm = float(approach_h_mm)
         self.contact_h_mm = float(contact_h_mm)
@@ -145,6 +150,30 @@ class SimPegPhaseOracle(PhaseOracle):
 
     def action_dim(self):
         return 6
+
+    def orientation_error(self, obs):
+        """Rotation vector (rad, END-EFFECTOR frame) from the current tool
+        orientation to the nearest insertable one: the aligned home
+        orientation of the reset (``_reset_quat``, before the random yaw),
+        turned by any multiple of the bore's symmetry angle; for the round
+        bore only the tilt counts. Expressed in the EE frame like
+        ``lateral_error``, because ``RelativeFrame`` rotates the operator's
+        rotation command back to the world frame with the same R_ee."""
+        _tip, _htop, _hbot, R_ee = self._geom()
+        R_tgt = Rotation.from_quat(np.asarray(self.env._reset_quat,
+                                              dtype=np.float64))
+        if self.symmetry is None:
+            rv = (R_tgt * R_ee.inv()).as_rotvec()
+            rv[2] = 0.0                   # yaw is free in a round bore
+        else:
+            n = int(round(2 * np.pi / self.symmetry))
+            cands = [(Rotation.from_rotvec([0.0, 0.0, k * self.symmetry])
+                      * R_tgt * R_ee.inv()).as_rotvec() for k in range(n)]
+            rv = min(cands, key=lambda v: float(np.linalg.norm(v)))
+        return R_ee.inv().apply(rv)
+
+    def rot_rad_per_env_unit(self):
+        return float(self.env._action_scale[1])
 
 
 class _VerticalSignAdapter(gym.ActionWrapper):
@@ -221,9 +250,12 @@ def make_synthetic_sim_env(peg_shape: str = None, image_obs: bool = True,
     `budget_s` for the collector.
 
     `--env module:factory` calls this with no arguments, so the peg geometry is
-    taken from $SIM_SYN_PEG_SHAPE (default 'cylinder'). The synthetic operator
-    commands translation only (no yaw), so 'cylinder' (no yaw alignment) is the
-    supported geometry; 'cuboid'/'hex' need yaw and will insert less reliably.
+    taken from $SIM_SYN_PEG_SHAPE (default 'cylinder'). By default the
+    synthetic operator commands translation only (no yaw), so 'cylinder' (no
+    yaw alignment) is the supported geometry; 'cuboid'/'hex' need yaw and
+    insert less reliably unless the operator runs with rotation control
+    (SyntheticOperator(..., rotation_control=True), which uses
+    SimPegPhaseOracle.orientation_error).
     """
     import os
     peg_shape = peg_shape or os.environ.get("SIM_SYN_PEG_SHAPE", "cylinder")

@@ -289,6 +289,19 @@ class PhaseOracle:
     def action_dim(self) -> int:
         return 2
 
+    # ---- optional orientation channel (rotation control) ---------------
+    rotation_dims = ()       # action dims commanding rotation (rx, ry, rz)
+
+    def orientation_error(self, obs):
+        """Rotation vector (rad, in the action frame) that turns the tool
+        into an insertable orientation, or None if the task has no
+        orientation channel. Used only with rotation control."""
+        return None
+
+    def rot_rad_per_env_unit(self) -> float:
+        """Radians per env action unit on the rotation dims."""
+        return 0.0
+
 
 class PolicyOracle:
     """Doc S4 Option B: a trained policy as the competent core; the
@@ -356,19 +369,36 @@ class SyntheticOperator:
     eps ~ N(0, (sigma0 + k_sdn ||u||)^2), ||a|| <= v_max, geometric
     pauses with prob p_pause, whole-episode lapses with prob p_lapse
     inflating all noise x2.5.
+
+    Rotation control (off by default): with a PhaseOracle that exposes an
+    orientation channel, the operator also turns the tool back to an
+    insertable orientation in every phase, commits only once position AND
+    orientation are aligned, and treats a twisted tool in contact like a
+    jam. Without it the intent leaves the rotation dims at zero while the
+    motor noise still reaches them, so a twist (from the policy or from
+    the operator's own tremor) is never undone - the reason the cuboid
+    and hex pegs insert unreliably. Translation and rotation then have
+    separate speed caps (v_max each, in the same command units).
     """
 
     RETRACT_SPEED = 40.0  # mm/s used by the recovery macro
+    ROT_GAIN = 0.3        # share of the orientation error removed per step
+    ROT_TOL = 0.03        # rad: orientation aligned enough to commit
+    ROT_JAM = 0.08        # rad: twisted tool in contact counts as a jam
 
     def __init__(self, oracle, theta: OperatorTheta,
                  rng: Optional[np.random.Generator] = None,
-                 action_scale: float = 1.0, dt: float = 1.0 / CONTROL_HZ):
+                 action_scale: float = 1.0, dt: float = 1.0 / CONTROL_HZ,
+                 rotation_control: bool = False):
         self.oracle = oracle
         self.th = theta
         self.rng = rng or np.random.default_rng(0)
         self.action_scale = action_scale  # env units per mm/s
         self.dt = dt
         self.phase_based = isinstance(oracle, PhaseOracle)
+        self.rotation_control = bool(
+            rotation_control and self.phase_based
+            and len(getattr(oracle, "rotation_dims", ())) > 0)
         self.reset()
 
     # ------------------------------------------------------------------
@@ -407,6 +437,29 @@ class SyntheticOperator:
         return self._delay[0]
 
     # ---- decision block ----------------------------------------------
+    def _rotation(self, obs_d):
+        """Rotation command (command units) and |orientation error| (rad),
+        or (None, 0.0) without rotation control."""
+        if not self.rotation_control:
+            return None, 0.0
+        orc = self.oracle
+        err = orc.orientation_error(obs_d)
+        if err is None:
+            return None, 0.0
+        err = np.asarray(err, dtype=np.float64)
+        rad_per_unit = self.action_scale * orc.rot_rad_per_env_unit()
+        if rad_per_unit <= 0.0:
+            return None, 0.0
+        u_rot = np.clip(self.ROT_GAIN * err / rad_per_unit,
+                        -self.th.v_max, self.th.v_max)
+        return u_rot, float(np.linalg.norm(err))
+
+    def _add_rot(self, u, rot_u):
+        if rot_u is not None:
+            for i, d in enumerate(self.oracle.rotation_dims):
+                u[d] = rot_u[i]
+        return u
+
     def _intent_phase(self, obs_d):
         th, orc = self.th, self.oracle
         u = np.zeros(orc.action_dim())
@@ -414,6 +467,7 @@ class SyntheticOperator:
         err_hat = err_true + self.bias           # per-approach mis-estimate
         h = orc.height(obs_d)
         appr_h = orc.approach_height()
+        rot_u, rot_err = self._rotation(obs_d)    # (None, 0.0) when off
 
         if self.phase == "retract":
             u[orc.vertical_dim] = self.RETRACT_SPEED
@@ -427,18 +481,19 @@ class SyntheticOperator:
                                             / self.dt)
                 self._align_steps = 0
                 self._ehat_s = None
-            return u
+            return self._add_rot(u, rot_u)
 
-        if orc.jammed(obs_d):
+        if orc.jammed(obs_d) or (rot_err > self.ROT_JAM
+                                 and orc.in_contact(obs_d)):
             if self.rng.random() < th.q_rec:
                 self.phase = "retract"           # expert-style recovery
                 u[orc.vertical_dim] = self.RETRACT_SPEED
-                return u
+                return self._add_rot(u, rot_u)
             # push through (novice-style): keep pressing, wiggle a bit
             u[orc.vertical_dim] = -0.6 * th.v_max
             for i, d in enumerate(orc.lateral_dims):
                 u[d] = np.clip(-4.0 * err_hat[i], -th.v_max, th.v_max)
-            return u
+            return self._add_rot(u, rot_u)
 
         if self.phase == "approach":
             u[orc.vertical_dim] = -th.v_max if h > appr_h else 0.0
@@ -446,7 +501,7 @@ class SyntheticOperator:
                 u[d] = np.clip(-3.0 * err_hat[i], -th.v_max, th.v_max)
             if h <= appr_h * 1.1:
                 self.phase = "align"
-            return u
+            return self._add_rot(u, rot_u)
 
         if self.phase == "align":
             for i, d in enumerate(orc.lateral_dims):
@@ -458,7 +513,8 @@ class SyntheticOperator:
             prev_s = self._ehat_s if self._ehat_s is not None else err_hat
             self._ehat_s = 0.5 * prev_s + 0.5 * err_hat
             aligned = (float(np.linalg.norm(self._ehat_s))
-                       < orc.commit_threshold())
+                       < orc.commit_threshold()
+                       and rot_err < self.ROT_TOL)
             premature = (self._premature
                          and self._align_steps >= self._premature_after)
             if aligned or premature:
@@ -466,13 +522,13 @@ class SyntheticOperator:
                 self.commit_events.append(
                     (float(np.linalg.norm(err_hat)),
                      float(np.linalg.norm(err_true))))
-            return u
+            return self._add_rot(u, rot_u)
 
         # descend / insert
         u[orc.vertical_dim] = -th.v_max
         for i, d in enumerate(orc.lateral_dims):
             u[d] = np.clip(-2.0 * err_hat[i], -th.v_max, th.v_max)
-        return u
+        return self._add_rot(u, rot_u)
 
     def _intent_policy(self, obs_d, contact=False):
         u = self.oracle.intent(obs_d)
@@ -507,15 +563,34 @@ class SyntheticOperator:
             self.pause_left = max(1, int(self.rng.geometric(
                 min(self.dt / max(th.pause_len_mean, 1e-3), 0.999))))
             u = np.zeros_like(u)
-        sd = (th.sigma0 + th.k_sdn * float(np.linalg.norm(u))) \
-            * self._noise_mult
+        if self.rotation_control:
+            # translation and rotation are separate channels: each gets its
+            # own signal-dependent noise and its own speed cap
+            groups = self._motor_groups(u.shape[0])
+            sd = np.empty(u.shape)
+            for g in groups:
+                sd[g] = (th.sigma0 + th.k_sdn * float(np.linalg.norm(u[g]))) \
+                    * self._noise_mult
+        else:
+            sd = (th.sigma0 + th.k_sdn * float(np.linalg.norm(u))) \
+                * self._noise_mult
         eps = self.rng.normal(0.0, sd, size=u.shape)
         a = (1 - th.lag) * self.a_prev + th.lag * (u + eps + self.ou.step())
-        n = float(np.linalg.norm(a))
-        if n > th.v_max:
-            a = a * (th.v_max / n)
+        if self.rotation_control:
+            for g in groups:
+                n = float(np.linalg.norm(a[g]))
+                if n > th.v_max:
+                    a[g] = a[g] * (th.v_max / n)
+        else:
+            n = float(np.linalg.norm(a))
+            if n > th.v_max:
+                a = a * (th.v_max / n)
         self.a_prev = a
         return a
+
+    def _motor_groups(self, dim):
+        rot = [d for d in self.oracle.rotation_dims if d < dim]
+        return [[d for d in range(dim) if d not in rot], rot]
 
     # ------------------------------------------------------------------
     def begin_takeover(self, obs):

@@ -529,6 +529,45 @@ pauses on a request and the operator ignored it, the episode would stall.)
 
 ---
 
+### 6.4 Rotation control (`--synthetic_rotation_control`)
+
+**Why.** The geometric operator's intent sets only the x, y, z dims; the
+rotation dims stay at zero, but its motor noise and tremor reach them. A twist
+of the tool — from the untrained policy's random rotations or from the
+operator's own tremor — is therefore never undone. On the cuboid (5 mm
+clearance, ±0.08 rad random yaw at reset) this showed in the W&B episodes of
+the training-machine campaigns: in the first 10 k steps 90–99 % of episodes
+ran into the 300-step limit and even episodes in which the operator controlled
+75–90 % of the steps succeeded only 7 % of the time.
+
+**What it does** (`SyntheticOperator(..., rotation_control=True)`, oracle
+method `orientation_error`):
+
+| piece | behaviour |
+|---|---|
+| command | in every phase, `u_rot = ROT_GAIN · err / rad_per_unit` (30 % of the error per step), capped at `v_max` per axis; `err` is the rotation vector from the current tool orientation to the nearest insertable one, in the end-effector frame |
+| target | the aligned home orientation of the reset (`_reset_quat`, before the random yaw), turned by any multiple of the bore symmetry: 90° cuboid, 60° hex; for the round cylinder only the tilt counts |
+| commit | descend only once the perceived lateral error is inside the threshold **and** `|err| < ROT_TOL` (0.03 rad) |
+| jam | a tool twisted by more than `ROT_JAM` (0.08 rad) while in contact counts as jammed: retract with `q_rec`, else push through while turning |
+| motor | translation and rotation get separate signal-dependent noise and separate `v_max` caps |
+
+The operator's tier still shows in the rotation channel through its motor noise,
+lag and pauses; there is no separate orientation-perception bias.
+
+**Off by default.** With the switch off the operator is byte-identical to the
+earlier one (checked step by step against the previous code), and every
+earlier config produces the same commands. The switch is campaign-wide
+(`aqi.synthetic_rotation_control`), like the intervention mode, because the
+operator must be the same for every arm; the HiRIL pipeline refuses it.
+
+**Check without training.** `examples/oracle_insertion_test.py` lets the
+operator insert alone (solo) and after random actions (rescue, a latched
+takeover), per shape, tier and setting; on CLAIX `cluster/claix/oracle_test.sbatch`
+runs it on the free CPU partition. The training pilot is
+`examples/campaigns/rotfix_pilot_{base,rot,rotlatch}.yaml`.
+
+---
+
 ## 7. Geometric oracle vs policy oracle: demo path vs training path
 
 The same operator model uses a **different competent core** on each path:

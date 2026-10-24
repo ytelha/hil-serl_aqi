@@ -304,6 +304,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
             and "synthetic_intervention_mode" not in explicit):
         args.synthetic_intervention_mode = str(
             aqi["synthetic_intervention_mode"])
+    if (aqi.get("synthetic_rotation_control") is not None
+            and "synthetic_rotation_control" not in explicit):
+        args.synthetic_rotation_control = _to_bool(
+            aqi["synthetic_rotation_control"])
     if (aqi.get("critic_ensemble_size") is not None
             and "critic_ensemble_size" not in explicit):
         args.critic_ensemble_size = int(aqi["critic_ensemble_size"])
@@ -1203,6 +1207,11 @@ def _pipeline_actor_cmd(args, ckpt, method, tier, operator, theta_json, seed,
                         run_name):
     """Actor command of a PIPELINES arm: the same operator / budget /
     convergence flags as the AQI actor, without --aqi_mode and AQI knobs."""
+    if getattr(args, "synthetic_rotation_control", False):
+        raise SystemExit(
+            f"[arms] '{method}': synthetic_rotation_control is not wired into "
+            f"the {PIPELINES[_arm_mode(args, method)]} pipeline; the operator "
+            f"would differ between arms. Run that arm without it.")
     actor_steps, actor_minutes = _actor_budget(args)
     cmd = [PIPELINES[_arm_mode(args, method)], "--exp_name", args.exp_name,
            "--actor", "--checkpoint_path", str(ckpt),
@@ -1301,6 +1310,8 @@ def _actor_cmd(args, ckpt: Path, method: str, tier: str, operator: str,
             "--run_name", run_name,
             "--aqi_log_dir", str((ckpt.parent.parent / "aqi_logs").resolve()),
             ] + _arm_flag(args, method) + _aqi_flags(args, method)
+    if getattr(args, "synthetic_rotation_control", False):
+        cmd += ["--synthetic_rotation_control"]
     if args.policy_oracle_checkpoint:
         cmd += ["--oracle_checkpoint", str(args.policy_oracle_checkpoint)]
     if getattr(args, "training_oracle", "auto") != "auto":
@@ -2123,6 +2134,8 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
         "operators": [th.operator_id for th in roster],
         "arms": _arms_summary(args),
     }
+    if getattr(args, "synthetic_rotation_control", False):
+        manifest["synthetic_rotation_control"] = True   # absent = original operator
     json.dump(manifest, open(campaign / "campaign.json", "w"), indent=2)
 
 
@@ -2171,6 +2184,8 @@ def print_plan(args, roster, cells, seeds, grid):
     if getattr(args, "unified_monitoring", ""):
         print(f"  monitoring   : UNIFIED at '{args.unified_monitoring}' "
               f"(skill varies only in EXECUTION)")
+    if getattr(args, "synthetic_rotation_control", False):
+        print("  operator     : rotation control (corrects orientation too)")
     print(f"  seeds/op     : {len(seeds)}  {list(seeds)}")
     print(f"  methods      : {args.methods}")
     for arm, a in _arms_summary(args).items():
@@ -2332,6 +2347,12 @@ def build_arg_parser():
     p.add_argument("--per_is_beta", type=float, default=None,
                    help="importance-sampling exponent for prioritised replay "
                         "(quality/aqi; 0 = off).")
+    p.add_argument("--synthetic_rotation_control", action="store_true",
+                   default=False,
+                   help="the geometric synthetic operator also corrects the "
+                        "tool orientation (needed for the cuboid / hex peg); "
+                        "off = the original translation-only operator. "
+                        "YAML: aqi.synthetic_rotation_control.")
     p.add_argument("--synthetic_intervention_mode",
                    choices=["signal", "always_latch",
                             "latch_until_autonomous_success"],

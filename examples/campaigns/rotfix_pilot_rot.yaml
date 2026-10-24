@@ -1,0 +1,90 @@
+# =====================================================================
+# rotfix_pilot_rot.yaml -- pilot for the operator rotation fix (CLAIX).
+#
+# Question: does the synthetic operator's missing orientation control explain
+# the slow start of cuboid training (90-99 % of the first 10 k steps' episodes
+# time out although the operator controls half the steps; first autonomous
+# success only at ~17 k steps)?
+#
+# Three campaigns, identical except for the operator:
+#   rotfix_pilot_base      original translation-only operator, signal hand-back
+#   rotfix_pilot_rot       + rotation control                 (signal)
+#   rotfix_pilot_rotlatch  + rotation control, takeovers latched until the
+#                            policy's first autonomous success
+#
+# Plain HIL-SERL, 1 operator per tier x 1 seed = 3 cells per campaign, cuboid,
+# 30 k-step cap with the usual convergence stop. Read: steps to the first
+# autonomous success and to convergence, timeouts and successes in the first
+# 10 k steps (episodes.jsonl), then the ruler. All three run on CLAIX: never
+# compare them with training-machine cells (different updates per env step).
+#
+#   bash cluster/claix/submit_campaign.sh examples/campaigns/rotfix_pilot_rot.yaml rotfix-pilot-rot
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 1
+  intermediate: 1
+  novice: 1
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl
+
+replicates:
+  seeds: 1
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 30000
+  minutes_per_cell: 240
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_rotation_control: true
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: hilserl
+  plots: true

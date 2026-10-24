@@ -203,6 +203,13 @@ flags.DEFINE_enum(
     "policy until the policy records its first successful fully autonomous "
     "episode, then switch permanently to signal mode. 'legacy' preserves "
     "the historical --synthetic_latch_until_success boolean behavior.")
+flags.DEFINE_boolean(
+    "synthetic_rotation_control", False,
+    "Geometric synthetic operator also corrects the tool orientation (roll, "
+    "pitch, yaw back to the nearest insertable orientation) and commits only "
+    "once position and orientation are aligned. Off = the original "
+    "translation-only operator, so finished campaigns stay reproducible; "
+    "needed for pegs that must be turned into the bore (cuboid, hex).")
 flags.DEFINE_integer("env_seed", -1,
                      "Seed for the TRAINING env's reset randomization (start "
                      "pose / yaw) and random-exploration sampler; -1 = use "
@@ -490,7 +497,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
     op = SyntheticOperator(
         oracle, theta,
         rng=np.random.default_rng(FLAGS.synthetic_seed + 17),
-        action_scale=op_action_scale)
+        action_scale=op_action_scale,
+        rotation_control=FLAGS.synthetic_rotation_control)
 
     if FLAGS.synthetic_intervention_mode == "legacy":
         intervention_mode = ("always_latch"
@@ -501,7 +509,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
 
     print_green(f"synthetic operator '{FLAGS.synthetic_operator}' "
                 f"(exec s={theta.s_exec:.2f}, mon s={theta.s_mon:.2f}, "
-                f"{kind} oracle, intervention={intervention_mode}) "
+                f"{kind} oracle, intervention={intervention_mode}"
+                f"{', rotation control' if op.rotation_control else ''}) "
                 f"wrapping the env; theta -> meta.json")
     return SyntheticOperatorWrapper(
         env, op, monitor,
