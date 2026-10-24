@@ -315,8 +315,8 @@ def _suite():
 def test_suite_configs():
     ss = _suite()
     names = ss.ORDER
-    assert len(names) == 8 and set(ss.GROUPS["q1"]) | set(ss.GROUPS["q2"]) | set(ss.GROUPS["q3"]) \
-        | set(ss.GROUPS["q2confirm"]) == set(names)
+    assert len(names) == 12 and set(ss.GROUPS["q1"]) | set(ss.GROUPS["q2"]) | set(ss.GROUPS["q3"]) \
+        | set(ss.GROUPS["q2confirm"]) | set(ss.GROUPS["twoarm"]) | set(ss.GROUPS["twoarmconfirm"]) == set(names)
     # a platform group runs the pilots; the 108-cell confirmation never starts without a decision
     assert ss.GROUPS["orig"] == ["Q1_validity_orig", "Q2_pilot_orig", "Q3_consistent_orig"]
     assert not any("confirm" in n for n in ss.GROUPS["new"])
@@ -329,6 +329,20 @@ def test_suite_configs():
         quality = {k: v for k, v in arms.items() if v.get("mode") == "quality"}
         if n.startswith("Q1_"):
             assert cfg["methods"] == ["logged"] and not quality
+        elif n.startswith("two_arm_"):
+            # the two uses of the score alone, defined exactly as in Q2 of the same platform
+            assert cfg["methods"] == ["drop-hind", "reweight-hind"] and set(arms) == set(cfg["methods"])
+            q2 = ss.load_yaml(ss.config_path("Q2_pilot_" + n.rsplit("_", 1)[-1]))
+            assert all(arms[a] == q2["arms"][a] for a in arms), n
+            skip = ("methods", "arms", "operators", "replicates", "budget", "logging", "analysis")
+            assert {k: v for k, v in cfg.items() if k not in skip} == {k: v for k, v in q2.items() if k not in skip}, n
+            assert cfg["analysis"]["baseline"] == "drop-hind"
+            confirm = "confirm" in n
+            assert cfg["operators"]["expert"] == (3 if confirm else 1)
+            assert cfg["replicates"]["seeds"] == (2 if confirm else 1)
+            assert cfg["budget"]["steps_cap"] == (40000 if confirm else 30000)
+            assert {k: v for k, v in cfg["budget"].items() if k != "steps_cap" and k != "minutes_per_cell"} \
+                == {k: v for k, v in q2["budget"].items() if k != "steps_cap" and k != "minutes_per_cell"}, n
         else:
             # the quality arms differ only in what they drop and how they replay
             common = {k for k in set().union(*map(set, quality.values()))
@@ -339,6 +353,37 @@ def test_suite_configs():
             assert quality["keepall"]["quality_filters"] == [] and quality["keepall"]["per_eta"] == 0.0
             assert quality["drop-hind"]["quality_drop_fraction"] == quality["drop-random"]["quality_drop_fraction"] \
                 == cfg["aqi"]["synthetic_bad_share"]
+
+
+def _fake_arm_cell(camp, arm, sr):
+    import json
+    cid = f"{arm}_exp00_s0"
+    d = camp / "checkpoints" / cid
+    d.mkdir(parents=True)
+    (d / ".done").write_text(json.dumps({"cell": cid, "method": arm, "operator": "exp00", "tier": "expert",
+                                         "seed": 0, "converged": False, "converged_step": None}))
+    (d / "episodes.jsonl").write_text(json.dumps({"step": 300, "length": 300, "success": False,
+                                                  "intervention_count": 1, "intervention_steps": 50}) + "\n")
+    (camp / "eval_runs" / cid).mkdir(parents=True)
+    (camp / "eval_runs" / cid / "cell.json").write_text(json.dumps({"outcomes": {"sr": sr}}))
+
+
+def test_suite_report_pairs_each_arm_once():
+    import tempfile
+    ss = _suite()
+    root = Path(tempfile.mkdtemp(prefix="inc_report_"))
+    for arm, sr in (("hilserl", 0.5), ("keepall", 0.6), ("drop-hind", 0.7)):
+        _fake_arm_cell(root / "Q2_pilot_orig", arm, sr)
+    for arm, sr in (("drop-hind", 0.7), ("reweight-hind", 0.8)):
+        _fake_arm_cell(root / "two_arm_pilot_orig", arm, sr)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert ss.cmd_report(type("A", (), dict(root=str(root), names=[]))()) == 0
+    text = (root / "report.md").read_text(encoding="utf-8")
+    assert "| two_arm_pilot_orig | reweight-hind | drop-hind | 1 | 0.10 | 1 / 0 / 0 |" in text
+    for arm, ref in (("drop-hind", "keepall"), ("hilserl", "keepall"), ("drop-hind", "hilserl")):
+        assert f"| Q2_pilot_orig | {arm} | {ref} | 1 |" in text, (arm, ref)
+    for arm, ref in (("keepall", "hilserl"), ("keepall", "drop-hind"), ("hilserl", "drop-hind")):
+        assert f"| Q2_pilot_orig | {arm} | {ref} |" not in text, (arm, ref)       # the same pair reversed
 
 
 def test_suite_score_guard(tmp=None):
@@ -354,6 +399,7 @@ def test_suite_score_guard(tmp=None):
         (rep / "inconsistent_audit.json").write_text(json.dumps({"best_online_score": {"quality_score_mode": best}}))
         assert (ss.score_mismatch(root, "Q2_pilot_orig") is None) == ok, best
         assert (ss.score_mismatch(root, "Q3_consistent_orig") is None) == ok, best
+        assert (ss.score_mismatch(root, "two_arm_pilot_orig") is None) == ok, best
     assert "no Q1 audit" in ss.score_mismatch(root, "Q2_pilot_new")          # the platform's own Q1
 
 

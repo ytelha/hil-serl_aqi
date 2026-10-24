@@ -1,0 +1,126 @@
+# =====================================================================
+# inconsistent_operator/two_arm_confirm_orig.yaml -- Two-arm confirmation at thesis scale
+#
+# Part of the inconsistent-operator suite (docs/inconsistent_operator.md):
+# does a quality score find the bad corrections of an operator who is
+# sometimes attentive and sometimes not, and does keeping the good / dropping
+# the bad ones help? The operator's hidden condition is redrawn at every
+# takeover (inattentive in 0.4 of them, persistence 0.7) and logged as
+# ground truth. Inattentive corrections are sloppy and wrong.
+#
+# Two-arm confirmation: the same two arms x 3 operators per tier x 2 seeds = 36 cells, 40 k cap.
+# Run it after the two-arm pilot, with the same score.
+# Platform: the original operator and task of the finished campaigns.
+#
+#   ./.venv/bin/python examples/synthetic_suite.py --suite inconsistent_operator run two_arm_confirm_orig
+# Never run it in a folder of another campaign; never mix machines (F3).
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - drop-hind
+  - reweight-hind
+
+arms:
+  drop-hind:                              # discard the corrections the score ranks in the lowest 0.4
+    mode: quality
+    quality_score_mode: hindsight        # set to the best score of Q1
+    quality_warmup_steps: 5000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+  reweight-hind:                              # keep every correction, replay priority from the score (as the score campaign)
+    mode: quality
+    quality_score_mode: hindsight        # set to the best score of Q1
+    quality_warmup_steps: 5000
+    quality_filters: []
+    per_standardize: true
+    per_delta_init: 0.1
+    per_eps: 0.05
+    per_eta: 1.0
+    per_scale_decay: 0.01
+    per_refresh_period: 2000
+    per_is_beta: 0.5
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000
+  minutes_per_cell: 300
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true                 # the fixed-ensemble base (hilserl opts out)
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_inconsistent: true    # the inconsistent operator (patch 0018)
+  synthetic_bad_share: 0.4
+  synthetic_bad_persistence: 0.7
+  synthetic_rotation_control: false
+  synthetic_orientation_monitor: false
+  critic_ensemble_size: 8              # the fixed ensemble
+  critic_subsample_size: 1
+  per_member_targets: true
+  bc_loss_weight: 0.0
+
+method_overrides:
+  hilserl:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+  takeover_channels: true
+  wandb_tags: [inconsistent_operator, two_arm_confirm_orig]
+
+analysis:
+  baseline: drop-hind
+  plots: true

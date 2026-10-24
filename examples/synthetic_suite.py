@@ -54,7 +54,7 @@ TESTS = ["tests/test_operator_rotation.py", "tests/test_update_ratio.py", "tests
          "tests/test_sim_orientation.py", "tests/test_synthetic_suite.py"]
 REF_ARMS = ()                  # arms every other arm of a setting is paired with in the report
 
-_INC = ["Q1_validity", "Q2_pilot", "Q3_consistent", "Q2_confirm"]
+_INC = ["Q1_validity", "Q2_pilot", "Q3_consistent", "Q2_confirm", "two_arm_pilot", "two_arm_confirm"]
 SUITES = {
     "synthetic_suite": dict(configs=CONFIGS, root=DEFAULT_ROOT, groups=GROUPS, order=ORDER, tests=TESTS,
                             ref_arms=REF_ARMS),
@@ -63,13 +63,16 @@ SUITES = {
         groups={"q1": ["Q1_validity_orig", "Q1_validity_new"], "q2": ["Q2_pilot_orig", "Q2_pilot_new"],
                 "q3": ["Q3_consistent_orig", "Q3_consistent_new"],
                 "q2confirm": ["Q2_confirm_orig", "Q2_confirm_new"],
+                # the two uses of the score alone: discard and re-weight
+                "twoarm": ["two_arm_pilot_orig", "two_arm_pilot_new"],
+                "twoarmconfirm": ["two_arm_confirm_orig", "two_arm_confirm_new"],
                 # a platform's pilots in order; the confirmation only by name, after the decision
                 "orig": [f"{n}_orig" for n in _INC[:3]], "new": [f"{n}_new" for n in _INC[:3]]},
         order=[f"{n}_orig" for n in _INC] + [f"{n}_new" for n in _INC],
         tests=["tests/test_inconsistent_operator.py", "tests/test_operator_rotation.py",
                "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
                "tests/test_campaign_switches.py", "tests/test_synthetic_suite.py"],
-        ref_arms=("keepall", "hilserl")),
+        ref_arms=("keepall", "hilserl", "drop-hind")),
 }
 SUITE = "synthetic_suite"
 
@@ -705,8 +708,8 @@ def cmd_report(args):
             prs += paired(allcells, r, refname)
     arm_pairs = []
     for n in sorted({r["setting"] for r in allrows}):
-        for ref in REF_ARMS:
-            arm_pairs += paired_arms(allcells, n, ref)
+        for i, ref in enumerate(REF_ARMS):       # each pair once: not against an earlier reference
+            arm_pairs += [p for p in paired_arms(allcells, n, ref) if p["arm"] not in REF_ARMS[:i]]
     if arm_pairs:
         L += ["", "## Paired ruler SR within a campaign (same operator and seed)", "",
               "| setting | arm | against | pairs | mean Δ SR | wins / losses / ties | sign test p |",

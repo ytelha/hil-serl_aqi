@@ -88,6 +88,8 @@ box and channel, mini-eval convergence and the fixed update ratio
 | `Q2_pilot_{orig,new}` | inconsistent | the six below | 6 × 3 = 18 | 30 k |
 | `Q3_consistent_{orig,new}` | consistent | the six without the oracle | 5 × 3 = 15 | 30 k |
 | `Q2_confirm_{orig,new}` | inconsistent | the arms the pilot keeps | 6 × 3 per tier × 2 seeds = 108 | 40 k |
+| `two_arm_pilot_{orig,new}` | inconsistent | `drop-hind`, `reweight-hind` only | 2 × 3 = 6 | 30 k |
+| `two_arm_confirm_{orig,new}` | inconsistent | `drop-hind`, `reweight-hind` only | 2 × 3 per tier × 2 seeds = 36 | 40 k |
 
 | arm | what it does with the corrections | compared with |
 |---|---|---|
@@ -221,6 +223,37 @@ sign test per pair of arms. The campaign's own dependency report
 (`report/dependency.md`) adds the ICC and the comparisons between arms.
 Significance: two-sided p < 0.05 on the paired ruler SR.
 
+### The two-arm experiment: discard against re-weight (patch 0019)
+
+This is the lean alternative to Q2, chosen by the user: only the two ways to use
+the score, with the inconsistent operator, a pilot first and then thesis scale.
+
+- **Arms:** `drop-hind` drops the lowest-scored 40 %; `reweight-hind` keeps
+  everything and replays by score. Both are defined exactly as in Q2 and use
+  the score Q1 picked. The driver refuses to start them until the score is set
+  (`--score_as_is` overrides).
+- **What it answers:** which use of the score trains better, paired per
+  operator and seed (`reweight-hind − drop-hind`). The audit adds how well the
+  discard arm separated the corrections: precision and recall against the
+  label. Whether the score itself beats the baseline needs Q2's `hilserl`,
+  `keepall` and `drop-random`; this experiment does not have them.
+
+```bash
+./.venv/bin/python examples/synthetic_suite.py --suite inconsistent_operator run two_arm_pilot_orig
+./.venv/bin/python examples/synthetic_suite.py --suite inconsistent_operator report two_arm_pilot_orig
+./.venv/bin/python examples/synthetic_suite.py --suite inconsistent_operator audit two_arm_pilot_orig
+# after the pilot, at thesis scale (18 pairs):
+nohup ./.venv/bin/python examples/synthetic_suite.py --suite inconsistent_operator run two_arm_confirm_orig --wandb online > runs/inconsistent_operator/two_arm_confirm.out 2>&1 &
+```
+
+The campaign report names `drop-hind` as its reference, so its paired table
+is `reweight-hind` against `drop-hind`. The groups are `twoarm` (both pilots)
+and `twoarmconfirm`.
+
+**From the pilot to thesis scale:** run the confirmation unless both arms fail
+to learn at all, i.e. a ruler SR below 0.1 in every tier. The pilot's
+direction is not a reason to stop: three pairs cannot decide it.
+
 ## 4. Platforms, order and cost
 
 "Both, decide later":
@@ -239,11 +272,15 @@ Significance: two-sided p < 0.05 on the paired ruler SR.
 | Q2 pilot per platform | 18 | 15–27 h |
 | Q3 pilot per platform | 15 | 12–23 h |
 | Q2 confirmation (6 arms) | 108 | 4.5–9 days |
+| two-arm pilot per platform | 6 | 5–9 h |
+| two-arm confirmation per platform | 36 | 1.5–3 days |
 
 **Order:** stage 0 → Q1 → set the score → Q2 pilot → Q3 pilot → decide →
 confirmation. `run orig` (or `run new`) runs a platform's Q1, Q2 pilot and Q3
 in this order and stops before Q2 until the score is set. The confirmation runs
-only by name (`run Q2_confirm_orig`, or the group `q2confirm`).
+only by name (`run Q2_confirm_orig`, or the group `q2confirm`). The two-arm
+experiment runs only by name too: stage 0 → Q1 → set the score → two-arm pilot
+→ two-arm confirmation.
 
 **One machine runs the whole suite** (finding F3). The `_new` settings need
 the orientation-channel limits from the synthetic-operator suite's stage 0. The
@@ -278,6 +315,6 @@ driver reads `runs/inconsistent_operator/stage0/limits.json` first, then
 | `examples/train_aqi_rlpd.py`, `examples/run_campaign.py` | the switches; `quality_drop_fraction` per arm |
 | `examples/oracle_insertion_test.py` | `--conditions attentive,inattentive` |
 | `examples/inconsistent_operator_audit.py` | score validity (Q1) and what the discard arms dropped (Q2, Q3) |
-| `examples/campaigns/inconsistent_operator/*.yaml` | the 8 configs |
+| `examples/campaigns/inconsistent_operator/*.yaml` | the 12 configs (Q1, Q2 pilot and confirmation, Q3, the two-arm pilot and confirmation; each `_orig` and `_new`) |
 | `examples/synthetic_suite.py --suite inconsistent_operator` | driver: `check`, `stage0`, `plan`, `run`, `audit`, `report` |
 | `tests/test_inconsistent_operator.py` | the model, the label, the filters, the wiring, the audit, the suite |
