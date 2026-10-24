@@ -29,6 +29,7 @@ train_rlpd.py behaviour.
 """
 
 import copy
+from collections import deque
 from typing import Callable, Dict, List, Optional, Tuple
 
 import gymnasium as gym
@@ -314,6 +315,12 @@ class AQIRuntime:
         return record
 
     # ------------------------------------------------------------------
+    def note_operator_condition(self, condition) -> None:
+        """Inconsistent operator: the hidden condition of the current
+        takeover (attentive / inattentive), stored with the segment it opens.
+        Call after env.step, before record_transition."""
+        self._op_condition = condition
+
     def note_ground_truth(self, gt) -> None:
         """Diagnostics only (quality_cf_diag): attach the synthetic
         operator's simulator ground truth for the state AFTER this step
@@ -371,7 +378,8 @@ class AQIRuntime:
                 self._open_seg = InterventionSegment(
                     operator_id=self.operator_id,
                     start_step=self._ep_step,
-                    requested=bool(requested))
+                    requested=bool(requested),
+                    condition=getattr(self, "_op_condition", None))
             seg = self._open_seg
             seg.transitions.append(copy.deepcopy(transition))
             seg.obs_list.append(obs)
@@ -517,6 +525,7 @@ class AQIRuntime:
                     sigma_beta_mean=_finite(np.mean(fin)) if fin.size else None,
                     consistency_mean=float(np.mean(c)),
                     consistency_ready=bool(fin.size > 0))
+            self._discard(seg, q_seg, warmup)
             self.logger.log_segment(dict(
                 episode=self.episode_idx,
                 operator_id=self.operator_id,
@@ -543,6 +552,9 @@ class AQIRuntime:
                 weights=seg.weights.tolist(),
                 **cons,
                 **({"cf_diag": cf_diag} if cf_diag is not None else {}),
+                **({"condition": seg.condition} if seg.condition is not None else {}),
+                **({"drop_score": seg.drop_score} if seg.drop_score is not None else {}),
+                **({"drop_warmup": seg.drop_warmup} if seg.drop_warmup is not None else {}),
             ))
             if not seg.excluded:
                 for i, tr in enumerate(seg.transitions):
@@ -598,6 +610,46 @@ class AQIRuntime:
         return scored_transitions
 
     # ------------------------------------------------------------------
+    def _discard(self, seg, q_seg, warmup) -> None:
+        """Discard filters (config.DISCARD_FILTERS), after the final score.
+        Nothing is dropped during the quality warm-up; the score window
+        fills from the start. A dropped takeover leaves the intervention
+        buffer only: its steps stay in the online replay buffer."""
+        names = [n for n in self.cfg.effective_quality_filters
+                 if n in ("score_filter", "oracle_filter", "random_filter")]
+        if not names or seg.excluded:
+            return
+        cfg = self.cfg
+        seg.drop_warmup = bool(warmup)
+        hit = None
+        if "score_filter" in names:
+            if getattr(self, "_drop_window", None) is None:
+                self._drop_window = deque(maxlen=int(cfg.quality_drop_window))
+            s = float(q_seg) if q_seg is not None else float(np.mean(seg.a_hat))
+            seg.drop_score = s
+            win = np.asarray(self._drop_window)
+            if len(win) >= int(cfg.quality_drop_min_segments):
+                thr = float(np.quantile(win, cfg.quality_drop_fraction))
+                # ties at the threshold (a score with few values, e.g.
+                # outcome) are dropped at random so the share stays right
+                below, tie = float(np.mean(win < thr)), float(np.mean(win == thr))
+                if getattr(self, "_tie_rng", None) is None:
+                    self._tie_rng = np.random.default_rng(54321)
+                if s < thr or (s == thr and tie > 0 and self._tie_rng.random()
+                               < (cfg.quality_drop_fraction - below) / tie):
+                    hit = "score_filter"
+            self._drop_window.append(s)
+        if hit is None and "oracle_filter" in names and seg.condition == "inattentive":
+            hit = "oracle_filter"
+        if hit is None and "random_filter" in names:
+            if getattr(self, "_drop_rng", None) is None:
+                self._drop_rng = np.random.default_rng(12345)
+            if self._drop_rng.random() < cfg.quality_drop_fraction:
+                hit = "random_filter"
+        if hit is not None and not warmup:
+            seg.excluded, seg.exclusion_reason = True, hit
+            seg.weights = np.zeros_like(seg.weights)
+
     def seed_ood_from_demo_transitions(self, transitions) -> None:
         """Seed D_success with demonstration states (S5.4: OOD is distance
         to successful demonstrations and prior successful rollouts).

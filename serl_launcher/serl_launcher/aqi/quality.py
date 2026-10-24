@@ -72,6 +72,12 @@ class InterventionSegment:
     weights: Optional[np.ndarray] = None
     excluded: bool = False
     exclusion_reason: str = ""
+    # inconsistent operator: hidden condition at the takeover onset (label)
+    condition: Optional[str] = None
+    # discard filters: the score the segment was ranked by, and whether the
+    # quality warm-up still held the filter off
+    drop_score: Optional[float] = None
+    drop_warmup: Optional[bool] = None
 
     def __len__(self):
         return len(self.transitions)
@@ -108,11 +114,19 @@ def _filter_unsolicited(seg, cfg, ctx) -> bool:
     return bool(ctx.get("active_on")) and not seg.requested
 
 
+def _filter_after_scoring(seg, cfg, ctx) -> bool:
+    """Discard filters decide after the final score (AQIRuntime.end_episode)."""
+    return False
+
+
 SEGMENT_FILTERS = {
     "safety_veto": _filter_safety_veto,
     "jerk_veto": _filter_jerk_veto,
     "outcome_filter": _filter_outcome,
     "unsolicited": _filter_unsolicited,
+    "score_filter": _filter_after_scoring,
+    "oracle_filter": _filter_after_scoring,
+    "random_filter": _filter_after_scoring,
 }
 
 

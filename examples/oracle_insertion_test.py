@@ -41,13 +41,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "serl_launcher"))
 from scipy.spatial.transform import Rotation  # noqa: E402
 
 from experiments.sim_peg_insertion.wrapper import make_synthetic_sim_env  # noqa: E402
-from serl_launcher.aqi.operator_model import (SyntheticOperator,  # noqa: E402
+from serl_launcher.aqi.operator_model import (Inconsistency,  # noqa: E402
+                                              SyntheticOperator,
                                               make_operator_theta)
 
 
-def run_episode(env, op, scenario, ep_seed, rescue_steps, rng, max_steps):
+def run_episode(env, op, scenario, ep_seed, rescue_steps, rng, max_steps, condition=None):
     obs, info = env.reset(seed=ep_seed)
     op.reset()
+    if condition:                     # inconsistent operator held in one condition
+        op.force_condition(condition)
     orc = env.phase_oracle
     twist = None
     steps = 0
@@ -175,6 +178,9 @@ def main():
                     help="random steps before the takeover in the rescue scenario")
     ap.add_argument("--max_steps", type=int, default=300, help="episode limit (training: 300)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--conditions", default="",
+                    help="attentive,inattentive: the inconsistent operator held in each "
+                         "condition (empty = the original, consistent operator)")
     ap.add_argument("--sweep", default="",
                     help="tilt,yaw: the orientation tolerance sweep instead of solo/rescue")
     ap.add_argument("--angles_deg", default="0,2,4,6,8,10,12,15,18,22",
@@ -196,26 +202,29 @@ def main():
         env = make_synthetic_sim_env(peg_shape=shape, image_obs=False, max_episode_length=args.max_steps)
         for tier in [t for t in args.tiers.split(",") if t]:
             theta = make_operator_theta(tier, rng=np.random.default_rng(args.seed))
-            for rot in [r for r in args.rotation.split(",") if r]:
+            conds = [c for c in args.conditions.split(",") if c] or [None]
+            for rot, cond in [(r, c) for r in args.rotation.split(",") if r for c in conds]:
                 for scen in [s for s in args.scenarios.split(",") if s]:
                     op = SyntheticOperator(env.phase_oracle, theta,
                                            rng=np.random.default_rng(args.seed + 17),
                                            action_scale=env.operator_action_scale,
-                                           rotation_control=(rot == "on"))
+                                           rotation_control=(rot == "on"),
+                                           inconsistency=Inconsistency() if cond else None)
                     rng = np.random.default_rng(args.seed + 31)
                     eps = [run_episode(env, op, scen, 1000 * args.seed + i, args.rescue_steps, rng,
-                                       args.max_steps) for i in range(args.episodes)]
+                                       args.max_steps, condition=cond) for i in range(args.episodes)]
                     ok = [e for e in eps if e["success"]]
                     tw = [e["twist_deg"] for e in eps if e["twist_deg"] is not None]
                     row = dict(shape=shape, tier=tier, rotation=rot, scenario=scen, episodes=len(eps),
+                               condition=cond or "consistent",
                                success=len(ok) / len(eps),
                                median_steps=float(np.median([e["op_steps"] for e in ok])) if ok else None,
                                twist_deg_mean=float(np.mean(tw)) if tw else None,
                                twist_deg_max=float(np.max(tw)) if tw else None)
                     rows.append(row)
-                    print("%-8s %-12s rot %-3s %-6s  success %5.1f %%  median operator steps %-5s  "
+                    print("%-8s %-12s rot %-3s %-11s %-6s  success %5.1f %%  median operator steps %-5s  "
                           "twist at takeover %5.1f deg (max %5.1f)   [%.0f s]"
-                          % (shape, tier, rot, scen, 100 * row["success"],
+                          % (shape, tier, rot, row["condition"], scen, 100 * row["success"],
                              "-" if row["median_steps"] is None else "%.0f" % row["median_steps"],
                              row["twist_deg_mean"] or 0.0, row["twist_deg_max"] or 0.0, time.time() - t0),
                           flush=True)

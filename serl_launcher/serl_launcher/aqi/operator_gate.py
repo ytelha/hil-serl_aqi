@@ -434,6 +434,10 @@ class SyntheticOperatorWrapper(gym.Wrapper):
             handback=bool(event.startswith("handback")),
             false_alarm=bool(event == "trigger_fa"),
         )
+        if getattr(self.op, "inconsistency", None) is not None:
+            # inconsistent operator: the hidden condition of the current (or
+            # last) takeover, the ground-truth label of its corrections
+            info["synthetic_operator"]["condition"] = self.op.condition
         if self.log_takeover_channels:
             extra = {}
             if event.startswith("trigger"):

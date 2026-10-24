@@ -143,6 +143,16 @@ w    *= c(s_i)   (only with quality_consistency_weight)
 - The disagreement gate and `adv_exclude` act on the counterfactual Â only.
 - The filters (`safety_veto`, `jerk_veto`, `outcome_filter`, `unsolicited`)
   work as before in every mode. Excluded segments get w = 0.
+- **Discard filters** (patch 0018, never on by default):
+  - `score_filter` drops the takeovers whose final score is below the
+    `quality_drop_fraction` quantile of the last `quality_drop_window`
+    scores;
+  - `oracle_filter` drops the inattentive takeovers of the inconsistent
+    operator;
+  - `random_filter` drops the same share at random.
+
+  They act after the quality warm-up. See
+  [inconsistent_operator.md](inconsistent_operator.md).
 
 ## 4. What is logged (all logging modes)
 

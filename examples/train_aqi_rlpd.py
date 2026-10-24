@@ -243,6 +243,20 @@ flags.DEFINE_boolean(
     "translation-only operator, so finished campaigns stay reproducible; "
     "needed for pegs that must be turned into the bore (cuboid, hex).")
 flags.DEFINE_boolean(
+    "synthetic_inconsistent", False,
+    "Inconsistent synthetic operator: a hidden attentive / inattentive "
+    "condition, redrawn at every takeover onset (stays with probability "
+    "--synthetic_bad_persistence, else inattentive with probability "
+    "--synthetic_bad_share). Inattentive corrections are sloppy and wrong: "
+    "novice execution, premature pushes, an aim point beside the hole. The "
+    "condition is logged per takeover (info and segments.jsonl) as ground "
+    "truth for the quality scores. Off = the original, consistent operator.")
+flags.DEFINE_float("synthetic_bad_share", 0.4,
+                   "--synthetic_inconsistent: long-run share of inattentive takeovers.")
+flags.DEFINE_float("synthetic_bad_persistence", 0.7,
+                   "--synthetic_inconsistent: probability that a takeover keeps "
+                   "the previous one's condition.")
+flags.DEFINE_boolean(
     "synthetic_orientation_monitor", False,
     "The synthetic operator's monitor also watches the tool orientation: a "
     "tilt or yaw error raises z_t (channel 'orientation'; near the surface "
@@ -341,6 +355,10 @@ flags.DEFINE_boolean("per_standardize", None,
 flags.DEFINE_float("per_delta_init", -1.0,
                    "PER optimistic |delta| init in the priority formula "
                    "(quality/aqi; <0 = experiment default).")
+flags.DEFINE_float("quality_drop_fraction", None,
+                   "Discard filters (quality_filters score_filter / random_filter): "
+                   "share of the takeovers dropped from the intervention buffer "
+                   "(quality/aqi; default 0.4).")
 flags.DEFINE_float("per_eta", -1.0,
                    "PER weight on max(q_int,0) in the priority (quality/aqi; "
                    "<0 = experiment default).")
@@ -468,7 +486,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
     wrong-intent segments."""
     from serl_launcher.aqi.operator_gate import (MonitoringSignal,
                                                  SyntheticOperatorWrapper)
-    from serl_launcher.aqi.operator_model import (PhaseOracle,
+    from serl_launcher.aqi.operator_model import (Inconsistency,
+                                                  PhaseOracle,
                                                   PolicyOracle,
                                                   SyntheticOperator,
                                                   make_operator_theta,
@@ -545,8 +564,14 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         oracle, theta,
         rng=np.random.default_rng(FLAGS.synthetic_seed + 17),
         action_scale=op_action_scale,
-        rotation_control=FLAGS.synthetic_rotation_control)
+        rotation_control=FLAGS.synthetic_rotation_control,
+        inconsistency=(Inconsistency(bad_share=FLAGS.synthetic_bad_share,
+                                     persistence=FLAGS.synthetic_bad_persistence)
+                       if FLAGS.synthetic_inconsistent else None))
     orientation_note = ""
+    if op.inconsistency is not None:
+        orientation_note += (f", inconsistent (bad share {op.inconsistency.bad_share:g}, "
+                             f"persistence {op.inconsistency.persistence:g})")
     if FLAGS.synthetic_orientation_monitor:
         if not op.rotation_control:
             raise ValueError(
@@ -930,6 +955,9 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             next_obs, reward, done, truncated, info = env.step(exec_action)
             if aqi_cfg.quality_cf_diag:     # logging only (diagnostics)
                 aqi.note_ground_truth(info.get("synthetic_operator"))
+            if FLAGS.synthetic_inconsistent:  # the takeover's condition (label)
+                aqi.note_operator_condition(
+                    (info.get("synthetic_operator") or {}).get("condition"))
             if FLAGS.log_takeover_channels:  # logging only (diagnostics)
                 _syn = info.get("synthetic_operator") or {}
                 if _syn.get("takeover_channel"):
@@ -1740,7 +1768,8 @@ def main(_):
             FLAGS.quality_behavioral_terms)
     for _key in ("quality_post_release_steps", "quality_hindsight_discount",
                  "quality_consistency_weight", "quality_consistency_k",
-                 "quality_consistency_sigma_ref", "quality_cf_diag"):
+                 "quality_consistency_sigma_ref", "quality_cf_diag",
+                 "quality_drop_fraction"):
         if FLAGS[_key].present:
             overrides[_key] = getattr(FLAGS, _key)
     # the hindsight advantage must discount like the critic it reads
@@ -1789,7 +1818,7 @@ def main(_):
                    "per_scale_decay", "per_refresh_period", "per_is_beta",
                    "quality_score_mode", "quality_behavioral_terms",
                    "quality_consistency_weight", "quality_consistency_k",
-                   "quality_consistency_sigma_ref"):
+                   "quality_consistency_sigma_ref", "quality_drop_fraction"):
             return aqi_cfg.quality_on
         if key in ("quality_post_release_steps", "quality_hindsight_discount",
                    "quality_cf_diag"):

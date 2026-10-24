@@ -29,6 +29,7 @@ and its companions.
 4. [Exactly what the noise is injected into](#4-exactly-what-the-noise-is-injected-into)
 5. [Motor noise in detail](#5-motor-noise-in-detail)
 6. [The two roles: demos and interventions](#6-the-two-roles-demos-and-interventions)
+   - [The inconsistent operator](#67-the-inconsistent-operator---synthetic_inconsistent)
 7. [Geometric oracle vs policy oracle: demo path vs training path](#7-geometric-oracle-vs-policy-oracle-demo-path-vs-training-path)
 8. [Training a policy using *only* synthetic operators](#8-training-a-policy-using-only-synthetic-operators)
 9. [File map](#9-file-map)
@@ -631,6 +632,29 @@ values are placeholders until the sweep has run.
 - Off, both are exactly as before: the monitor gives the same `z_t` (checked on
   30 000 random steps against the previous code), and an env without a box
   never touches the orientation.
+
+### 6.7 The inconsistent operator (`--synthetic_inconsistent`)
+
+The operator above is consistent: θ is fixed, and its noise within an episode
+is zero-mean. With `inconsistency=Inconsistency(bad_share, persistence)` it has
+a hidden condition per takeover:
+
+- **The switch:** at each takeover onset the condition stays with probability
+  `persistence` (0.7), or else it is redrawn as inattentive with probability
+  `bad_share` (0.4).
+- **Inattentive:**
+  - the execution fields of θ become the novice anchors;
+  - `p_early` becomes 0.5;
+  - the aim is off by 1.5 × the commit threshold for that takeover.
+- **Unchanged:** the monitoring fields stay the operator's own, so when a
+  takeover starts does not depend on the condition. The demos stay
+  consistent.
+- **The label:** the condition is logged as `condition` in the wrapper's info
+  and on every segment, a ground-truth label of correction quality for the
+  score audit and the discard filters. Details and experiments are in
+  [inconsistent_operator.md](inconsistent_operator.md).
+- **Off:** without the switch nothing changes; the operator's actions are
+  identical to the previous code.
 
 ---
 

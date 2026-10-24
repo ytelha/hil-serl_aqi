@@ -71,6 +71,16 @@ TRIGGER_COMBINERS = ("weighted_sum", "max")
 #   "unsolicited"    : drop non-requested takeovers (only if
 #                      unsolicited_policy == "rl_only" and gate active)
 QUALITY_FILTERS = ("safety_veto", "jerk_veto", "outcome_filter", "unsolicited")
+# Discard filters (never on by default; name them in quality_filters). They
+# drop a share of the takeovers from the intervention buffer once
+# quality_warmup_steps have passed (AQIRuntime.end_episode):
+#   "score_filter"  : the takeovers whose final score falls below the
+#                     quality_drop_fraction quantile of the recent scores
+#   "oracle_filter" : the takeovers given in the inattentive condition of the
+#                     inconsistent operator (ground truth; upper bound)
+#   "random_filter" : each takeover with probability quality_drop_fraction
+#                     (control: the same loss of data, chosen blindly)
+DISCARD_FILTERS = ("score_filter", "oracle_filter", "random_filter")
 
 # Terms of the critic-free "behavioral" intervention score (sign in brackets):
 #   "d_value" (+)  value gained over the takeover, mu_Q(end) - mu_Q(start)
@@ -232,6 +242,11 @@ class AQIConfig:
     # stays with the core signal; disable via adv_exclude=-inf.)
     quality_disagreement_gate: bool = True
     quality_filters: Tuple[str, ...] = QUALITY_FILTERS
+    # discard filters (DISCARD_FILTERS): share dropped, window of recent
+    # scores for the score threshold, segments seen before it acts
+    quality_drop_fraction: float = 0.4
+    quality_drop_window: int = 200
+    quality_drop_min_segments: int = 20
 
     # Scoring mode for the graded intervention signal:
     #   "counterfactual" (default) = A_hat = mu_Q(a_H) - mu_Q(a_robot) (S5.5).
@@ -363,8 +378,11 @@ class AQIConfig:
         assert not bad, f"unknown trigger_terms {bad}; valid: {TRIGGER_TERMS}"
         assert self.trigger_combiner in TRIGGER_COMBINERS, (
             f"trigger_combiner must be one of {TRIGGER_COMBINERS}")
-        bad = set(self.quality_filters) - set(QUALITY_FILTERS)
-        assert not bad, f"unknown quality_filters {bad}; valid: {QUALITY_FILTERS}"
+        bad = set(self.quality_filters) - set(QUALITY_FILTERS) - set(DISCARD_FILTERS)
+        assert not bad, (f"unknown quality_filters {bad}; valid: "
+                         f"{QUALITY_FILTERS + DISCARD_FILTERS}")
+        assert 0.0 <= float(self.quality_drop_fraction) < 1.0, self.quality_drop_fraction
+        assert int(self.quality_drop_window) >= int(self.quality_drop_min_segments) >= 1
         bad = set(self.quality_behavioral_terms) - set(BEHAVIORAL_TERMS)
         assert self.quality_behavioral_terms and not bad, (
             f"quality_behavioral_terms must be a non-empty subset of "

@@ -135,6 +135,43 @@ _SCALE_JITTERED = {"sigma0", "k_sdn", "sigma_tr", "sigma_perc",
 TIER_S = dict(novice=0.0, intermediate=0.5, expert=1.0)
 
 
+# ===========================================================================
+# the inconsistent operator (optional): two hidden conditions
+# ===========================================================================
+@dataclasses.dataclass
+class Inconsistency:
+    """A hidden condition, attentive or inattentive, redrawn at every
+    takeover onset: with probability `persistence` it stays as it was, else it
+    is drawn anew (inattentive with probability `bad_share`), so `bad_share` is
+    the long-run share of inattentive takeovers and bad spells span several
+    takeovers and episodes. Attentive = the operator's own theta. Inattentive
+    = sloppy and wrong (inattentive_theta): novice-level execution, a
+    premature push half the time, and an aim point beside the hole. The
+    monitoring skill (when to take over) stays the operator's own."""
+    bad_share: float = 0.4
+    persistence: float = 0.7
+
+    def __post_init__(self):
+        assert 0.0 <= self.bad_share <= 1.0, self.bad_share
+        assert 0.0 <= self.persistence < 1.0, self.persistence
+
+
+BAD_P_EARLY = 0.5      # inattentive: premature commit in half the attempts
+BAD_AIM_OFF = 1.5      # inattentive: aims this many commit thresholds beside the hole
+_EXEC_FIELDS = ("sigma0", "k_sdn", "sigma_tr", "lag", "v_max", "p_pause",
+                "pause_len_mean", "q_rec")
+
+
+def inattentive_theta(theta: "OperatorTheta") -> "OperatorTheta":
+    """The operator's theta in the inattentive condition: execution at the
+    novice anchor (noise, tremor, lag, speed, pauses, recovery) and premature
+    commits with BAD_P_EARLY; perception is replaced by the aim offset (see
+    SyntheticOperator._draw_bias); monitoring and identity stay the same."""
+    nov = EXEC_ANCHORS["novice"]
+    return dataclasses.replace(theta, p_early=BAD_P_EARLY,
+                               **{k: nov[k] for k in _EXEC_FIELDS})
+
+
 def _interp(name, lo, hi, s):
     if name in _GEOMETRIC:
         v = (lo ** (1.0 - s)) * (hi ** s)
@@ -370,6 +407,12 @@ class SyntheticOperator:
     pauses with prob p_pause, whole-episode lapses with prob p_lapse
     inflating all noise x2.5.
 
+    Inconsistency (off by default, Inconsistency): a hidden attentive /
+    inattentive condition, redrawn at every takeover onset with persistence.
+    Inattentive takeovers are sloppy and wrong (inattentive_theta, an aim
+    point beside the hole); `condition` names the current one. Needs a
+    PhaseOracle.
+
     Rotation control (off by default): with a PhaseOracle that exposes an
     orientation channel, the operator also turns the tool back to an
     insertable orientation in every phase, commits only once position AND
@@ -389,7 +432,8 @@ class SyntheticOperator:
     def __init__(self, oracle, theta: OperatorTheta,
                  rng: Optional[np.random.Generator] = None,
                  action_scale: float = 1.0, dt: float = 1.0 / CONTROL_HZ,
-                 rotation_control: bool = False):
+                 rotation_control: bool = False,
+                 inconsistency: Optional[Inconsistency] = None):
         self.oracle = oracle
         self.th = theta
         self.rng = rng or np.random.default_rng(0)
@@ -399,10 +443,27 @@ class SyntheticOperator:
         self.rotation_control = bool(
             rotation_control and self.phase_based
             and len(getattr(oracle, "rotation_dims", ())) > 0)
+        # inconsistent operator: None = the original, consistent operator
+        # (no extra random draws, identical actions)
+        self.inconsistency = inconsistency
+        self.condition = None
+        self._forced = None
+        if inconsistency is not None:
+            if not self.phase_based:
+                raise ValueError("the inconsistent operator needs a PhaseOracle "
+                                 "(the geometric oracle)")
+            self._th_own, self._th_bad = theta, inattentive_theta(theta)
+            self._cond_rng = np.random.default_rng(int(self.rng.integers(2 ** 32)))
+            self.condition = ("inattentive" if self._cond_rng.random() < inconsistency.bad_share
+                              else "attentive")
         self.reset()
 
     # ------------------------------------------------------------------
     def reset(self):
+        if self.inconsistency is not None:
+            # episode-level draws come from the own theta; the condition
+            # itself persists and is applied again at the next takeover
+            self.th = self._th_own
         th = self.th
         self.oracle.reset()
         self.lapse = self.rng.random() < th.p_lapse
@@ -428,7 +489,42 @@ class SyntheticOperator:
     def _draw_bias(self):
         dim = len(getattr(self.oracle, "lateral_dims", (0,))) \
             if self.phase_based else 1
+        if self.inconsistency is not None and self.th is self._th_bad:
+            # inattentive: aims beside the hole, the same wrong point for the
+            # whole approach
+            d = self.rng.normal(0.0, 1.0, size=dim)
+            d /= max(float(np.linalg.norm(d)), 1e-9)
+            return d * BAD_AIM_OFF * float(self.oracle.commit_threshold())
         return self.rng.normal(0.0, self.th.sigma_perc, size=dim)
+
+    # ---- inconsistent operator ---------------------------------------
+    def _apply_condition(self):
+        """Theta, tremor intensity and the premature-commit draw for the
+        current condition (inconsistent operator only)."""
+        self.th = self._th_bad if self.condition == "inattentive" else self._th_own
+        self.ou.sigma = self.th.sigma_tr * self._noise_mult
+        self._premature = self.rng.random() < self.th.p_early
+        self._premature_after = int(self.rng.uniform(0.2, 0.7) / self.dt)
+
+    def _next_condition(self):
+        if self._forced is not None:
+            return self._forced
+        inc = self.inconsistency
+        if self._cond_rng.random() < inc.persistence:
+            return self.condition
+        return "inattentive" if self._cond_rng.random() < inc.bad_share else "attentive"
+
+    def force_condition(self, condition: Optional[str]):
+        """Hold the condition fixed (operator tests), or None to switch again.
+        Applies at once, for solo operation from a reset."""
+        if self.inconsistency is None:
+            raise ValueError("force_condition needs the inconsistent operator")
+        assert condition in (None, "attentive", "inattentive"), condition
+        self._forced = condition
+        if condition is not None:
+            self.condition = condition
+            self._apply_condition()
+            self.bias = self._draw_bias()
 
     # ------------------------------------------------------------------
     def _perceive(self, obs):
@@ -605,6 +701,9 @@ class SyntheticOperator:
         self._delay.clear()
         for _ in range(self._delay.maxlen):
             self._delay.append(obs)
+        if self.inconsistency is not None:
+            self.condition = self._next_condition()
+            self._apply_condition()
         self.bias = self._draw_bias()
         self.n_approaches += 1
         self.a_prev = np.zeros(self.oracle.action_dim())

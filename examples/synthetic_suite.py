@@ -16,6 +16,11 @@ Stages: 0 no training (CPU) -> 1 smoke (one cell) -> 2 pilots (9 settings x 3
 cells) -> 3 confirmation of the best stack at thesis scale. `run` executes the
 campaigns one after another (one GPU), each in its own folder <root>/<setting>,
 and refuses to reuse a folder with a different config or different limits.
+
+`--suite inconsistent_operator` drives the second suite (docs/inconsistent_operator.md):
+the inconsistent operator and the quality scores. Its stage 0 tests the operator in each
+condition, `audit` measures how well each score finds the inattentive corrections (Q1),
+and the report pairs every arm with the keep-all arm and with the baseline.
 """
 import argparse
 import csv
@@ -47,6 +52,36 @@ ORDER = GROUPS["smoke"] + GROUPS["pilots"] + GROUPS["confirm"]
 TESTS = ["tests/test_operator_rotation.py", "tests/test_update_ratio.py", "tests/test_takeover_channels.py",
          "tests/test_campaign_switches.py", "tests/test_orientation_box.py", "tests/test_orientation_channel.py",
          "tests/test_sim_orientation.py", "tests/test_synthetic_suite.py"]
+REF_ARMS = ()                  # arms every other arm of a setting is paired with in the report
+
+_INC = ["Q1_validity", "Q2_pilot", "Q3_consistent", "Q2_confirm"]
+SUITES = {
+    "synthetic_suite": dict(configs=CONFIGS, root=DEFAULT_ROOT, groups=GROUPS, order=ORDER, tests=TESTS,
+                            ref_arms=REF_ARMS),
+    "inconsistent_operator": dict(
+        configs=HERE / "campaigns" / "inconsistent_operator", root=REPO / "runs" / "inconsistent_operator",
+        groups={"q1": ["Q1_validity_orig", "Q1_validity_new"], "q2": ["Q2_pilot_orig", "Q2_pilot_new"],
+                "q3": ["Q3_consistent_orig", "Q3_consistent_new"],
+                "q2confirm": ["Q2_confirm_orig", "Q2_confirm_new"],
+                # a platform's pilots in order; the confirmation only by name, after the decision
+                "orig": [f"{n}_orig" for n in _INC[:3]], "new": [f"{n}_new" for n in _INC[:3]]},
+        order=[f"{n}_orig" for n in _INC] + [f"{n}_new" for n in _INC],
+        tests=["tests/test_inconsistent_operator.py", "tests/test_operator_rotation.py",
+               "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
+               "tests/test_campaign_switches.py", "tests/test_synthetic_suite.py"],
+        ref_arms=("keepall", "hilserl")),
+}
+SUITE = "synthetic_suite"
+
+
+def configure(name):
+    """Point the module at one suite (configs, groups, default root, tests)."""
+    global CONFIGS, GROUPS, ORDER, TESTS, DEFAULT_ROOT, REF_ARMS, SUITE
+    if name not in SUITES:
+        raise SystemExit(f"[suite] unknown suite {name!r}; suites: {', '.join(SUITES)}")
+    d = SUITES[name]
+    CONFIGS, GROUPS, ORDER, TESTS = d["configs"], d["groups"], d["order"], d["tests"]
+    DEFAULT_ROOT, REF_ARMS, SUITE = d["root"], d["ref_arms"], name
 EPISODE_LIMIT = 300            # sim_peg_insertion max_traj_length: an episode this long ran out of time
 EARLY = 10000                  # the "first 10 k env steps" window of the evidence
 
@@ -76,6 +111,7 @@ def switches(cfg):
     bud, log = cfg.get("budget") or {}, cfg.get("logging") or {}
     box = task.get("rpy_box")
     return {
+        "inconsistent": bool(aqi.get("synthetic_inconsistent", False)),
         "rotation": bool(aqi.get("synthetic_rotation_control", False)),
         "box": [float(v) for v in box] if box else None,
         "channel": bool(aqi.get("synthetic_orientation_monitor", False)),
@@ -269,11 +305,17 @@ def cmd_stage0(args):
             rc_all |= rc
         (root / "tests.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         print("[stage0] tests:", ", ".join(f"{Path(t).stem} {'ok' if rc == 0 else 'FAILED'}" for t, rc in results.items()))
-    if not args.skip_operator_test:
+    if not args.skip_operator_test and SUITE == "inconsistent_operator":
+        # the inconsistent operator held in each condition: inattentive must be clearly worse
+        rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid",
+                      "--conditions", "attentive,inattentive", "--rotation", "off,on",
+                      "--episodes", str(args.episodes), "--out", str(root / "operator_conditions.json")],
+                     log=root / "operator_conditions.log", env={"JAX_PLATFORMS": "cpu"})
+    elif not args.skip_operator_test:
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid,cylinder",
                       "--episodes", str(args.episodes), "--out", str(root / "operator_test.json")],
                      log=root / "operator_test.log", env={"JAX_PLATFORMS": "cpu"})
-    if not args.skip_sweep:
+    if not args.skip_sweep and SUITE == "synthetic_suite":
         rc = sh([sys.executable, "examples/oracle_insertion_test.py", "--sweep", "tilt,yaw", "--shapes", "cuboid,cylinder",
                  "--tiers", "expert,novice", "--episodes", str(args.sweep_episodes),
                  "--out", str(root / "tolerance.json")], log=root / "tolerance.log", env={"JAX_PLATFORMS": "cpu"})
@@ -292,10 +334,11 @@ def cmd_stage0(args):
 
 
 def read_limits(root, shape):
-    p = Path(root) / "stage0" / "limits.json"
-    if not p.exists():
-        return None
-    return (json.loads(p.read_text(encoding="utf-8")).get("limits") or {}).get(shape)
+    """Orientation limits of stage 0: this suite's, else the synthetic suite's (same machine)."""
+    for p in (Path(root) / "stage0" / "limits.json", REPO / "runs" / "synthetic_suite" / "stage0" / "limits.json"):
+        if p.exists():
+            return (json.loads(p.read_text(encoding="utf-8")).get("limits") or {}).get(shape)
+    return None
 
 
 # ===================================================================== plan / status
@@ -309,13 +352,14 @@ def cell_status(camp):
 
 def cmd_plan(args):
     root = Path(args.root)
-    print(f"{'setting':13s} {'rot':4s} {'box':4s} {'chan':5s} {'conv':8s} {'utd':4s} {'peg':9s} {'arms':28s} status")
+    print(f"{'setting':19s} {'inc':4s} {'rot':4s} {'box':4s} {'chan':5s} {'conv':8s} {'utd':4s} {'peg':9s} {'arms':28s} status")
     for n in resolve(args.names or ORDER):
         sw = switches(load_yaml(config_path(n)))
         done, seen = cell_status(root / n)
         rep = (root / n / "report" / "dependency.json").exists()
         status = "not started" if not seen else f"{done}/{seen} cells done" + (", report" if rep else "")
-        print(f"{n:13s} {'x' if sw['rotation'] else '-':4s} {'x' if sw['box'] else '-':4s} {'x' if sw['channel'] else '-':5s} "
+        print(f"{n:19s} {'x' if sw['inconsistent'] else '-':4s} {'x' if sw['rotation'] else '-':4s} "
+              f"{'x' if sw['box'] else '-':4s} {'x' if sw['channel'] else '-':5s} "
               f"{sw['convergence']:8s} {sw['utd_ratio']:<4g} {sw['peg_shape']:9s} {','.join(sw['methods'])[:28]:28s} {status}")
     if args.validate:
         bad = 0
@@ -354,6 +398,24 @@ def fingerprint(name, limits):
             "limits": limits}
 
 
+def score_mismatch(root, name):
+    """Q2/Q3 (inconsistent_operator): the quality arms must score with the best online score of the same
+    platform's Q1 audit. Returns what is wrong, or None."""
+    if name.startswith("Q1_"):
+        return None
+    aud = Path(root) / f"Q1_validity_{name.rsplit('_', 1)[-1]}" / "report" / "inconsistent_audit.json"
+    if not aud.exists():
+        return (f"no Q1 audit yet ({aud}). Run its Q1 campaign and `audit` first, then set quality_score_mode "
+                f"of the quality arms in {config_path(name).relative_to(REPO)}.")
+    best = (json.loads(aud.read_text(encoding="utf-8")).get("best_online_score") or {}).get("quality_score_mode")
+    arms = load_yaml(config_path(name)).get("arms") or {}
+    modes = {a.get("quality_score_mode") for a in arms.values() if isinstance(a, dict) and a.get("mode") == "quality"}
+    if best and modes != {best}:
+        return (f"its quality arms score with {', '.join(sorted(str(m) for m in modes))}, but the best online score "
+                f"of the Q1 audit is {best}. Edit quality_score_mode in {config_path(name).relative_to(REPO)}.")
+    return None
+
+
 def cmd_run(args):
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
@@ -363,6 +425,10 @@ def cmd_run(args):
         if n.startswith("C_") and not any(m.startswith("active") for m in sw["methods"]) and not args.without_active:
             print(f"[run] {n}: the best asking arm is not in `methods` yet (see the config's comment). Add it, or pass "
                   f"--without_active to run baseline and ensemble extended only.")
+            return 2
+        msg = score_mismatch(root, n) if SUITE == "inconsistent_operator" and not args.score_as_is else None
+        if msg:
+            print(f"[run] {n}: {msg} Pass --score_as_is to run it anyway.")
             return 2
         if sw["channel"] and limits is None and not args.default_limits:
             print(f"[run] {n}: no stage-0 limits ({root / 'stage0' / 'limits.json'}). Run `stage0` first, or pass "
@@ -393,6 +459,22 @@ def cmd_run(args):
             print(f"[run] {n} failed (rc {rc}); stopping. Re-run the same command to resume (finished cells are kept).")
             return rc
     return 0
+
+
+# ===================================================================== audit (Q1)
+def cmd_audit(args):
+    """Score validity on the inconsistent operator: examples/inconsistent_operator_audit.py per setting."""
+    root = Path(args.root)
+    rc_all = 0
+    for n in resolve(args.names or GROUPS.get("q1", [])):
+        camp = root / n
+        if not (camp / "aqi_logs").exists():
+            print(f"[audit] {n}: no aqi_logs yet under {camp}")
+            rc_all |= 1
+            continue
+        rc_all |= sh([sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp)],
+                     log=root / f"{n}.audit.log", sim_env=False)
+    return rc_all
 
 
 # ===================================================================== report
@@ -542,6 +624,26 @@ def paired(cells, setting, reference):
     return rows
 
 
+def paired_arms(cells, setting, ref_arm):
+    """Ruler SR of every arm of `setting` against its `ref_arm`, pair by pair (same operator and seed)."""
+    key = lambda c: (c["operator"], str(c["seed"]))
+    ref = {key(c): c for c in cells if c["setting"] == setting and c["arm"] == ref_arm and c["ruler_sr"] is not None}
+    if not ref:
+        return []
+    out = {}
+    for c in cells:
+        if c["setting"] != setting or c["arm"] == ref_arm or c["ruler_sr"] is None or key(c) not in ref:
+            continue
+        out.setdefault(c["arm"], []).append(c["ruler_sr"] - ref[key(c)]["ruler_sr"])
+    rows = []
+    for arm, d in sorted(out.items()):
+        w, l_ = sum(x > 1e-9 for x in d), sum(x < -1e-9 for x in d)
+        rows.append({"setting": setting, "reference": ref_arm, "arm": arm, "pairs": len(d),
+                     "mean_delta_sr": round(sum(d) / len(d), 3), "wins": w, "losses": l_,
+                     "ties": len(d) - w - l_, "sign_test_p": sign_test_p(w, l_)})
+    return rows
+
+
 def _fmt(v):
     if v is None:
         return "–"
@@ -601,6 +703,17 @@ def cmd_report(args):
         refname = "C_reference" if r.startswith("C_") else "L0_original"
         if r != refname:
             prs += paired(allcells, r, refname)
+    arm_pairs = []
+    for n in sorted({r["setting"] for r in allrows}):
+        for ref in REF_ARMS:
+            arm_pairs += paired_arms(allcells, n, ref)
+    if arm_pairs:
+        L += ["", "## Paired ruler SR within a campaign (same operator and seed)", "",
+              "| setting | arm | against | pairs | mean Δ SR | wins / losses / ties | sign test p |",
+              "|---|---|---|---|---|---|---|"]
+        for p in arm_pairs:
+            L.append(f"| {p['setting']} | {p['arm']} | {p['reference']} | {p['pairs']} | {_fmt(p['mean_delta_sr'])} | "
+                     f"{p['wins']} / {p['losses']} / {p['ties']} | {_fmt(p['sign_test_p'])} |")
     if prs:
         L += ["", "## Paired ruler SR (same arm, operator and seed)", "",
               "| setting | reference | arm | pairs | mean Δ SR | wins / losses / ties | sign test p |",
@@ -627,7 +740,9 @@ def cmd_report(args):
 # ===================================================================== main
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--root", default=str(DEFAULT_ROOT), help="suite folder (default runs/synthetic_suite)")
+    p.add_argument("--suite", default="synthetic_suite", choices=sorted(SUITES),
+                   help="which suite: synthetic_suite (default) or inconsistent_operator")
+    p.add_argument("--root", default=None, help="suite folder (default runs/<suite>)")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check", help="machine + repo check")
     s0 = sub.add_parser("stage0", help="tests, operator test, tolerance sweep (no training, CPU)")
@@ -645,7 +760,11 @@ def build_parser():
     rn.add_argument("--keep_going", action="store_true", help="continue with the next setting after a failure")
     rn.add_argument("--default_limits", action="store_true", help="allow the channel without stage-0 limits")
     rn.add_argument("--without_active", action="store_true", help="confirmation without the asking arm")
+    rn.add_argument("--score_as_is", action="store_true",
+                    help="inconsistent_operator: run Q2/Q3 without matching the score to the Q1 audit")
     rn.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="further run_campaign.py flags")
+    au = sub.add_parser("audit", help="inconsistent_operator: score validity of the Q1 campaigns")
+    au.add_argument("names", nargs="*", help="settings (default the Q1 group)")
     rp = sub.add_parser("report", help="comparison table of the trained settings")
     rp.add_argument("names", nargs="*", help="settings or groups; default all")
     return p
@@ -653,8 +772,11 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    configure(args.suite)
+    if args.root is None:
+        args.root = str(DEFAULT_ROOT)
     return {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run,
-            "report": cmd_report}[args.cmd](args)
+            "audit": cmd_audit, "report": cmd_report}[args.cmd](args)
 
 
 if __name__ == "__main__":

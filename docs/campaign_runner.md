@@ -118,6 +118,8 @@ Re‑run only a later stage (e.g. after all cells trained):
 | `--log_takeover_channels` | off | log per episode which monitor channel caused each takeover and how it ended (logging only); YAML `logging.takeover_channels` |
 | `--synthetic_rotation_control` | off | the synthetic operator also corrects the tool's orientation; YAML `aqi.synthetic_rotation_control` |
 | `--synthetic_orientation_monitor` | off | the operator's monitor also watches tilt and yaw (needs rotation control); limits `--synthetic_orientation_tilt_rad` / `--synthetic_orientation_yaw_rad`, 0 = the shape's default; YAML `aqi.synthetic_orientation_*` |
+| `--synthetic_inconsistent` | off | the synthetic operator is attentive or inattentive per takeover (sticky; `--synthetic_bad_share` 0.4, `--synthetic_bad_persistence` 0.7) and logs the condition as ground truth (`docs/inconsistent_operator.md`); YAML `aqi.synthetic_inconsistent`, `aqi.synthetic_bad_*` |
+| `--quality_drop_fraction` | 0.4 | share the `score_filter` / `random_filter` discard filters drop; also per arm |
 | `--sim_rpy_box` | empty (off) | `roll,pitch,yaw` half-widths (rad) of the sim env's orientation box, set for every process through `$SIM_RPY_BOX` and checked against all start poses; YAML `task.rpy_box` |
 | `--eval_dx_mm` | `-16…16` (9) | lateral offsets swept by the ruler |
 | `--jax_platform` | `cuda` | `cuda` or `cpu` |
@@ -156,7 +158,8 @@ analysis:
     `bc_loss_weight`, `quality_score_mode`, `quality_behavioral_terms`,
     `quality_post_release_steps`, `quality_hindsight_discount`,
     `quality_consistency_*` (see `docs/quality_scores_v2.md`), `per_*`,
-    `quality_warmup_steps`;
+    `quality_warmup_steps`, `quality_drop_fraction` (discard filters,
+    `docs/inconsistent_operator.md`);
   - E2HiL: `e2hil_*`.
 
   Operators, demos, budget, the convergence rule and the ruler are

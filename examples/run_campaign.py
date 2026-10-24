@@ -308,9 +308,16 @@ def apply_config(args, cfg: dict, explicit) -> dict:
                       ("quality_consistency_weight", bool),
                       ("quality_consistency_k", int),
                       ("quality_consistency_sigma_ref", float),
-                      ("quality_cf_diag", bool)):
+                      ("quality_cf_diag", bool),
+                      ("quality_drop_fraction", float)):
         if aqi.get(key) is not None and key not in explicit:
             setattr(args, key, cast(aqi[key]))
+    if (aqi.get("synthetic_inconsistent") is not None
+            and "synthetic_inconsistent" not in explicit):
+        args.synthetic_inconsistent = _to_bool(aqi["synthetic_inconsistent"])
+    for k in ("synthetic_bad_share", "synthetic_bad_persistence"):
+        if aqi.get(k) is not None and k not in explicit:
+            setattr(args, k, float(aqi[k]))
     if (aqi.get("synthetic_intervention_mode") is not None
             and "synthetic_intervention_mode" not in explicit):
         args.synthetic_intervention_mode = str(
@@ -943,7 +950,7 @@ _AQI_FLAG_SPEC = (
     ("quality_hindsight_discount", "val"),
     ("quality_consistency_weight", "bool"), ("quality_consistency_k", "val"),
     ("quality_consistency_sigma_ref", "val"),
-    ("quality_cf_diag", "bool"),
+    ("quality_cf_diag", "bool"), ("quality_drop_fraction", "val"),
     ("critic_ensemble_size", "val"), ("critic_subsample_size", "val"),
     ("per_member_targets", "bool"),
     ("e2hil_K", "val"), ("e2hil_q_low", "val"), ("e2hil_q_high", "val"),
@@ -1077,7 +1084,7 @@ ARM_KEYS = {
     "quality_post_release_steps": int, "quality_hindsight_discount": float,
     "quality_consistency_weight": _to_bool, "quality_consistency_k": int,
     "quality_consistency_sigma_ref": float,
-    "quality_cf_diag": _to_bool,
+    "quality_cf_diag": _to_bool, "quality_drop_fraction": float,
     "per_standardize": _to_bool, "per_delta_init": float, "per_eta": float,
     "per_eps": float, "quality_warmup_steps": int, "per_scale_decay": float,
     "per_refresh_period": int, "per_is_beta": float,
@@ -1249,6 +1256,8 @@ def _platform_switches(args):
         on.append("synthetic_rotation_control")
     if getattr(args, "synthetic_orientation_monitor", False):
         on.append("synthetic_orientation_monitor")
+    if getattr(args, "synthetic_inconsistent", False):
+        on.append("synthetic_inconsistent")
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         on.append("converge_mode")
     if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0:
@@ -1267,6 +1276,10 @@ def _platform_actor_flags(args):
         for k in ("synthetic_orientation_tilt_rad", "synthetic_orientation_yaw_rad"):
             if float(getattr(args, k, 0.0) or 0.0) > 0.0:
                 out += [f"--{k}", str(getattr(args, k))]
+    if getattr(args, "synthetic_inconsistent", False):
+        out += ["--synthetic_inconsistent",
+                "--synthetic_bad_share", str(args.synthetic_bad_share),
+                "--synthetic_bad_persistence", str(args.synthetic_bad_persistence)]
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         out += ["--converge_mode", str(args.converge_mode),
                 "--converge_eval_every", str(args.converge_eval_every),
@@ -2225,6 +2238,10 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
             "yaw_rad": float(args.synthetic_orientation_yaw_rad) or "shape default"}
     if _rpy_box(args):
         manifest["sim_rpy_box"] = _rpy_box(args)        # absent = unbounded orientation
+    if getattr(args, "synthetic_inconsistent", False):
+        manifest["synthetic_inconsistent"] = {           # absent = consistent operator
+            "bad_share": float(args.synthetic_bad_share),
+            "persistence": float(args.synthetic_bad_persistence)}
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         manifest["converge_mode"] = {"mode": args.converge_mode,
                                      "every": args.converge_eval_every,
@@ -2289,6 +2306,9 @@ def print_plan(args, roster, cells, seeds, grid):
         print(f"  monitor      : orientation channel (tilt "
               f"{lim(args.synthetic_orientation_tilt_rad)}, yaw "
               f"{lim(args.synthetic_orientation_yaw_rad)})")
+    if getattr(args, "synthetic_inconsistent", False):
+        print(f"  operator     : inconsistent - inattentive in {args.synthetic_bad_share:g} of the "
+              f"takeovers, persistence {args.synthetic_bad_persistence:g}")
     if _rpy_box(args):
         r, pt, y = _rpy_box(args)
         print(f"  env          : orientation box roll +/-{r:g}, pitch +/-{pt:g}, "
@@ -2440,6 +2460,10 @@ def build_arg_parser():
                    default=None,
                    help="fixed sigma_ref of the consistency factor (default: "
                         "running mean of sigma_beta; quality/aqi).")
+    p.add_argument("--quality_drop_fraction", type=float, default=None,
+                   help="discard filters (quality_filters score_filter / "
+                        "random_filter): share of takeovers dropped from the "
+                        "intervention buffer (quality/aqi; default 0.4). Per arm.")
     p.add_argument("--quality_cf_diag", default=None,
                    action=argparse.BooleanOptionalAction,
                    help="log diagnostics of the counterfactual score and the "
@@ -2479,6 +2503,15 @@ def build_arg_parser():
                    help="log the monitor channel behind each takeover and how it "
                         "ended, per episode (logging only). YAML: "
                         "logging.takeover_channels.")
+    p.add_argument("--synthetic_inconsistent", action="store_true", default=False,
+                   help="inconsistent synthetic operator: a hidden attentive / "
+                        "inattentive condition per takeover, logged as ground "
+                        "truth. YAML: aqi.synthetic_inconsistent.")
+    p.add_argument("--synthetic_bad_share", type=float, default=0.4,
+                   help="inconsistent operator: share of inattentive takeovers.")
+    p.add_argument("--synthetic_bad_persistence", type=float, default=0.7,
+                   help="inconsistent operator: probability a takeover keeps the "
+                        "previous condition.")
     p.add_argument("--sim_rpy_box", default="",
                    help="'roll,pitch,yaw' half-widths (rad) of the sim env's "
                         "orientation box around the aligned home orientation, "
@@ -2790,6 +2823,9 @@ def main(argv=None):
             or args.synthetic_orientation_yaw_rad < 0):
         raise SystemExit("[config] orientation limits must be >= 0 (0 = default).")
     _validate_rpy_box(args)
+    if not (0.0 <= args.synthetic_bad_share <= 1.0 and 0.0 <= args.synthetic_bad_persistence < 1.0):
+        raise SystemExit("[config] --synthetic_bad_share must be in [0, 1] and "
+                         "--synthetic_bad_persistence in [0, 1).")
     campaign = Path(args.campaign).resolve()
     campaign.mkdir(parents=True, exist_ok=True)
     (campaign / "logs").mkdir(exist_ok=True)
