@@ -243,6 +243,16 @@ flags.DEFINE_boolean(
     "translation-only operator, so finished campaigns stay reproducible; "
     "needed for pegs that must be turned into the bore (cuboid, hex).")
 flags.DEFINE_boolean(
+    "synthetic_request_or", False,
+    "active/aqi: the operator keeps its own task monitor and also answers the "
+    "robot's requests (stimulus max(request, z_task)), so it can step in "
+    "unasked. Off = requests replace the monitor.")
+flags.DEFINE_integer(
+    "synthetic_request_hold_steps", 0,
+    "active/aqi: a request stays on until the operator takes over or this many "
+    "env steps have passed, so a slow operator can answer. 0 = off: the "
+    "request lasts --query_min_on_steps.")
+flags.DEFINE_boolean(
     "synthetic_inconsistent", False,
     "Inconsistent synthetic operator: a hidden attentive / inattentive "
     "condition, redrawn at every takeover onset (stays with probability "
@@ -623,6 +633,16 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
     else:
         intervention_mode = FLAGS.synthetic_intervention_mode
 
+    if (FLAGS.synthetic_request_or or FLAGS.synthetic_request_hold_steps > 0) \
+            and not aqi_cfg.active_on:
+        raise ValueError(
+            "--synthetic_request_or and --synthetic_request_hold_steps need a "
+            "mode with requests (active or aqi)")
+    if FLAGS.synthetic_request_or:
+        orientation_note += ", also answers requests (OR arm)"
+    if FLAGS.synthetic_request_hold_steps > 0:
+        orientation_note += f", requests held {FLAGS.synthetic_request_hold_steps} steps"
+
     print_green(f"synthetic operator '{FLAGS.synthetic_operator}' "
                 f"(exec s={theta.s_exec:.2f}, mon s={theta.s_mon:.2f}, "
                 f"{kind} oracle, intervention={intervention_mode}"
@@ -637,7 +657,9 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         intervention_mode=intervention_mode,
         latch_until_success=FLAGS.synthetic_latch_until_success,
         log_ground_truth=aqi_cfg.quality_cf_diag,
-        log_takeover_channels=FLAGS.log_takeover_channels), theta
+        log_takeover_channels=FLAGS.log_takeover_channels,
+        request_or_monitor=FLAGS.synthetic_request_or,
+        request_hold_steps=FLAGS.synthetic_request_hold_steps), theta
 
 
 def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):

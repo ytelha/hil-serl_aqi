@@ -153,7 +153,7 @@ def test_every_takeover_has_a_channel_and_every_handback_a_kind():
 
 def test_takeover_cause_is_the_most_common_channel_in_the_window():
     stub = SimpleNamespace(
-        respond_to_request=False,
+        respond_to_request=False, request_or_monitor=False,
         op=SimpleNamespace(th=SimpleNamespace(m_in=2, l_react=1)),
         _chan_hist=["force"] * 10 + ["time", "corridor", "corridor", "time",
                                      "corridor"])

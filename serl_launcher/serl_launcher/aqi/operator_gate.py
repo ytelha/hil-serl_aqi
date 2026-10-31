@@ -289,7 +289,9 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                  intervention_mode: str = "signal",
                  latch_until_success: bool = False,
                  log_ground_truth: bool = False,
-                 log_takeover_channels: bool = False):
+                 log_takeover_channels: bool = False,
+                 request_or_monitor: bool = False,
+                 request_hold_steps: int = 0):
         super().__init__(env)
         self.op = operator
         self.monitor = monitor
@@ -310,6 +312,15 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         # baseline/quality/logged (no active gate) it stays False and the
         # operator acts solely on its own geometric monitor.
         self.respond_to_request = bool(respond_to_request)
+        # active/aqi only. OR arm: the operator keeps watching the task too, so
+        # the stimulus is max(request, z_task) and it can step in unasked.
+        self.request_or_monitor = bool(request_or_monitor)
+        # active/aqi only. Held request: a request stays on until the operator
+        # takes over or this many steps have passed, so a slow operator can
+        # answer; a new request cannot extend a running one. 0 = off.
+        self.request_hold_steps = int(request_hold_steps)
+        self._held_left = 0
+        self._req_hist = deque(maxlen=64)
         self.action_conditioner = action_conditioner
         mode = str(intervention_mode or "signal").strip().lower()
         valid = {"signal", "always_latch", "latch_until_autonomous_success"}
@@ -340,7 +351,12 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         """Called by the actor each step BEFORE step() with the robot's active
         gate decision (A(s_t) > tau_A). Used as the operator's stimulus in
         active/aqi mode; ignored (stored only) otherwise."""
-        self._ext_request = 1.0 if request else 0.0
+        on = bool(request)
+        if self.request_hold_steps > 0:
+            if on and self._held_left == 0 and not self.gate.taking_over:
+                self._held_left = self.request_hold_steps
+            on = on or self._held_left > 0
+        self._ext_request = 1.0 if on else 0.0
         self._ext_a_score = float(a_score)
 
     # ------------------------------------------------------------------
@@ -357,6 +373,8 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         self._ext_a_score = 0.0
         self._episode_had_takeover = False
         self._chan_hist.clear()
+        self._req_hist.clear()
+        self._held_left = 0
         self._last_obs, self._last_info = obs, info
         return obs, info
 
@@ -368,14 +386,19 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         # baseline/quality it responds to this task-derived risk.
         z_task = self.monitor(self._last_obs, self._last_info)
         z = self._ext_request if self.respond_to_request else z_task
+        if self.respond_to_request and self.request_or_monitor:
+            z = max(self._ext_request, z_task)
         if self.log_takeover_channels:
             self._chan_hist.append(getattr(self.monitor, "last_channel", ""))
+            self._req_hist.append(self._ext_request > 0.0)
         if latch_active and was_over:
             # Keep intervening continuously once takeover starts; handback
             # happens only after a successful insertion.
             event = "hold_latch"
         else:
             event = self.gate.update(z)
+        if self._held_left > 0:
+            self._held_left = 0 if self.gate.taking_over else self._held_left - 1
         if event.startswith("trigger"):
             self.op.begin_takeover(self._last_obs)
             self.episode_events.append(
@@ -468,8 +491,11 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         z most often over the detection + reaction window before it."""
         if event == "trigger_fa":
             return "false_alarm"
-        if self.respond_to_request:
+        if self.respond_to_request and not self.request_or_monitor:
             return "request"
         th = self.op.th
-        win = list(self._chan_hist)[-(int(th.m_in) + int(th.l_react) + 1):]
+        n = int(th.m_in) + int(th.l_react) + 1
+        if self.request_or_monitor and any(list(self._req_hist)[-n:]):
+            return "request"            # OR arm: asked, whatever the monitor says
+        win = list(self._chan_hist)[-n:]
         return Counter(win).most_common(1)[0][0] if win else ""
