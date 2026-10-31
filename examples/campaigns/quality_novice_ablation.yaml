@@ -1,0 +1,135 @@
+# =====================================================================
+# quality_novice_ablation.yaml -- which part of the quality arms collapses the novice?
+#
+# aqi_oracle_quality found the novice falling from 65 % (ensemble extended) to 32 %
+# (quality-oracle) and read it as "even a perfect score hurts". But that arm changed
+# three things at once: the oracle score (replay priority and BC weights), the default
+# hard filters (safety_veto and outcome_filter, which drops every takeover from a
+# failed episode whatever the oracle says) and the BC loss (0.1, quality arms only).
+# This campaign switches them on one at a time. Reasoning and the reading fixed in
+# advance: docs/novice_ablation.md.
+#
+#   arm              score    hard filters  BC    role
+#   logged           -        -             -     reference, copied from aqi_oracle_quality
+#   quality-oracle   oracle   default       0.1   reference, copied from aqi_oracle_quality
+#   oracle-nofilter  oracle   none          0.1   without the hard filters
+#   oracle-nobc      oracle   none          0     replay priority only
+#   filter-only      none     default       0     the hard filters alone
+#   bc-only          none     none          0.1   the imitation loss alone
+#
+# Novice tier only: 3 operators x 2 seeds. 4 new arms = 24 new cells, about 1.5 days,
+# plus 12 cells copied. Everything except the arms equals aqi_oracle_quality, whose
+# novice operators, demos and ruler are copied in first, so each cell pairs with its
+# oracle-campaign cell. Run it on the code that ran aqi_oracle_quality (before patches
+# 0011-0019), or the copied cells are no longer comparable.
+#
+# Set up (read-only on the source; refuses a folder that has been started):
+#   ./.venv/bin/python examples/copy_campaign_cells.py --src runs/aqi_oracle_quality \
+#       --dst runs/quality_novice_ablation --arms logged,quality-oracle \
+#       --operators nov00,nov01,nov02
+# Launch (same flags as aqi_oracle_quality):
+#   WANDB_RUN_GROUP=quality_novice_ablation systemd-run --user --unit=qnovice \
+#     --collect -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/quality_novice_ablation.yaml \
+#          --campaign runs/quality_novice_ablation \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/quality_novice_ablation.out 2>&1'
+# Read:
+#   ./.venv/bin/python examples/novice_ablation_report.py --campaign runs/quality_novice_ablation
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  novice: 3                        # the frozen files copied from aqi_oracle_quality are what is used
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - logged
+  - quality-oracle
+  - oracle-nofilter
+  - oracle-nobc
+  - filter-only
+  - bc-only
+
+arms:
+  logged:          {mode: logged}
+  quality-oracle:  {mode: quality}                                    # oracle score, default filters, BC 0.1
+  oracle-nofilter: {mode: quality, quality_filters: []}
+  oracle-nobc:     {mode: quality, quality_filters: [], bc_loss_weight: 0.0}
+  filter-only:     {mode: quality, quality_score_mode: uniform, bc_loss_weight: 0.0}
+  bc-only:         {mode: quality, quality_score_mode: uniform, quality_filters: []}
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000
+  minutes_per_cell: 240
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+
+aqi:
+  synthetic_intervention_mode: signal
+  trigger_terms: [uncertainty]
+  trigger_combiner: max
+  query_behavior: continue
+  query_cooldown_steps: 5
+  quality_cf_diag: true            # the oracle score needs it
+  quality_score_mode: oracle       # campaign default; filter-only and bc-only override it
+  per_standardize: true
+  per_eta: 1.0
+  bc_loss_weight: 0.1              # campaign default; oracle-nobc and filter-only override it
+  quality_warmup_steps: 0
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: logged
+  plots: true
