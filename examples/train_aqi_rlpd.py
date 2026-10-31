@@ -252,6 +252,12 @@ flags.DEFINE_integer(
     "active/aqi: a request stays on until the operator takes over or this many "
     "env steps have passed, so a slow operator can answer. 0 = off: the "
     "request lasts --query_min_on_steps.")
+flags.DEFINE_integer(
+    "synthetic_handover_steps", 0,
+    "Smooth hand-over over this many env steps: the operator's motion starts "
+    "from the robot's last command, and the executed action is blended at "
+    "takeover and hand-back. 0 = off: the operator starts from rest and the "
+    "policy takes back control abruptly.")
 flags.DEFINE_boolean(
     "synthetic_inconsistent", False,
     "Inconsistent synthetic operator: a hidden attentive / inattentive "
@@ -642,6 +648,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         orientation_note += ", also answers requests (OR arm)"
     if FLAGS.synthetic_request_hold_steps > 0:
         orientation_note += f", requests held {FLAGS.synthetic_request_hold_steps} steps"
+    if FLAGS.synthetic_handover_steps > 0:
+        orientation_note += f", smooth hand-over over {FLAGS.synthetic_handover_steps} steps"
 
     print_green(f"synthetic operator '{FLAGS.synthetic_operator}' "
                 f"(exec s={theta.s_exec:.2f}, mon s={theta.s_mon:.2f}, "
@@ -659,7 +667,8 @@ def _wrap_synthetic_operator(env, agent, aqi_cfg):
         log_ground_truth=aqi_cfg.quality_cf_diag,
         log_takeover_channels=FLAGS.log_takeover_channels,
         request_or_monitor=FLAGS.synthetic_request_or,
-        request_hold_steps=FLAGS.synthetic_request_hold_steps), theta
+        request_hold_steps=FLAGS.synthetic_request_hold_steps,
+        handover_steps=FLAGS.synthetic_handover_steps), theta
 
 
 def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
@@ -1025,7 +1034,8 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                     intervention_count += 1
                 already_intervened = True
             else:
-                actions = exec_action   # record what actually ran (hold if paused)
+                # record what actually ran (hold if paused, blend after a hand-back)
+                actions = info.pop("blended_action", exec_action)
                 already_intervened = False
 
             running_return += reward

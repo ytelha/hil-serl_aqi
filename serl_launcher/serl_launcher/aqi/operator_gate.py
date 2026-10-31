@@ -291,7 +291,8 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                  log_ground_truth: bool = False,
                  log_takeover_channels: bool = False,
                  request_or_monitor: bool = False,
-                 request_hold_steps: int = 0):
+                 request_hold_steps: int = 0,
+                 handover_steps: int = 0):
         super().__init__(env)
         self.op = operator
         self.monitor = monitor
@@ -321,6 +322,15 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         self.request_hold_steps = int(request_hold_steps)
         self._held_left = 0
         self._req_hist = deque(maxlen=64)
+        # Smooth hand-over over this many steps. 0 = off: the operator starts
+        # from rest and the policy takes back control abruptly. On: the
+        # operator's motor state starts from the robot's last command, the
+        # executed action is blended at takeover and hand-back, and after a
+        # hand-back info["blended_action"] carries what was really executed.
+        self.handover_steps = int(handover_steps)
+        self._ramp_in = 0
+        self._ramp_out = 0
+        self._last_op_action = None
         self.action_conditioner = action_conditioner
         mode = str(intervention_mode or "signal").strip().lower()
         valid = {"signal", "always_latch", "latch_until_autonomous_success"}
@@ -375,6 +385,8 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         self._chan_hist.clear()
         self._req_hist.clear()
         self._held_left = 0
+        self._ramp_in = self._ramp_out = 0
+        self._last_op_action = None
         self._last_obs, self._last_info = obs, info
         return obs, info
 
@@ -401,10 +413,14 @@ class SyntheticOperatorWrapper(gym.Wrapper):
             self._held_left = 0 if self.gate.taking_over else self._held_left - 1
         if event.startswith("trigger"):
             self.op.begin_takeover(self._last_obs)
+            if self.handover_steps > 0:
+                self._seed_motor_state(action)
             self.episode_events.append(
                 dict(t=self.monitor._t, event=event, z=z,
                      zhat=self.gate.zhat))
         elif event.startswith("handback"):
+            if self.handover_steps > 0:
+                self._ramp_in, self._ramp_out = 0, self.handover_steps
             self.episode_events.append(
                 dict(t=self.monitor._t, event=event, z=z,
                      zhat=self.gate.zhat))
@@ -412,6 +428,7 @@ class SyntheticOperatorWrapper(gym.Wrapper):
         used_operator_action = self.gate.taking_over
         self._episode_had_takeover = self._episode_had_takeover or \
             used_operator_action
+        blended_handback = None
         if used_operator_action:
             a_exec = np.asarray(
                 self.op.act(self._last_obs,
@@ -420,8 +437,20 @@ class SyntheticOperatorWrapper(gym.Wrapper):
             if self.action_conditioner is not None:
                 a_exec = np.asarray(self.action_conditioner(a_exec),
                                     dtype=np.float32)
+            if self._ramp_in > 0:
+                w = 1.0 - self._ramp_in / (self.handover_steps + 1.0)
+                a_exec = np.asarray((1.0 - w) * np.asarray(action) + w * a_exec,
+                                    dtype=np.float32)
+                self._ramp_in -= 1
+            self._last_op_action = a_exec
         else:
             a_exec = np.asarray(action, dtype=np.float32)
+            if self._ramp_out > 0 and self._last_op_action is not None:
+                w = self._ramp_out / (self.handover_steps + 1.0)
+                a_exec = np.asarray((1.0 - w) * a_exec + w * self._last_op_action,
+                                    dtype=np.float32)
+                self._ramp_out -= 1
+                blended_handback = a_exec
 
         obs, rew, terminated, truncated, info = self.env.step(a_exec)
         latch_released = False
@@ -444,6 +473,8 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                      zhat=self.gate.zhat))
         if used_operator_action:
             info["intervene_action"] = a_exec          # the human path
+        elif blended_handback is not None:
+            info["blended_action"] = blended_handback  # still the policy's step
         info["synthetic_operator"] = dict(
             operator_id=self.op.th.operator_id, z=z,
             z_task=float(z_task), request=float(self._ext_request),
@@ -484,6 +515,16 @@ class SyntheticOperatorWrapper(gym.Wrapper):
                 pass
         self._last_obs, self._last_info = obs, info
         return obs, rew, terminated, truncated, info
+
+    def _seed_motor_state(self, robot_action):
+        """Takeover with a smooth hand-over: the operator's motor lag starts
+        from what the robot was commanding, not from rest, and the executed
+        action ramps over to the operator."""
+        a = np.asarray(robot_action, dtype=np.float64).ravel()
+        d = np.shape(self.op.a_prev)[0]
+        if self.op.action_scale and a.shape[0] >= d:
+            self.op.a_prev = a[:d] / self.op.action_scale
+        self._ramp_in, self._ramp_out = self.handover_steps, 0
 
     def _takeover_cause(self, event):
         """The channel behind a takeover: a spontaneous false alarm, the

@@ -968,6 +968,7 @@ _AQI_FLAG_SPEC = (
     ("query_cooldown_steps", "val"), ("query_min_on_steps", "val"),
     ("random_request_rate", "val"), ("bootstrap_p", "val"),
     ("synthetic_request_or", "bool"), ("synthetic_request_hold_steps", "val"),
+    ("synthetic_handover_steps", "val"),
     ("quality_filters", "str"), ("quality_disagreement_gate", "bool"),
     ("bc_loss_weight", "val"), ("per_standardize", "bool"),
     ("per_delta_init", "val"), ("per_eta", "val"), ("per_eps", "val"),
@@ -1113,6 +1114,7 @@ ARM_KEYS = {
     "query_cooldown_steps": int, "query_min_on_steps": int,
     "random_request_rate": float, "bootstrap_p": float,
     "synthetic_request_or": _to_bool, "synthetic_request_hold_steps": int,
+    "synthetic_handover_steps": int,
     # quality module (quality/aqi)
     "quality_filters": _to_csv, "quality_disagreement_gate": _to_bool,
     "bc_loss_weight": float, "quality_score_mode": str,
