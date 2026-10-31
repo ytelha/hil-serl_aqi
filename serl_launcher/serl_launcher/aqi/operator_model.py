@@ -32,6 +32,7 @@ Units follow the document's tables: millimetres, mm/s, control steps at
 import dataclasses
 import json
 import math
+import zlib
 from collections import deque
 from typing import Optional
 
@@ -453,7 +454,11 @@ class SyntheticOperator:
                 raise ValueError("the inconsistent operator needs a PhaseOracle "
                                  "(the geometric oracle)")
             self._th_own, self._th_bad = theta, inattentive_theta(theta)
-            self._cond_rng = np.random.default_rng(int(self.rng.integers(2 ** 32)))
+            # its own stream, per seed AND operator: the arms of one operator and
+            # seed see the same sequence (a paired comparison), other operators
+            # and seeds do not (the rng is seeded by the seed alone)
+            self._cond_rng = np.random.default_rng(
+                [int(self.rng.integers(2 ** 32)), zlib.crc32(str(theta.operator_id).encode())])
             self.condition = ("inattentive" if self._cond_rng.random() < inconsistency.bad_share
                               else "attentive")
         self.reset()

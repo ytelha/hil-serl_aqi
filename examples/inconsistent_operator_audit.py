@@ -45,6 +45,7 @@ ONLINE_MODE = {
     "outcome (episode success)": "outcome",
 }
 YARDSTICKS = ("-start_step (time only)", "-end_step (time only)", "V(onset) (difficulty only)")
+PHASE_BIN, ONSET_BIN = 15, 50   # takeovers per training-phase bin; env steps per onset-time bin in the episode
 # the onset yardsticks must be ~0.5: the condition is drawn at the onset, independent of the
 # situation. The end of a takeover is not: inattentive takeovers last longer, by design.
 ONSET_YARDSTICKS = ("-start_step (time only)", "V(onset) (difficulty only)")
@@ -62,9 +63,13 @@ def verdict(a, ci):
 
 def analyse(rows, n_boot=500):
     rows = [r for r in rows if r.get("condition") in ("attentive", "inattentive")]
-    last_ep = {}
+    last_ep, n_run = {}, {}
     for r in rows:
         r["attentive"] = r["condition"] == "attentive"
+        n_run[r["run"]] = n_run.get(r["run"], 0) + 1
+        # compare only within a run, a training phase and an onset time: the condition sequence comes in long
+        # spells, so pooled AUROCs also pick up what changes between runs and over training
+        r["stratum"] = f"{r['run']}#{(n_run[r['run']] - 1) // PHASE_BIN}#{int(r.get('start_step', 0) or 0) // ONSET_BIN}"
         last_ep[r["run"]] = max(last_ep.get(r["run"], 0), int(r.get("episode", 0) or 0))
     # the second half of each run: critic-based scores are noise before the critic has seen
     # rewards (finding F4), so the early takeovers pull their AUROC towards 0.5
@@ -88,12 +93,19 @@ def analyse(rows, n_boot=500):
         ci = (qsa.cluster_bootstrap_auroc(s, y, [rows[i]["cluster"] for i in idx], n_boot=n_boot)
               if len(s) else (float("nan"),) * 2)
         ls, ly, _ = qsa._score_vectors(late, get, label_key="attentive")
+        within = {}
+        for t in (None,) + tuple(qsa.TIERS):
+            ts = [r for r in rows if t is None or r["tier"] == t]
+            ws, wy, wi = qsa._score_vectors(ts, get, label_key="attentive")
+            within[t or "all"] = (qsa.stratified_auroc(ws, wy, np.array([ts[i]["stratum"] for i in wi]))
+                                  if len(ws) else float("nan"))
         by_tier = {}
         for t in qsa.TIERS:
             ts, ty, _ = qsa._score_vectors([r for r in rows if r["tier"] == t], get, label_key="attentive")
             by_tier[t] = qsa.auroc(ts, ty) if len(ts) else float("nan")
         out["scores"][name] = {"note": note, "n": int(len(s)), "auroc": a, "ci95": list(ci),
                                "auroc_late": qsa.auroc(ls, ly) if len(ls) else float("nan"),
+                               "auroc_within": within,
                                "by_tier": by_tier, "online_mode": ONLINE_MODE.get(name),
                                "verdict": "yardstick" if name in YARDSTICKS else verdict(a, ci)}
     usable = [(v["auroc"], n) for n, v in out["scores"].items()
@@ -119,15 +131,21 @@ def discard_quality(rows):
         rs = [r for r in rows if r["arm"] == arm and r.get("drop_warmup") is False]
         if not rs:
             continue
-        drop = np.array([r.get("exclusion_reason") in DISCARD_REASONS for r in rs])
-        bad = np.array([not r["attentive"] for r in rs])
-        mean = lambda a: float(np.mean(a)) if a.size else float("nan")   # noqa: E731
-        out[arm] = {"n": int(len(rs)), "inattentive_share": mean(bad), "dropped_share": mean(drop),
-                    "precision": mean(bad[drop]),                  # dropped ones that were inattentive
-                    "recall": mean(drop[bad]),                     # inattentive ones that were dropped
-                    "attentive_dropped": mean(drop[~bad]),         # good ones lost
-                    "kept_inattentive_share": mean(bad[~drop])}    # bad ones left in the buffer
+        out[arm] = _discard_row(rs)
+        out[arm]["by_tier"] = {t: _discard_row([r for r in rs if r["tier"] == t])
+                               for t in qsa.TIERS if any(r["tier"] == t for r in rs)}
     return out
+
+
+def _discard_row(rs):
+    drop = np.array([r.get("exclusion_reason") in DISCARD_REASONS for r in rs])
+    bad = np.array([not r["attentive"] for r in rs])
+    mean = lambda a: float(np.mean(a)) if a.size else float("nan")   # noqa: E731
+    return {"n": int(len(rs)), "inattentive_share": mean(bad), "dropped_share": mean(drop),
+            "precision": mean(bad[drop]),                  # dropped ones that were inattentive
+            "recall": mean(drop[bad]),                     # inattentive ones that were dropped
+            "attentive_dropped": mean(drop[~bad]),         # good ones lost
+            "kept_inattentive_share": mean(bad[~drop])}    # bad ones left in the buffer
 
 
 def _f(x, nd=2):
@@ -140,7 +158,8 @@ def render(res, source):
          "Label: the operator's hidden condition at the takeover (attentive = 1). AUROC = chance that a random "
          "attentive takeover scores higher than a random inattentive one; 0.5 = no information, < 0.5 = inverted. "
          "CI: 95 %, resampling whole episodes. 2nd half: the takeovers of each run's second half of episodes "
-         "(critic-based scores need a trained critic).", "",
+         "(critic-based scores need a trained critic). Within: comparing only inside one run, training phase and "
+         "onset time.", "",
          "| | expert | intermediate | novice |", "|---|---|---|---|",
          "| inattentive share | " + " | ".join(_f(res["inattentive_share"][t]) for t in qsa.TIERS) + " |", "",
          f"Mean takeover length: attentive {_f(res['length_by_condition']['attentive'], 1)} steps, inattentive "
@@ -149,11 +168,13 @@ def render(res, source):
     if res["label_confounded"]:
         L += ["**Warning: an onset yardstick (start time or V at the onset) is far from 0.5 – the condition is not "
               "independent of the situation, so these AUROCs are confounded. Report; do not choose a score from them.**", ""]
-    L += ["| score | online mode | n | AUROC | 95 % CI | 2nd half | expert | intermediate | novice | verdict |",
-          "|---|---|---|---|---|---|---|---|---|---|"]
+    L += ["| score | online mode | n | AUROC | 95 % CI | 2nd half | within | within: expert | intermediate | novice "
+          "| expert | intermediate | novice | verdict |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for name, v in sorted(res["scores"].items(), key=lambda kv: -(kv[1]["auroc"] if kv[1]["auroc"] == kv[1]["auroc"] else -1)):
         L.append(f"| {name} | {v['online_mode'] or '–'} | {v['n']} | {_f(v['auroc'])} | "
-                 f"{_f(v['ci95'][0])}–{_f(v['ci95'][1])} | {_f(v['auroc_late'])} | " + " | ".join(_f(v['by_tier'][t]) for t in qsa.TIERS)
+                 f"{_f(v['ci95'][0])}–{_f(v['ci95'][1])} | {_f(v['auroc_late'])} | {_f(v['auroc_within']['all'])} | "
+                 + " | ".join(_f(v['auroc_within'].get(t)) for t in qsa.TIERS) + " | " + " | ".join(_f(v['by_tier'][t]) for t in qsa.TIERS)
                  + f" | {v['verdict']} |")
     b = res["best_online_score"]
     L += ["", "**Best score that can run online:** " + (
@@ -166,9 +187,10 @@ def render(res, source):
               "", "| arm | n | inattentive | dropped | precision | recall | attentive lost | inattentive kept |",
               "|---|---|---|---|---|---|---|---|"]
         for arm, d in res["discard"].items():
-            L.append(f"| {arm} | {d['n']} | {_f(d['inattentive_share'])} | {_f(d['dropped_share'])} | "
-                     f"{_f(d['precision'])} | {_f(d['recall'])} | {_f(d['attentive_dropped'])} | "
-                     f"{_f(d['kept_inattentive_share'])} |")
+            for name, x in [(arm, d)] + [(f"{arm} / {t}", y) for t, y in d["by_tier"].items()]:
+                L.append(f"| {name} | {x['n']} | {_f(x['inattentive_share'])} | {_f(x['dropped_share'])} | "
+                         f"{_f(x['precision'])} | {_f(x['recall'])} | {_f(x['attentive_dropped'])} | "
+                         f"{_f(x['kept_inattentive_share'])} |")
     return "\n".join(L) + "\n"
 
 

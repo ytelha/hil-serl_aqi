@@ -205,6 +205,9 @@ FEATURES = {   # patch: (file, text that only exists with the patch)
     "0016 orientation box": ("franka_sim/franka_sim/envs/orientation_box.py", "def clip_to_rpy_box"),
     "0016 orientation channel": ("examples/experiments/sim_peg_insertion/wrapper.py", "def tilt_yaw_error"),
     "0016 tolerance sweep": ("examples/oracle_insertion_test.py", "def run_twist_episode"),
+    "0018 inconsistent operator": ("serl_launcher/serl_launcher/aqi/operator_model.py", "class Inconsistency"),
+    "0020 first-machine features": ("serl_launcher/serl_launcher/aqi/query_gate.py", "query_target_rate"),
+    "0021 per-operator condition sequence": ("serl_launcher/serl_launcher/aqi/operator_model.py", "zlib.crc32"),
 }
 
 
@@ -337,8 +340,12 @@ def cmd_stage0(args):
 
 
 def read_limits(root, shape):
-    """Orientation limits of stage 0: this suite's, else the synthetic suite's (same machine)."""
-    for p in (Path(root) / "stage0" / "limits.json", REPO / "runs" / "synthetic_suite" / "stage0" / "limits.json"):
+    """Orientation limits of stage 0: this suite's; the inconsistent-operator suite falls back on the
+    synthetic suite's of the same repo (it measures none itself)."""
+    paths = [Path(root) / "stage0" / "limits.json"]
+    if SUITE == "inconsistent_operator":
+        paths.append(REPO / "runs" / "synthetic_suite" / "stage0" / "limits.json")
+    for p in paths:
         if p.exists():
             return (json.loads(p.read_text(encoding="utf-8")).get("limits") or {}).get(shape)
     return None
@@ -425,6 +432,11 @@ def cmd_run(args):
     names = resolve(args.names)
     for n in names:
         cmd, sw, limits = campaign_cmd(args, n, root)
+        if SUITE == "inconsistent_operator" and n.endswith("_orig") and not args.allow_orig:
+            print(f"[run] {n}: the original platform cannot show the inconsistent operator: without rotation "
+                  f"control the attentive operator rescues a twisted cuboid in only 13-17 % of the episodes, so "
+                  f"the conditions barely differ (docs/inconsistent_operator.md). Pass --allow_orig to run it anyway.")
+            return 2
         if n.startswith("C_") and not any(m.startswith("active") for m in sw["methods"]) and not args.without_active:
             print(f"[run] {n}: the best asking arm is not in `methods` yet (see the config's comment). Add it, or pass "
                   f"--without_active to run baseline and ensemble extended only.")
@@ -521,11 +533,14 @@ def cell_metrics(camp, cell_dir):
     steps = sum(int(e.get("length", 0)) for e in eps)
     ivn = sum(int(e.get("intervention_steps", 0)) for e in eps)
     evals = _jsonl(cell_dir / "convergence_evals.jsonl")
-    sr = None
+    sr = last_sr = None
     cj = camp / "eval_runs" / cid / "cell.json"
     if cj.exists():
         try:
-            sr = json.loads(cj.read_text())["outcomes"]["sr"]
+            d = json.loads(cj.read_text())
+            sr = d["outcomes"]["sr"]
+            # the policy that training stopped on; the ruler SR is the best window of three checkpoints
+            last_sr = (d.get("sr_per_checkpoint") or [{}])[-1].get("sr")
         except (KeyError, ValueError):
             sr = None
     m = re.match(r"(.+)_([a-z]+\d+)_s(\d+)$", cid)
@@ -544,7 +559,8 @@ def cell_metrics(camp, cell_dir):
         "early_orientation_takeovers": round(ch.get("orientation", 0) / n_tk, 3) if n_tk else None,
         "early_time_cap_handbacks": round(hb.get("time_cap", 0) / n_hb, 3) if n_hb else None,
         "early_channels": ch, "mini_evals": len(evals), "last_mini_eval_sr": evals[-1]["sr"] if evals else None,
-        "ruler_sr": sr, "actor_minutes": actor_minutes(camp / "logs" / f"{cid}.actor.log"),
+        "ruler_sr": sr, "ruler_last_sr": last_sr,
+        "actor_minutes": actor_minutes(camp / "logs" / f"{cid}.actor.log"),
     }
 
 
@@ -581,6 +597,9 @@ def summarize(name, camp):
     rows = []
     for arm, cs in by_arm.items():
         fus = [c["first_unaided_success"] for c in cs]
+        per_op = {}
+        for c in cs:
+            per_op.setdefault(c["operator"], []).append(c["ruler_sr"])
         rows.append({
             "setting": name, "arm": arm, "cells": len(cs), "finished": sum(c["finished"] for c in cs),
             "rotation": sw["rotation"], "box": bool(sw["box"]), "channel": sw["channel"],
@@ -595,8 +614,9 @@ def summarize(name, camp):
             "early_orientation_takeovers": _mean([c["early_orientation_takeovers"] for c in cs]),
             "early_time_cap_handbacks": _mean([c["early_time_cap_handbacks"] for c in cs]),
             "ruler_sr": _mean([c["ruler_sr"] for c in cs]),
+            "ruler_last_sr": _mean([c["ruler_last_sr"] for c in cs]),
             "actor_minutes": _mean([c["actor_minutes"] for c in cs]),
-            "ruler_sr_by_operator": {c["operator"]: c["ruler_sr"] for c in cs},
+            "ruler_sr_by_operator": {op: _mean(v) for op, v in per_op.items()},   # over the seeds
         })
     return rows, cells, campaign_machine(camp)
 
@@ -674,10 +694,10 @@ def cmd_report(args):
     cols = ["setting", "arm", "finished", "rotation", "box", "channel", "convergence", "utd_ratio",
             "first_unaided_success_median", "never_unaided", "converged", "converged_step_mean",
             "early_timeouts", "early_success", "operator_share", "early_orientation_takeovers",
-            "early_time_cap_handbacks", "ruler_sr", "actor_minutes"]
+            "early_time_cap_handbacks", "ruler_sr", "ruler_last_sr", "actor_minutes"]
     head = ["setting", "arm", "done", "rot", "box", "chan", "conv", "utd", "first unaided (median)",
             "never unaided", "conv.", "conv. step", "timeouts ≤10k", "success ≤10k", "operator share",
-            "orient. takeovers", "time-cap hand-backs", "ruler SR", "actor min"]
+            "orient. takeovers", "time-cap hand-backs", "ruler SR", "last ckpt SR", "actor min"]
     L = [f"# Synthetic-operator test suite – report", "", f"Generated {now()} from `{root}`.", ""]
     distinct = sorted({m for m in machines.values() if m})
     if len(distinct) > 1:
@@ -763,6 +783,8 @@ def build_parser():
     rn.add_argument("--keep_going", action="store_true", help="continue with the next setting after a failure")
     rn.add_argument("--default_limits", action="store_true", help="allow the channel without stage-0 limits")
     rn.add_argument("--without_active", action="store_true", help="confirmation without the asking arm")
+    rn.add_argument("--allow_orig", action="store_true",
+                    help="inconsistent_operator: run a setting of the original platform")
     rn.add_argument("--score_as_is", action="store_true",
                     help="inconsistent_operator: run Q2/Q3 without matching the score to the Q1 audit")
     rn.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="further run_campaign.py flags")

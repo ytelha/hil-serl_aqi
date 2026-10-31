@@ -49,8 +49,9 @@ pilots record the takeover channels; that is logging only.
 - **Pilots:** plain HIL-SERL, 1 operator per tier, 1 seed (3 cells), cuboid,
   30 000-step cap, the usual convergence stop with the mini-eval gate.
 - **Confirmation:** the thesis base configuration (3 operators per tier × 2
-  seeds, 40 000-step cap, the fixed ensemble). Arms: baseline, ensemble
-  extended and the best asking arm.
+  seeds, the fixed ensemble) with the 35 000-step cap of `active_ratematch`. Arms:
+  baseline, ensemble extended and the best asking arm (requests in the 55 % most
+  uncertain steps), defined exactly as in `active_ratematch`.
 - **Common to all:**
   - orientation box ±0.1 rad roll and pitch, ±0.4 rad yaw;
   - update ratio 1 learner step per env step;
@@ -172,13 +173,15 @@ special cases:
 
 1. Edit the switches in `C_full.yaml` to the stack chosen from the pilots, and
    keep `C_reference.yaml` as it is.
-2. **Add the best asking arm** to both files. Copy its exact definition (the
-   55 % most uncertain steps) from the training machine's `active_ratematch`
-   config into `arms:` and add its name to `methods`. This repo copy has no
-   per-arm request threshold, so the configs leave it as a marked comment. The
-   driver refuses to run the confirmation without it unless you pass
-   `--without_active`.
-3. Run both (`C_reference` first), then report:
+2. **On a machine with finished `active_ratematch` cells, skip `C_reference`.**
+   Its commands equal those of `active_ratematch` for these three arms, apart from
+   the takeover logging. Copy the cells instead (they must come from this machine):
+
+   ```bash
+   ./.venv/bin/python examples/copy_campaign_cells.py --src runs/active_ratematch --dst runs/synthetic_suite/C_reference --arms hilserl,logged,active-q55
+   ```
+
+3. Run them (`C_reference` first, unless copied), then report:
 
 ```bash
 nohup ./.venv/bin/python examples/synthetic_suite.py run confirm --wandb online > runs/synthetic_suite/confirm.out 2>&1 &

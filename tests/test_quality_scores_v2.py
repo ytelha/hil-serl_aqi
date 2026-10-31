@@ -32,7 +32,7 @@ G = 0.97
 # ---------------------------------------------------------------- config
 def test_score_modes_validated():
     for m in QUALITY_SCORE_MODES:
-        AQIConfig(mode="quality", quality_score_mode=m)
+        AQIConfig(mode="quality", quality_score_mode=m, quality_cf_diag=(m == "oracle"))
     for bad in [dict(quality_score_mode="hindsite"),
                 dict(quality_post_release_steps=-1),
                 dict(quality_hindsight_discount=0.0),

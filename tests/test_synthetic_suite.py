@@ -76,15 +76,17 @@ def test_confirmation_keeps_the_thesis_base():
     assert _strip(full) == _strip(ref)
     assert _diff(_sw("C_reference"), _sw("L0_original")) == []
     assert _diff(_sw("C_full"), _sw("L5_full")) == []
-    b2 = ss.load_yaml(REPO / "examples" / "campaigns" / "rq4_ensemble_convergence.yaml")
+    a = ss.load_yaml(REPO / "examples" / "campaigns" / "active_ratematch.yaml")
     for blk in ("operators", "demos", "replicates", "method_overrides", "eval"):
-        assert ref[blk] == b2[blk], blk
-    for k in ("steps_cap", "converge_success", "converge_window", "converge_min_steps", "converge_eval_threshold",
-              "demo_pretrain", "demo_pretrain_steps", "learning_rate"):
-        assert ref["budget"][k] == b2["budget"][k], k
-    for k in ("critic_ensemble_size", "critic_subsample_size", "per_member_targets"):
-        assert ref["aqi"][k] == b2["aqi"][k], k
-    assert ref["methods"] == ["hilserl", "logged"]          # + the asking arm, to be copied in
+        assert ref[blk] == a[blk], blk
+    for k in ("steps_cap", "minutes_per_cell", "converge_success", "converge_window", "converge_min_steps",
+              "converge_eval_threshold", "demo_pretrain", "demo_pretrain_steps", "learning_rate"):
+        assert ref["budget"][k] == a["budget"][k], k
+    for k in ("critic_ensemble_size", "critic_subsample_size", "per_member_targets", "trigger_terms",
+              "trigger_combiner", "query_behavior", "quality_cf_diag"):
+        assert ref["aqi"][k] == a["aqi"][k], k
+    assert ref["methods"] == ["hilserl", "logged", "active-q55"]
+    assert all(ref["arms"][m] == a["arms"][m] for m in ref["methods"])   # its cells can be the old-stack reference
 
 
 def test_every_config_passes_the_campaign_runner():
@@ -131,8 +133,13 @@ def test_run_passes_limits_only_to_channel_settings_and_guards():
         assert ss.cmd_run(a) == 2                                       # no stage-0 limits
         a.default_limits = True
         assert ss.cmd_run(a) == 0
-        assert ss.cmd_run(_args(names=["C_full"], root=str(root))) == 2  # asking arm missing
-        assert ss.cmd_run(_args(names=["C_full"], root=str(root), without_active=True)) == 0
+        assert ss.cmd_run(_args(names=["C_full"], root=str(root))) == 0
+        sw, ss.switches = ss.switches, lambda cfg: dict(sw(cfg), methods=["hilserl", "logged"])
+        try:
+            assert ss.cmd_run(_args(names=["C_full"], root=str(root))) == 2  # asking arm missing
+            assert ss.cmd_run(_args(names=["C_full"], root=str(root), without_active=True)) == 0
+        finally:
+            ss.switches = sw
         camp = root / "L2_box"
         camp.mkdir()
         (camp / "suite_setting.json").write_text(json.dumps({"config": "x", "config_sha256": "old", "limits": None}))

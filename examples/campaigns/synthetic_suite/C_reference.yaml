@@ -7,7 +7,7 @@
 # mini-eval convergence and a fixed update ratio (convergence).
 #
 # Stage 3 (confirmation): the base configuration of the thesis -- 3 operators per
-# tier x 2 seeds, 40 k-step cap, the fixed-ensemble settings -- with three arms:
+# tier x 2 seeds, 35 k-step cap as in active_ratematch, the fixed-ensemble settings -- with three arms:
 # baseline, ensemble extended and the best asking arm (see `methods`).
 # Edit the switches below if the pilots single out a smaller stack than L5.
 # Differs from C_full: all switches off. Run it unless finished cells of this roster and these arms
@@ -42,13 +42,12 @@ demos:
 methods:
   - hilserl                        # 2-critic baseline
   - logged                         # ensemble extended: the fixed ensemble (K=8, M=1, warm start, LR/2)
-  # - active-q55                   # ADD before running: the best asking arm of the asking-rate
-  #                                  campaign (requests in the 55 % most uncertain steps). Copy its
-  #                                  exact definition from the training machine's active_ratematch
-  #                                  config into `arms:` below; this repo copy has no per-arm request
-  #                                  threshold, so it cannot be written here without guessing.
+  - active-q55                     # the best asking arm: requests in the 55 % most uncertain steps
 
-arms: {}
+arms:                              # as in active_ratematch.yaml, so its cells can serve as the old-stack reference
+  hilserl:     {mode: hilserl}
+  logged:      {mode: logged}
+  active-q55:  {mode: active, query_target_rate: 0.55, query_cooldown_steps: 5}
 
 replicates:
   seeds: 2
@@ -56,8 +55,8 @@ replicates:
 
 budget:
   mode: steps
-  steps_cap: 40000
-  minutes_per_cell: 300           # wall-clock safety cap only (anti-hang)
+  steps_cap: 35000
+  minutes_per_cell: 240           # wall-clock safety cap only (anti-hang)
   converge_success: 0.9
   converge_window: 20
   converge_min_steps: 3000
@@ -82,6 +81,10 @@ budget:
 
 aqi:
   synthetic_intervention_mode: signal
+  trigger_terms: [uncertainty]     # pure ensemble disagreement (inert for logged/hilserl)
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true            # as in active_ratematch (logging only)
   synthetic_rotation_control: false
   synthetic_orientation_monitor: false
   critic_ensemble_size: 8

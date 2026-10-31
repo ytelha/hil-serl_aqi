@@ -120,9 +120,14 @@ and random arms drop about the same amount.
   (`stage0/operator_conditions.json`).
 
 **Go on only if** inattentive success is at least 20 percentage points below
-attentive, in solo and rescue, for every tier. If it is not, the bad condition
-is not bad enough to matter: raise `BAD_AIM_OFF` in `operator_model.py`, re-run
-stage 0 and report the change.
+attentive, in solo and rescue, for every tier, with rotation control on. If it is
+not, the bad condition is not bad enough to matter: raise `BAD_AIM_OFF` in
+`operator_model.py`, re-run stage 0 and report the change.
+
+Rotation control off, this cannot hold. The attentive operator then rescues a
+twisted cuboid in only 13–17 % of the episodes (measured, §6), so the rescue gap
+stays at 10–13 points whatever `BAD_AIM_OFF` is. That is why the driver refuses the
+`_orig` settings of this suite unless you pass `--allow_orig`.
 
 ### Q1 – score validity (GPU, about 6–9 h per platform)
 
@@ -256,14 +261,8 @@ direction is not a reason to stop: three pairs cannot decide it.
 
 ## 4. Platforms, order and cost
 
-"Both, decide later":
-
-- Run **Q1 on both platforms** (6 cells each), because it is cheap and shows
-  whether the score's validity depends on the platform.
-- Run the Q2/Q3 pilots on the platform the synthetic-operator suite's pilots
-  favour. Run them on both if time allows.
-- Edit the `_new` switches to the stack that suite chose.
-- Run the confirmation on one platform.
+- Use the `_new` settings. The `_orig` settings fail the stage-0 rule (above).
+- Edit the `_new` switches to the stack the synthetic-operator suite chose.
 
 | step | cells | GPU time (one GPU, about 0.8–1.5 h per 30 k cell) |
 |---|---|---|
@@ -304,6 +303,38 @@ driver reads `runs/inconsistent_operator/stage0/limits.json` first, then
 - A dropped takeover still trains the critic through the online replay buffer.
   The suite tests the intervention buffer's selection, as the quality filters
   do.
+
+## 6. Results so far (second training machine, 2026-10-29)
+
+Stage 0, Q1, the keep-all / oracle / random check (3 pairs) and the two-arm pilot
+and confirmation (18 pairs) ran on the `_new` stack with the behavioral score. All
+57 cells converged. The sequence bug below was still in the code.
+
+| question | result |
+|---|---|
+| Is the inattentive condition worse? | stage 0, rotation on: 33–70 points in every tier. In training, episode success attentive vs inattentive: expert 81 / 59 %, intermediate 66 / 33 %, novice 23 / 24 % (no effect) |
+| Do the scores find it? (AUROC within run, phase and onset; all / expert / intermediate / novice) | behavioral .66 / .71 / .67 / .52; takeover length alone .65 / .69 / .68 / .51; hindsight .62 / .66 / .63 / .49; counterfactual .49; jerk .76 / .86 / .85 / .40, circular, since inattentive *is* novice motor noise |
+| Does the filter drop the bad ones? | precision .54 against a base rate of .40; lift expert 1.71, intermediate 1.50, novice 1.07 |
+| Discard vs re-weight | SR 93.2 vs 90.3 %, paired −2.9 points, 95 % CI −13.4 to +6.2, 8 / 4 / 6, p 0.39; steps to converge 9264 vs 9359 |
+| Would a perfect filter help? | keep-all 98.8, oracle drop 93.8, random drop 91.4 % (3 pairs, at the ceiling) |
+
+**Why this was a weak test of the hypothesis:**
+- The 5000-step warm-up covered 61 % of the takeovers and 58 % of the operator
+  steps; half the cells succeeded unaided before it ended. The filter dropped 17 %
+  of all takeovers, not 40 %.
+- All operators with one seed shared the same condition sequence (fixed in patch
+  0021), so only two sequences existed, and their first 25 takeovers were about
+  10 % inattentive.
+- The same cell run twice gave SR 1.00 and 0.67. Across pairs the two arms' SR
+  correlates at −0.21, so about 75 pairs would be needed for ±5 points. Steps to
+  converge pair better (+0.56; about 38 pairs for ±1000 steps) and are the better
+  primary measure on this stack, together with the operator share.
+- Stopping at mini-eval 0.6 catches the policy mid-swing: of the 5 cells below 0.8,
+  3 were at 0.89 or more on their last checkpoint, and 3 cells collapsed to 0.33 or
+  less at the stop. The report now lists the last-checkpoint SR too.
+
+The first machine's oracle campaign reads differently; see
+[novice_ablation.md](novice_ablation.md).
 
 ## Files
 

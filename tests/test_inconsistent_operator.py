@@ -64,6 +64,22 @@ def test_condition_share_and_persistence():
     assert abs(stay - (0.7 + 0.3 * (0.4 ** 2 + 0.6 ** 2))) < 0.02     # 0.856
 
 
+def test_condition_sequence_depends_on_seed_and_operator():
+    def seq(tier, op_id, seed, n=200):
+        th = make_operator_theta(tier, operator_id=op_id)
+        op = SyntheticOperator(ToyInsertionOracle(), th, rng=np.random.default_rng(seed + 17),
+                               inconsistency=Inconsistency())
+        out = []
+        for _ in range(n):
+            op.begin_takeover(_OBS)
+            out.append(op.condition)
+        return out
+    a = seq("expert", "exp00", 0)
+    assert a == seq("expert", "exp00", 0)                         # the arms of one operator and seed are paired
+    assert a != seq("expert", "exp01", 0)                         # other operators differ (they used to share it)
+    assert a != seq("novice", "nov00", 0) and a != seq("expert", "exp00", 1)
+
+
 def test_inattentive_is_sloppy_and_wrong_but_monitors_the_same():
     th = make_operator_theta("expert")
     bad = inattentive_theta(th)
@@ -303,7 +319,13 @@ def test_audit_finds_the_informative_score():
     assert d["drop-oracle"]["precision"] == d["drop-oracle"]["recall"] == 1.0
     assert d["drop-oracle"]["attentive_dropped"] == 0.0 and d["drop-oracle"]["kept_inattentive_share"] == 0.0
     assert abs(d["drop-random"]["precision"] - d["drop-random"]["inattentive_share"]) < 0.07
-    assert "| drop-oracle |" in audit["render"](audit["analyse"](rows, n_boot=20), "fake")
+    res = audit["analyse"](rows, n_boot=20)
+    text = audit["render"](res, "fake")
+    assert "| drop-oracle |" in text and "| drop-oracle / novice |" in text
+    # the within-run/phase/onset AUROC finds the informative score too, and is present per tier
+    assert res["scores"]["a_hind (hindsight)"]["auroc_within"]["all"] > 0.9
+    assert res["scores"]["a_hind (hindsight)"]["auroc_within"]["novice"] > 0.8
+    assert res["discard"]["drop-oracle"]["by_tier"]["novice"]["precision"] == 1.0
 
 
 def _suite():
@@ -333,7 +355,9 @@ def test_suite_configs():
             # the two uses of the score alone, defined exactly as in Q2 of the same platform
             assert cfg["methods"] == ["drop-hind", "reweight-hind"] and set(arms) == set(cfg["methods"])
             q2 = ss.load_yaml(ss.config_path("Q2_pilot_" + n.rsplit("_", 1)[-1]))
-            assert all(arms[a] == q2["arms"][a] for a in arms), n
+            # (only the score may differ: it is set from each platform's Q1 audit)
+            same = lambda d: {k: v for k, v in d.items() if k != "quality_score_mode"}   # noqa: E731
+            assert all(same(arms[a]) == same(q2["arms"][a]) for a in arms), n
             skip = ("methods", "arms", "operators", "replicates", "budget", "logging", "analysis")
             assert {k: v for k, v in cfg.items() if k not in skip} == {k: v for k, v in q2.items() if k not in skip}, n
             assert cfg["analysis"]["baseline"] == "drop-hind"
@@ -355,13 +379,13 @@ def test_suite_configs():
                 == cfg["aqi"]["synthetic_bad_share"]
 
 
-def _fake_arm_cell(camp, arm, sr):
+def _fake_arm_cell(camp, arm, sr, seed=0):
     import json
-    cid = f"{arm}_exp00_s0"
+    cid = f"{arm}_exp00_s{seed}"
     d = camp / "checkpoints" / cid
     d.mkdir(parents=True)
     (d / ".done").write_text(json.dumps({"cell": cid, "method": arm, "operator": "exp00", "tier": "expert",
-                                         "seed": 0, "converged": False, "converged_step": None}))
+                                         "seed": seed, "converged": False, "converged_step": None}))
     (d / "episodes.jsonl").write_text(json.dumps({"step": 300, "length": 300, "success": False,
                                                   "intervention_count": 1, "intervention_steps": 50}) + "\n")
     (camp / "eval_runs" / cid).mkdir(parents=True)
@@ -380,10 +404,43 @@ def test_suite_report_pairs_each_arm_once():
         assert ss.cmd_report(type("A", (), dict(root=str(root), names=[]))()) == 0
     text = (root / "report.md").read_text(encoding="utf-8")
     assert "| two_arm_pilot_orig | reweight-hind | drop-hind | 1 | 0.10 | 1 / 0 / 0 |" in text
+    # a second seed: the per-operator list shows the mean over the seeds, not the last seed
+    _fake_arm_cell(root / "two_arm_pilot_orig", "drop-hind", 0.5, seed=1)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert ss.cmd_report(type("A", (), dict(root=str(root), names=[]))()) == 0
+    text = (root / "report.md").read_text(encoding="utf-8")
+    assert "two_arm_pilot_orig / drop-hind: exp00 0.60" in text
+    assert "last ckpt SR" in text
     for arm, ref in (("drop-hind", "keepall"), ("hilserl", "keepall"), ("drop-hind", "hilserl")):
         assert f"| Q2_pilot_orig | {arm} | {ref} | 1 |" in text, (arm, ref)
     for arm, ref in (("keepall", "hilserl"), ("keepall", "drop-hind"), ("hilserl", "drop-hind")):
         assert f"| Q2_pilot_orig | {arm} | {ref} |" not in text, (arm, ref)       # the same pair reversed
+
+
+def test_suite_refuses_the_original_platform_and_keeps_limits_local():
+    import json
+    import tempfile
+    ss = _suite()
+    root = Path(tempfile.mkdtemp(prefix="inc_orig_"))
+    args = dict(root=str(root), wandb=None, extra=[], dry=True, keep_going=False, default_limits=True,
+                without_active=False, score_as_is=True)
+    run = lambda name, **kw: ss.cmd_run(type("A", (), dict(args, names=[name], **kw))())   # noqa: E731
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run("Q1_validity_orig", allow_orig=False) == 2
+        assert run("Q1_validity_orig", allow_orig=True) == 0
+        assert run("Q1_validity_new", allow_orig=False) == 0
+    # the limits: this suite falls back on the synthetic suite's stage 0; that suite does not fall back at all
+    repo, ss.REPO = ss.REPO, root / "repo"
+    try:
+        p = ss.REPO / "runs" / "synthetic_suite" / "stage0" / "limits.json"
+        p.parent.mkdir(parents=True)
+        p.write_text(json.dumps({"limits": {"cuboid": {"tilt_rad": 0.2}}}))
+        assert ss.read_limits(root, "cuboid") == {"tilt_rad": 0.2}
+        ss.configure("synthetic_suite")
+        assert ss.read_limits(root, "cuboid") is None
+    finally:
+        ss.REPO = repo
+        ss.configure("inconsistent_operator")
 
 
 def test_suite_score_guard(tmp=None):

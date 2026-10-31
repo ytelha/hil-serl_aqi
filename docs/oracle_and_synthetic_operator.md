@@ -641,7 +641,8 @@ a hidden condition per takeover:
 
 - **The switch:** at each takeover onset the condition stays with probability
   `persistence` (0.7), or else it is redrawn as inattentive with probability
-  `bad_share` (0.4).
+  `bad_share` (0.4). The sequence depends on the seed and the operator, so the arms
+  of one operator and seed share it and other operators do not.
 - **Inattentive:**
   - the execution fields of θ become the novice anchors;
   - `p_early` becomes 0.5;
