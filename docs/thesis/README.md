@@ -32,6 +32,14 @@ Pseudocode for the algorithms chapter: **[../../tex/aqi_hil_serl_algorithms.tex]
 > ceiling (drop `aqi`)**, and the two objectives conflict. Links to the two
 > detailed per-campaign logs below.
 
+> **The second training machine — START HERE for the new stack and the inconsistent operator:**
+> **[second_machine_synthesis.md](second_machine_synthesis.md)** — what ran (57 cells on the new stack), what came
+> out, and the plan and campaigns it leaves for the first machine. Details in
+> **[new_stack_operator_results_and_qa_log.md](new_stack_operator_results_and_qa_log.md)** (rotation control: cuboid
+> rescue 7–13 % → 70–100 %; orientation tolerance; training speed) and
+> **[inconsistent_operator_results_and_qa_log.md](inconsistent_operator_results_and_qa_log.md)** (scores against a
+> hidden attentive/inattentive label; discard vs re-weight: no difference shown; why the test was weak).
+
 > **Active trigger — the rate-matched frontier (the active half of the thesis):**
 > **[active_ratematch_results_and_qa_log.md](active_ratematch_results_and_qa_log.md)** —
 > campaign A (108 cells): does σ_Q-timed help beat the engineered monitor at a

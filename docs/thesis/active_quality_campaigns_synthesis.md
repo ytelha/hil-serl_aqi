@@ -14,6 +14,11 @@ targets, 5000-step demo warm start, LR 1.5e-4), cuboid peg, synthetic operators
 at 3 skill tiers (3 operators/tier × 2 seeds), autonomous success on a frozen
 9-pose ruler, `signal` handback.
 
+> **Note added 2026-10-31.** The quality arms below changed three things at once: the oracle score, the default hard
+> filters (`outcome_filter` drops every takeover from a failed episode, whatever the oracle says) and a BC loss of 0.1.
+> So "a perfect score amplifies dependence" is not yet established. See [../novice_ablation.md](../novice_ablation.md)
+> for the test that separates them.
+
 ---
 
 ## 0. Executive summary

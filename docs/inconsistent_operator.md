@@ -308,7 +308,8 @@ driver reads `runs/inconsistent_operator/stage0/limits.json` first, then
 
 Stage 0, Q1, the keep-all / oracle / random check (3 pairs) and the two-arm pilot
 and confirmation (18 pairs) ran on the `_new` stack with the behavioral score. All
-57 cells converged. The sequence bug below was still in the code.
+57 cells converged. The sequence bug below was still in the code. Full log:
+[thesis/inconsistent_operator_results_and_qa_log.md](thesis/inconsistent_operator_results_and_qa_log.md).
 
 | question | result |
 |---|---|

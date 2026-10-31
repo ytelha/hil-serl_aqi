@@ -10,6 +10,11 @@ truth oracle** score — reduce operator-dependence on top of *when to ask*?
 - Config: [`examples/campaigns/aqi_oracle_quality.yaml`](../../examples/campaigns/aqi_oracle_quality.yaml).
 - Report: `runs/aqi_oracle_quality/report/dependency.md`.
 
+> **Note added 2026-10-31.** The quality arms below changed three things at once: the oracle score, the default hard
+> filters (`outcome_filter` drops every takeover from a failed episode, whatever the oracle says) and a BC loss of 0.1.
+> So "a perfect score amplifies dependence" is not yet established. See [../novice_ablation.md](../novice_ablation.md)
+> for the test that separates them.
+
 ---
 
 ## 0. Headline (a decisive NEGATIVE, cleanly explained)
