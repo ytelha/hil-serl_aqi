@@ -4,8 +4,9 @@ convergence by the mini-eval (converge_mode eval), a fixed update ratio
 orientation monitor (synthetic_orientation_monitor) and the sim env's
 orientation box (sim_rpy_box -> $SIM_RPY_BOX). Off, every command is exactly
 as before; on, the flags reach the right process, are defined in
-train_aqi_rlpd.py, and the HiRIL pipeline arm refuses the operator and
-training switches (the box is part of the task and reaches every process).
+train_aqi_rlpd.py, and the HiRIL pipeline arm takes them too (flags defined
+in train_hiril.py) except the inconsistent operator, which it refuses (the box
+is part of the task and reaches every process).
 No JAX needed.
 
 Run from the repo root with
@@ -111,17 +112,31 @@ def test_yaml_keys():
     assert args.converge_mode == "rolling"
 
 
-def test_pipeline_arms_refuse_the_switches():
-    for extra in (["--utd_ratio", "1.0"], ["--log_takeover_channels"],
-                  ["--converge_mode", "eval", "--converge_eval_threshold", "0.6"]):
-        args = _parse("hiril_comparison.yaml", extra=extra)
-        try:
-            _cmds(args, "hiril")
-        except SystemExit as exc:
-            assert "pipeline" in str(exc)
-        else:
-            raise AssertionError(f"hiril arm accepted {extra}")
-    _cmds(_parse("hiril_comparison.yaml"), "hiril")      # off: fine
+def test_pipeline_arms_take_the_new_stack():
+    src = (REPO / "examples" / "train_hiril.py").read_text(encoding="utf-8")
+    defined = set(re.findall(r'flags\.DEFINE_\w+\(\s*"(\w+)"', src))
+    off_l, off_a = _cmds(_parse("hiril_comparison.yaml"), "hiril")
+    assert not (_used(off_l) | _used(off_a)) & NEW_FLAGS       # off: as before
+    args = _parse("hiril_comparison.yaml", extra=[
+        "--utd_ratio", "1.0", "--log_takeover_channels", "--converge_mode", "eval",
+        "--converge_eval_threshold", "0.6", "--synthetic_rotation_control",
+        "--synthetic_orientation_monitor", "--synthetic_orientation_yaw_rad", "0.14"])
+    lcmd, acmd = _cmds(args, "hiril")
+    assert lcmd[0] == "train_hiril.py" and acmd[0] == "train_hiril.py"
+    assert "--utd_ratio" in lcmd and "--utd_ratio" in acmd
+    for t in ("--log_takeover_channels", "--synthetic_rotation_control", "--converge_mode",
+              "--synthetic_orientation_monitor", "--synthetic_orientation_yaw_rad"):
+        assert t in acmd, t
+    for t in _used(lcmd) | _used(acmd):              # every flag reaches a defined flag
+        name = t[2:] if t.startswith("no") and t[2:] in defined else t
+        assert name in defined or name.startswith("hiril_"), name
+    args = _parse("hiril_comparison.yaml", extra=["--synthetic_inconsistent"])
+    try:
+        _cmds(args, "hiril")
+    except SystemExit as exc:
+        assert "pipeline" in str(exc)
+    else:
+        raise AssertionError("hiril arm accepted the inconsistent operator")
 
 
 def test_run_readme_names_the_convergence_rule():

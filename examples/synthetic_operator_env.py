@@ -26,8 +26,15 @@ def wrap_synthetic_operator(env, *, synthetic_operator, synthetic_theta="",
                             intervention_mode="signal",
                             latch_until_success=False,
                             respond_to_request=False, max_traj_length=300,
-                            log=print):
+                            rotation_control=False, orientation_monitor=False,
+                            orientation_tilt_rad=0.0, orientation_yaw_rad=0.0,
+                            log_takeover_channels=False, log=print):
     """Returns (wrapped_env, theta).
+
+    rotation_control, orientation_monitor (limits 0 = the oracle's default for
+    the peg shape) and log_takeover_channels mean the same as the
+    --synthetic_rotation_control, --synthetic_orientation_monitor and
+    --log_takeover_channels flags of train_aqi_rlpd.py. All off: as before.
 
     make_oracle_agent: () -> an agent whose .state a policy-oracle
         checkpoint restores into and which has sample_actions(); needed only
@@ -92,16 +99,34 @@ def wrap_synthetic_operator(env, *, synthetic_operator, synthetic_theta="",
             budget_steps=max_traj_length)
     op = SyntheticOperator(oracle, theta,
                            rng=np.random.default_rng(synthetic_seed + 17),
-                           action_scale=op_action_scale)
+                           action_scale=op_action_scale,
+                           rotation_control=rotation_control)
+    if orientation_monitor:
+        if not op.rotation_control:
+            raise ValueError(
+                "the orientation monitor needs rotation control and the "
+                "geometric oracle: a takeover for a twisted tool must be able "
+                "to undo the twist")
+        mon_orc = getattr(monitor, "oracle", None)
+        if not (hasattr(mon_orc, "tilt_yaw_error")
+                and hasattr(mon_orc, "orientation_tolerance")):
+            raise ValueError("this env's monitor oracle has no tilt_yaw_error "
+                             "/ orientation_tolerance")
+        tilt0, yaw0 = mon_orc.orientation_tolerance()
+        monitor.set_orientation_limits(orientation_tilt_rad or tilt0,
+                                       orientation_yaw_rad or yaw0)
     if intervention_mode == "legacy":
         intervention_mode = "always_latch" if latch_until_success else "signal"
     log(f"synthetic operator '{synthetic_operator}' (exec s={theta.s_exec:.2f}"
         f", mon s={theta.s_mon:.2f}, {kind} oracle, intervention="
-        f"{intervention_mode}, responds to robot requests={respond_to_request})")
+        f"{intervention_mode}, responds to robot requests={respond_to_request}"
+        f"{', rotation control' if op.rotation_control else ''}"
+        f"{', orientation monitor' if orientation_monitor else ''})")
     wrapped = SyntheticOperatorWrapper(
         env, op, monitor, rng=np.random.default_rng(synthetic_seed + 31),
         respond_to_request=respond_to_request,
         action_conditioner=action_conditioner,
         intervention_mode=intervention_mode,
-        latch_until_success=latch_until_success)
+        latch_until_success=latch_until_success,
+        log_takeover_channels=log_takeover_channels)
     return wrapped, theta

@@ -1263,7 +1263,9 @@ def _pipeline_learner_cmd(args, ckpt, demo_path, method, seed, run_name):
             "--demo_pretrain_steps", str(dps),
             "--demo_pretrain_batch_size", str(dpb),
             "--run_name", run_name, "--arm", method,
-            ] + _pipeline_flags(args, method) + _wandb_flags(args)
+            ] + (["--utd_ratio", str(args.utd_ratio)]
+                 if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0 else []
+                 ) + _pipeline_flags(args, method) + _wandb_flags(args)
 
 
 def _rpy_box(args):
@@ -1329,11 +1331,11 @@ def _pipeline_actor_cmd(args, ckpt, method, tier, operator, theta_json, seed,
                         run_name):
     """Actor command of a PIPELINES arm: the same operator / budget /
     convergence flags as the AQI actor, without --aqi_mode and AQI knobs."""
-    if _platform_switches(args):
+    if "synthetic_inconsistent" in _platform_switches(args):
         raise SystemExit(
-            f"[arms] '{method}': {', '.join(_platform_switches(args))} is not "
-            f"wired into the {PIPELINES[_arm_mode(args, method)]} pipeline; the "
-            f"arms would differ in more than the method. Run that arm without it.")
+            f"[arms] '{method}': synthetic_inconsistent is not wired into the "
+            f"{PIPELINES[_arm_mode(args, method)]} pipeline; the arms would "
+            f"differ in more than the method. Run that arm without it.")
     actor_steps, actor_minutes = _actor_budget(args)
     cmd = [PIPELINES[_arm_mode(args, method)], "--exp_name", args.exp_name,
            "--actor", "--checkpoint_path", str(ckpt),
@@ -1359,7 +1361,7 @@ def _pipeline_actor_cmd(args, ckpt, method, tier, operator, theta_json, seed,
            "--env_seed", str(seed),
            "--run_name", run_name,
            "--aqi_log_dir", str((ckpt.parent.parent / "aqi_logs").resolve()),
-           "--arm", method] + _pipeline_flags(args, method)
+           "--arm", method] + _platform_actor_flags(args) + _pipeline_flags(args, method)
     if args.policy_oracle_checkpoint:
         cmd += ["--oracle_checkpoint", str(args.policy_oracle_checkpoint)]
     if getattr(args, "training_oracle", "auto") != "auto":

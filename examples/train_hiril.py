@@ -70,6 +70,7 @@ from serl_launcher.utils.launcher import (make_hiril_pixel_agent,
                                           make_wandb_logger)
 from serl_launcher.utils.sharding import DeviceSharding
 from serl_launcher.utils.timer_utils import Timer
+from serl_launcher.utils.update_ratio import UpdateRatio
 
 from experiments.mappings import CONFIG_MAPPING
 from synthetic_operator_env import wrap_synthetic_operator
@@ -133,6 +134,30 @@ flags.DEFINE_string("aqi_log_dir", "", "Root of the JSONL logs ('' = "
                     "./aqi_logs).")
 flags.DEFINE_enum("peg_shape", None, ["cylinder", "hex", "cuboid"],
                   "Sim peg geometry.")
+# the operator and training switches of the new stack, as in train_aqi_rlpd.py
+flags.DEFINE_boolean("synthetic_rotation_control", False, "The operator also "
+                     "corrects the tool orientation. Off = translation only.")
+flags.DEFINE_boolean("synthetic_orientation_monitor", False, "The operator's "
+                     "monitor also watches the tool orientation (needs "
+                     "--synthetic_rotation_control). HiRIL's operator answers "
+                     "requests, so this changes only what it would log.")
+flags.DEFINE_float("synthetic_orientation_tilt_rad", 0.0, "Tilt limit (rad); "
+                   "0 = the oracle's default for the peg shape.")
+flags.DEFINE_float("synthetic_orientation_yaw_rad", 0.0, "Yaw limit (rad); 0 "
+                   "= the oracle's default for the peg shape.")
+flags.DEFINE_boolean("log_takeover_channels", False, "Record per episode in "
+                     "episodes.jsonl what caused each takeover and how it "
+                     "ended. Logging only.")
+flags.DEFINE_enum("converge_mode", "rolling", ["rolling", "eval"], "'eval' = "
+                  "decide convergence with the fixed-pose mini-eval alone.")
+flags.DEFINE_integer("converge_eval_every", 2000, "--converge_mode eval: env "
+                     "steps between mini-evals.")
+flags.DEFINE_integer("converge_eval_consecutive", 2, "--converge_mode eval: "
+                     "passes in a row needed to stop.")
+flags.DEFINE_float("utd_ratio", 0.0, "> 0: fix the learner steps per env step "
+                   "(serl_launcher/utils/update_ratio.py); 0 = asynchronous.")
+flags.DEFINE_float("utd_timeout_s", 600.0, "--utd_ratio: the actor stops "
+                   "waiting if the learner has not advanced for this long.")
 
 # ---- HiRIL hyperparameters: one --hiril_<name> per HiRILConfig CLI field
 # (None = HiRILConfig default; see serl_launcher/hiril/config.py for the
@@ -231,7 +256,13 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
             intervention_mode=FLAGS.synthetic_intervention_mode,
             latch_until_success=FLAGS.synthetic_latch_until_success,
             respond_to_request=True,      # HiRIL: interventions are risk-triggered
-            max_traj_length=config.max_traj_length, log=print_green)
+            max_traj_length=config.max_traj_length,
+            rotation_control=FLAGS.synthetic_rotation_control,
+            orientation_monitor=FLAGS.synthetic_orientation_monitor,
+            orientation_tilt_rad=FLAGS.synthetic_orientation_tilt_rad,
+            orientation_yaw_rad=FLAGS.synthetic_orientation_yaw_rad,
+            log_takeover_channels=FLAGS.log_takeover_channels,
+            log=print_green)
 
     arm = FLAGS.arm or "hiril"
     run_name = FLAGS.run_name or "{}_hiril_{}_s{}_{}".format(
@@ -287,6 +318,24 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
     t_start = time.time()
     max_seconds = FLAGS.max_minutes * 60.0 if FLAGS.max_minutes > 0 else 0.0
     timed_out = False
+    # convergence by the mini-eval alone (--converge_mode eval), as train_aqi_rlpd
+    eval_mode = FLAGS.converge_mode == "eval"
+    if eval_mode and not converge_eval_on:
+        raise ValueError("--converge_mode eval needs --converge_eval_threshold > 0")
+    eval_passes, eval_history, last_eval_step = 0, [], None
+    seen_autonomous = False
+
+    def mini_eval_unpaced(eval_env, key):
+        """The mini-eval without real-time pacing (eval mode only)."""
+        base = getattr(eval_env, "unwrapped", eval_env)
+        was = getattr(base, "realtime", None)
+        if was is not None:
+            base.realtime = False
+        try:
+            return mini_eval(eval_env, key)
+        finally:
+            if was is not None:
+                base.realtime = was
 
     def mini_eval(eval_env, key):
         """Fixed-pose autonomous check (the ruler's reset semantics)."""
@@ -311,7 +360,18 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
     def new_episode():
         return dict(ret=0.0, n_int_steps=0, n_onsets=0, n_request_steps=0,
                     n_requests=0, du=[], seg=None, segments=[], step0=step_i,
-                    prev_request=False)
+                    prev_request=False, takeover_channels={}, handbacks={})
+
+    # fixed learner updates per env step (--utd_ratio)
+    utd = None
+    if FLAGS.utd_ratio > 0.0 and FLAGS.checkpoint_path:
+        utd = UpdateRatio(FLAGS.checkpoint_path, FLAGS.utd_ratio,
+                          timeout_s=FLAGS.utd_timeout_s, warn=print_yellow)
+        base_env = getattr(env, "unwrapped", env)
+        if hasattr(base_env, "realtime"):
+            base_env.realtime = False
+        print_green(f"fixed update ratio: {FLAGS.utd_ratio:g} learner steps per "
+                    f"env step; the env runs without real-time pacing")
 
     timer = Timer()
     step_i = 0
@@ -321,6 +381,9 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
     for step in pbar:
         step_i = step
         timer.tick("total")
+        if utd is not None:
+            with timer.context("utd_wait"):
+                utd.actor_wait()
         if max_seconds and time.time() - t_start >= max_seconds:
             timed_out = True
             print_yellow(f"\n>>> TIME BUDGET reached at step {step}; stopping.")
@@ -376,6 +439,14 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
             next_obs, reward, done, truncated, info = env.step(a_rl)
         for side in ("left", "right"):
             info.pop(side, None)
+        if FLAGS.log_takeover_channels:     # logging only (diagnostics)
+            syn = info.get("synthetic_operator") or {}
+            if syn.get("takeover_channel"):
+                c = syn["takeover_channel"]
+                ep["takeover_channels"][c] = ep["takeover_channels"].get(c, 0) + 1
+            if syn.get("handback_kind"):
+                k = syn["handback_kind"]
+                ep["handbacks"][k] = ep["handbacks"].get(k, 0) + 1
         intervening = "intervene_action" in info
         a_exec = (np.asarray(info.pop("intervene_action"), dtype=np.float32)
                   if intervening else np.asarray(a_rl, dtype=np.float32))
@@ -451,15 +522,19 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
                     with open(os.path.join(os.path.abspath(
                             FLAGS.checkpoint_path), "episodes.jsonl"),
                             "a") as f:
-                        f.write(json.dumps({
+                        rec = {
                             "step": int(step),
                             "intervention_count": ep["n_onsets"],
                             "intervention_steps": ep["n_int_steps"],
-                            "success": success, "length": length}) + "\n")
+                            "success": success, "length": length}
+                        if FLAGS.log_takeover_channels:
+                            rec["takeover_channels"] = dict(ep["takeover_channels"])
+                            rec["handbacks"] = dict(ep["handbacks"])
+                        f.write(json.dumps(rec) + "\n")
                 except OSError:
                     pass
 
-            if converge_on:
+            if converge_on and not eval_mode:
                 episodes_total += 1
                 counted = success and (not FLAGS.converge_require_autonomous
                                        or ep["n_onsets"] == 0)
@@ -484,6 +559,45 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
                         converged = True
                         _write_convergence(agent, step, episodes_total, roll,
                                            ruler_sr, eval_poses)
+            if eval_mode:
+                episodes_total += 1
+                if success and ep["n_onsets"] == 0:
+                    seen_autonomous = True
+                if (seen_autonomous and step >= FLAGS.converge_min_steps
+                        and (last_eval_step is None or step - last_eval_step
+                             >= FLAGS.converge_eval_every)):
+                    last_eval_step = step
+                    ruler_sr = mini_eval_unpaced(getattr(env, "env", env),
+                                                 sampling_rng)
+                    eval_history.append([int(step), float(ruler_sr)])
+                    eval_passes = (eval_passes + 1
+                                   if ruler_sr >= FLAGS.converge_eval_threshold
+                                   else 0)
+                    if FLAGS.checkpoint_path:
+                        try:
+                            with open(os.path.join(os.path.abspath(
+                                    FLAGS.checkpoint_path),
+                                    "convergence_evals.jsonl"), "a") as f:
+                                f.write(json.dumps({
+                                    "step": int(step), "sr": float(ruler_sr),
+                                    "passes": int(eval_passes)}) + "\n")
+                        except OSError:
+                            pass
+                    print_green(f">>> mini-eval at step {step}: SR {ruler_sr:.2f}"
+                                f" (pass {eval_passes}/"
+                                f"{FLAGS.converge_eval_consecutive})")
+                    if eval_passes >= FLAGS.converge_eval_consecutive:
+                        converged = True
+                        _write_convergence(
+                            agent, step, episodes_total, None, ruler_sr,
+                            eval_poses, eval_payload=dict(
+                                step=int(step), episodes=int(episodes_total),
+                                mode="eval", mini_eval_sr=float(ruler_sr),
+                                mini_eval_threshold=float(FLAGS.converge_eval_threshold),
+                                consecutive=int(FLAGS.converge_eval_consecutive),
+                                every=int(FLAGS.converge_eval_every),
+                                mini_eval_history=eval_history,
+                                mini_eval_poses=[list(p) for p in eval_poses]))
 
             info.setdefault("episode", {})
             info["episode"]["intervention_count"] = ep["n_onsets"]
@@ -497,6 +611,8 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
                           "explore_std": exploration_std(step, hiril)}})
             pbar.set_description(f"last return: {ep['ret']}")
             client.update()
+            if utd is not None:
+                utd.actor_note_sent(step + 1)
             obs, _ = env.reset()
             ep_idx += 1
             ep = new_episode()
@@ -512,6 +628,9 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
     if converge_on and not converged and not timed_out:
         print_yellow(f"\n>>> actor reached the {config.max_steps}-step budget "
                      f"WITHOUT converging (no CONVERGED.json).")
+    if utd is not None:
+        print_green(f"fixed update ratio: the actor waited {utd.waited_s / 60.0:.1f}"
+                    f" min for the learner{' (stopped waiting: learner silent)' if utd.disabled else ''}")
     logger.close()
     _document_actor_run(theta, converged, timed_out, t_start, step, hiril)
     try:
@@ -522,20 +641,26 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
     os._exit(0)
 
 
-def _write_convergence(agent, step, episodes, roll, ruler_sr, eval_poses):
+def _write_convergence(agent, step, episodes, roll, ruler_sr, eval_poses,
+                       eval_payload=None):
     """CONVERGED.json + certified/ (the exact actor weights that converged),
     as train_aqi_rlpd writes them, so run_campaign and eval_ruler treat the
-    cell the same way."""
-    print_green(f"\n>>> CONVERGED at step {step}: rolling autonomous success "
-                f"{roll:.2f} over {FLAGS.converge_window} episodes.")
+    cell the same way. eval_payload: the record of --converge_mode eval."""
+    if eval_payload is not None:
+        print_green(f"\n>>> CONVERGED at step {step}: mini-eval SR >= "
+                    f"{FLAGS.converge_eval_threshold:.2f} in "
+                    f"{FLAGS.converge_eval_consecutive} evaluations in a row.")
+    else:
+        print_green(f"\n>>> CONVERGED at step {step}: rolling autonomous success "
+                    f"{roll:.2f} over {FLAGS.converge_window} episodes.")
     if not FLAGS.checkpoint_path:
         return
     ck = os.path.abspath(FLAGS.checkpoint_path)
-    payload = dict(step=int(step), episodes=int(episodes),
-                   rolling_success=float(roll),
-                   window=int(FLAGS.converge_window),
-                   threshold=float(FLAGS.converge_success),
-                   autonomous=bool(FLAGS.converge_require_autonomous))
+    payload = eval_payload if eval_payload is not None else dict(
+        step=int(step), episodes=int(episodes), rolling_success=float(roll),
+        window=int(FLAGS.converge_window),
+        threshold=float(FLAGS.converge_success),
+        autonomous=bool(FLAGS.converge_require_autonomous))
     try:
         checkpoints.save_checkpoint(
             os.path.join(ck, "certified"),
@@ -544,7 +669,7 @@ def _write_convergence(agent, step, episodes, roll, ruler_sr, eval_poses):
         payload["certified_checkpoint_step"] = int(step)
     except Exception as exc:
         print_yellow(f">>> could not save certified checkpoint: {exc}")
-    if ruler_sr is not None:
+    if ruler_sr is not None and eval_payload is None:
         payload.update(mini_eval_sr=float(ruler_sr),
                        mini_eval_threshold=float(FLAGS.converge_eval_threshold),
                        mini_eval_poses=[list(p) for p in eval_poses])
@@ -629,6 +754,19 @@ def learner(agent, replay, n_demo, hiril: HiRILConfig, wandb_logger=None):
                 os.path.abspath(FLAGS.checkpoint_path), agent.state, step=step,
                 keep=FLAGS.checkpoint_keep, overwrite=overwrite)
 
+    # --utd_ratio: fixed learner steps per env step. Set up before the banner,
+    # so a progress file left by an earlier run is gone before the actor reads
+    # it; env steps count from here (demos are not new data).
+    utd = (UpdateRatio(FLAGS.checkpoint_path, FLAGS.utd_ratio)
+           if FLAGS.utd_ratio > 0.0 and FLAGS.checkpoint_path else None)
+    if utd is not None:
+        utd.learner_reset()
+        rb0, rb_cap = len(replay), getattr(replay, "_capacity", None)
+
+        def received():
+            n = len(replay)
+            return float("inf") if rb_cap and n >= rb_cap else n - rb0
+
     critic_only = frozenset({"critic"})
     full = frozenset({"critic", "actor"})
 
@@ -682,6 +820,10 @@ def learner(agent, replay, n_demo, hiril: HiRILConfig, wandb_logger=None):
                                           "pack_obs_and_next_obs": True},
                              device=sharding.replicate())
     timer = Timer()
+    online_start = step
+    if utd is not None:             # training begins: the actor may now wait
+        utd.learner_report(0)
+        print_green(f"fixed update ratio: {FLAGS.utd_ratio:g} learner steps per env step")
     for step in tqdm.tqdm(range(step, config.max_steps), dynamic_ncols=True,
                           desc="learner"):
         # TD3: policy_delay-1 critic-only updates, then critic + actor
@@ -690,6 +832,10 @@ def learner(agent, replay, n_demo, hiril: HiRILConfig, wandb_logger=None):
                 train_step(next(it), critic_only)
         with timer.context("train"):
             info = train_step(next(it), full)
+        if utd is not None:
+            n_online = step - online_start + 1
+            utd.learner_report(n_online)
+            utd.learner_wait(n_online, received, should_stop)
         if step > 0 and step % config.steps_per_update == 0:
             agent = jax.block_until_ready(agent)
             server.publish_network(agent.state.params)
