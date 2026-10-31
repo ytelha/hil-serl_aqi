@@ -50,6 +50,12 @@ class HiRILConfig:
     calib_quantile: float = 0.8    # [ours] ~20% of steps flagged at calib
     calib_steps: int = 1000        # [ours]
     calib_delay_steps: int = 500   # [ours] after random_steps, before calib
+    recalib_period: int = 0        # [ours, F2 fix] >0: RE-calibrate tau_risk
+                                   # every recalib_period actor steps over the
+                                   # last recalib_period DU(s,a_RL) values, so
+                                   # the request rate stays ~1-calib_quantile as
+                                   # DU decays with learning (relative trigger,
+                                   # like AQI's z-gate). 0 = calibrate once.
 
     # ---- reward shaping (Eq. 25) ----------------------------------------
     intervention_penalty: float = -0.1   # [ours] r_p, added once per takeover
@@ -91,6 +97,7 @@ class HiRILConfig:
             "DU needs >= 2 samples along theta or tau")
         assert 0.0 < self.calib_quantile < 1.0
         assert self.kappa > 0 and self.per_eps > 0
+        assert int(self.recalib_period) >= 0
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -114,8 +121,8 @@ class HiRILConfig:
 #   w/o imitation: lambda_bc=0
 CLI_FIELDS = {
     "tau_risk": float, "calib_quantile": float, "calib_steps": int,
-    "calib_delay_steps": int, "du_mode": str, "sigma_z": float,
-    "k_tau": int, "k_tau_target": int, "k_theta": int, "du_k_tau": int,
+    "calib_delay_steps": int, "recalib_period": int, "du_mode": str,
+    "sigma_z": float,    "k_tau": int, "k_tau_target": int, "k_theta": int, "du_k_tau": int,
     "du_k_theta": int, "kappa": float, "kl_weight": float,
     "intervention_penalty": float, "lambda_bc": float,
     "per_alpha": float, "per_beta": float, "per_eps": float, "use_rd": bool,

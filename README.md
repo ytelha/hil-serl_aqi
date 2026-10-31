@@ -41,11 +41,24 @@ existing open-source human-in-the-loop RL framework and adds two contributions:
 > how any operator — human or synthetic — is automatically typed by skill from its
 > interaction logs;
 > [docs/critic_ensemble.md](./docs/critic_ensemble.md) explains how the K critics
-> are aggregated for the backup, the actor, and the AQI trigger;
+> are aggregated for the backup, the actor, and the AQI trigger — and now also
+> documents the **structural tuning that makes the ensemble converge** (§7) and
+> the **problems with the counterfactual-advantage quality score** (§4.2);
 > [docs/dependency_analysis.md](./docs/dependency_analysis.md) gives the
 > variance-decomposition mathematics (ICC, spread, permutation, bootstrap) in
 > full; and [docs/architecture.md](./docs/architecture.md) maps which script
 > writes and reads what.
+>
+> **Key empirical findings (read these):** the ensemble/quality results and the
+> full reasoning behind every design change live in the thesis logs —
+> [docs/thesis/rq3_structural_ablation_and_qa_log.md](./docs/thesis/rq3_structural_ablation_and_qa_log.md)
+> (the default ensemble hurts), 
+> [docs/thesis/rq4_ensemble_convergence_and_qa_log.md](./docs/thesis/rq4_ensemble_convergence_and_qa_log.md)
+> (the structural fixes that recover it, §2/§7–§10, and the quality-score
+> diagnostic + behavioral redesign, §11–§12), and
+> [docs/thesis/rq2_quality_replay_and_qa_log.md](./docs/thesis/rq2_quality_replay_and_qa_log.md)
+> (the original quality-replay critique). Start from `docs/critic_ensemble.md`
+> §4.2 and §7, which summarise these and link into the logs.
 >
 > **Writing the thesis?** [docs/thesis/](./docs/thesis/) is the hub — the experiment
 > plan, the exact run/analyse/plot protocols, a ready-to-run campaign config, and a
@@ -118,9 +131,7 @@ Data flows from the actor to the learner over the network using
 periodically synchronizes the updated policy back to the actor. This design
 allows parallel training and inference.
 
-<!-- <p align="center">
-  <img src="./docs/images/software_design.png" width="80%"/>
-</p> -->
+![Software design overview](./docs/images/software_design.png)
 
 **Table for code structure**
 

@@ -16,6 +16,41 @@ Pseudocode for the algorithms chapter: **[../../tex/aqi_hil_serl_algorithms.tex]
 
 > **Engineering log / failure analysis:** **[rq1_campaign_engineering_log.md](rq1_campaign_engineering_log.md)** — the week-by-week record of every attempt to make the RQ1 campaign yield a valid signal (premise → result → why it failed), with a decision-tree diagram, a summary table, and the root-cause pivot to the policy oracle. Use it for the methodology / lessons-learned chapter or appendix.
 
+> **Ensemble tuning & quality-score findings (RQ2–RQ5) — read in this order:**
+> These logs contain the *full reasoning* behind every ensemble/quality design
+> decision (the thesis-critical negative and constructive results):
+> 1. **[rq2_quality_replay_and_qa_log.md](rq2_quality_replay_and_qa_log.md)** — the original quality-replay study + the "negligible score" critique (§7/§10/§16/§18).
+> 2. **[rq3_structural_ablation_and_qa_log.md](rq3_structural_ablation_and_qa_log.md)** — the default 10-critic ensemble **hurts** (SR −18.5 pp, ICC 0.03→0.74); quality replay hurts most.
+> 3. **[rq4_ensemble_convergence_and_qa_log.md](rq4_ensemble_convergence_and_qa_log.md)** — the **structural fixes** that recover parity (§2, §7–§10), the quality-signal **diagnostic** (§11), and the **behavioral-score redesign** (§12).
+> The distilled, reference version of both topics lives in **[../critic_ensemble.md](../critic_ensemble.md)** — §7 (structural tuning) and §4.2 (quality-score problems). Audit tooling: **[../quality_signal_audit.md](../quality_signal_audit.md)**.
+
+> **AQI active + quality results — START HERE for the Oct-2026 arc:**
+> **[active_quality_campaigns_synthesis.md](active_quality_campaigns_synthesis.md)** —
+> the master synthesis of every campaign (A active trigger, C quality-gate oracle
+> ceiling, demo probe) with the unified interpretation: **timing helps (use
+> `active`), quality filtering hurts operator-independence even at the oracle
+> ceiling (drop `aqi`)**, and the two objectives conflict. Links to the two
+> detailed per-campaign logs below.
+
+> **Active trigger — the rate-matched frontier (the active half of the thesis):**
+> **[active_ratematch_results_and_qa_log.md](active_ratematch_results_and_qa_log.md)** —
+> campaign A (108 cells): does σ_Q-timed help beat the engineered monitor at a
+> *matched* intervention budget? Headline: `active-q55` dominates the SR-vs-cost
+> frontier (+13.2 pp vs `logged`, p=0.021, lifts weak tiers, ICC≈0); honest
+> near-nulls on "timing beats chance" (p=0.30) and "beats the no-trigger baseline".
+> Includes the quantile-trigger mechanism, the calibration probe, both baselines,
+> and the frontier plot.
+
+> **Quality gate — the oracle ceiling (the quality half of the thesis):**
+> **[aqi_oracle_quality_results_and_qa_log.md](aqi_oracle_quality_results_and_qa_log.md)** —
+> campaign C (90 cells): does a PERFECT simulator-oracle quality score reduce
+> operator-dependence on top of σ_Q timing? **Decisive negative:** a quality gate
+> (even the oracle) AMPLIFIES dependence (ICC 0.18 → 0.93) by starving the weak
+> operator — it keeps good corrections and correctly discards bad novice ones,
+> collapsing the novice tier (65% → 9–36%). Proves RQ2–RQ4's quality failure is a
+> *paradigm* problem, not a score bug. Combined with A: use `active` (timing),
+> drop `aqi` (timing + quality).
+
 ## Start here (the shortest path to a result)
 
 ```bash

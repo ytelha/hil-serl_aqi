@@ -108,7 +108,7 @@ BEHAVIORAL_TERMS = ("d_value", "t_int", "f_peak")
 #   "uniform"        0 for every segment: no graded signal at all (control
 #                    for "does the grading matter", e.g. uniform BC in C8)
 QUALITY_SCORE_MODES = ("counterfactual", "behavioral", "hindsight",
-                       "progress", "outcome", "uniform")
+                       "progress", "outcome", "uniform", "oracle")
 
 
 @dataclass
@@ -162,7 +162,24 @@ class AQIConfig:
     query_warmup_steps: int = 1000        # collect z-stats before triggering
     query_min_on_steps: int = 10          # hysteresis: keep request raised
     query_cooldown_steps: int = 20        # steps between distinct requests
+    # Explicit request-RATE control (overrides tau_A when set). The absolute
+    # threshold tau_A is brittle because A(s_t) is z-normalized and sigma_Q's
+    # scale drifts as the ensemble converges (RQ4 muted it), so a fixed tau_A
+    # fires at an uncontrolled, often tiny rate. With query_target_rate set the
+    # gate instead requests whenever A(s_t) exceeds the running (1-rate)
+    # empirical quantile of the last query_quantile_window scores, i.e. the top
+    # `rate` fraction of eligible steps -- a stable, scale-free rate knob that
+    # also makes matching the engineered monitor's rate a one-number setting.
+    # None = off (use tau_A). The realized intervention rate is still below
+    # this by the min_on/cooldown duty cycle, like tau_A.
+    query_target_rate: Optional[float] = None
+    query_quantile_window: int = 2000     # samples behind the running quantile
     lcb_request_threshold: Optional[float] = None  # optional: request if LCB < thr
+    # Control arm: request at random (per-eligible-step probability) instead of
+    # on any trigger term -- isolates whether the trigger's TIMING beats chance
+    # at a matched intervention rate. 0 = off.
+    random_request_rate: float = 0.0
+    random_request_seed: int = 0          # RNG seed for the random trigger
 
     # ------------------------------------------------------------------
     # Force / torque risk (S5.4):
@@ -260,6 +277,14 @@ class AQIConfig:
     #     act on the counterfactual A_hat only; every segment-level mode maps
     #     its score q_seg to q_int = max(q_seg, 0) and
     #     w = clip(sigmoid(quality_gamma * q_seg), w_min, w_max).
+    #   "oracle" = a SIMULATOR-GROUND-TRUTH ceiling (sim only; requires
+    #     quality_cf_diag so the per-step ground truth is captured). Scores a
+    #     takeover by how much it actually resolved task trouble:
+    #     q_seg = (op_z_task_onset - op_z_task_end) - jam_end + 0.5*outcome,
+    #     standardised online. This is the "perfect quality score" the
+    #     counterfactual/behavioral scores only approximate -- the upper bound
+    #     on what scoring interventions can buy (keeps a weak operator's lucky
+    #     good corrections, drops its bad ones). NOT deployable; a ceiling.
     quality_score_mode: str = "counterfactual"
     quality_behavioral_terms: Tuple[str, ...] = BEHAVIORAL_TERMS
 
@@ -390,6 +415,10 @@ class AQIConfig:
         assert self.quality_score_mode in QUALITY_SCORE_MODES, (
             f"quality_score_mode must be one of {QUALITY_SCORE_MODES}, got "
             f"{self.quality_score_mode!r}")
+        assert not (self.quality_score_mode == "oracle"
+                    and not self.quality_cf_diag), (
+            "quality_score_mode='oracle' needs quality_cf_diag=True (it scores "
+            "interventions from the simulator ground truth captured there)")
         assert int(self.quality_post_release_steps) >= 0, (
             "quality_post_release_steps must be >= 0")
         assert 0.0 < self.quality_hindsight_discount <= 1.0, (
@@ -401,9 +430,19 @@ class AQIConfig:
             "quality_consistency_sigma_ref must be > 0 (or None = running)")
         assert 0.0 < self.critic_bootstrap_p <= 1.0, (
             "critic_bootstrap_p must be in (0, 1]")
+        assert 0.0 <= self.random_request_rate <= 1.0, (
+            "random_request_rate must be in [0, 1]")
+        assert (self.query_target_rate is None
+                or 0.0 < self.query_target_rate < 1.0), (
+            "query_target_rate must be in (0, 1) or None")
+        assert int(self.query_quantile_window) >= 1, (
+            "query_quantile_window must be >= 1")
         if self.active_on:
-            assert set(self.trigger_terms) - {"cost"}, (
-                "active gating needs at least one signal term besides 'cost'")
+            assert (set(self.trigger_terms) - {"cost"}
+                    or self.random_request_rate > 0.0
+                    or self.lcb_request_threshold is not None), (
+                "active gating needs at least one signal term besides 'cost', "
+                "or a random/LCB request trigger")
         assert int(self.e2hil_K) >= 1, "e2hil_K must be >= 1"
         assert 0.0 <= self.e2hil_q_low < self.e2hil_q_high <= 1.0, (
             "need 0 <= e2hil_q_low < e2hil_q_high <= 1")

@@ -391,6 +391,15 @@ class AQIRuntime:
             seg.torques.append(
                 float(np.linalg.norm(tau_vec)) if tau_vec is not None else 0.0)
             seg.hard_violation |= bool(hard_violation)
+            # ground truth for the oracle score (present only under
+            # quality_cf_diag; missing keys -> nan/False so a non-sim run just
+            # scores neutral). `rec` is the pending step record completed above.
+            seg.gt_z_task.append(
+                float(rec.get("op_z_task", np.nan)) if rec is not None else np.nan)
+            seg.gt_jammed.append(
+                bool(rec.get("gt_jammed", False)) if rec is not None else False)
+            seg.gt_height.append(
+                float(rec.get("gt_height_mm", np.nan)) if rec is not None else np.nan)
         else:
             self._close_open_segment()
         self._ep_step += 1
@@ -445,6 +454,8 @@ class AQIRuntime:
             return self.scorer.progress_q(post["d_progress_post"])
         if mode == "outcome":
             return self.scorer.outcome_q(success)
+        if mode == "oracle":
+            return self.scorer.oracle_q(seg, success)
         if mode == "uniform":
             return 0.0
         return None

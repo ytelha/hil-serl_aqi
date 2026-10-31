@@ -280,6 +280,78 @@ read the headline at face value.)
 
 ---
 
+## 7.4 Reconciling the metrics — a second worked example
+
+The metrics in a report answer **different questions**, and they can appear to
+disagree. From the `active_effect` 4-arm run (cuboid, 9 operators × 2 seeds,
+`logged` vs `active` vs `random` vs `active-loud`):
+
+| method | mean SR | ICC | $\sigma^2_{\text{between}}$ | $\sigma^2_{\text{within}}$ | $CV$ | $p$(op matters) |
+|---|---|---|---|---|---|---|
+| `logged` | 78.2 % | **0.841** | 0.072 | 0.014 | 0.360 | **0.018** |
+| `active` | 70.8 % | **0.000** | 0.000 | **0.128** | 0.212 | 0.922 |
+| `random` | 56.2 % | 0.510 | 0.064 | 0.062 | 0.549 | 0.062 |
+| `active-loud` | 63.6 % | **0.000** | 0.000 | **0.126** | 0.253 | 0.885 |
+
+**(a) ICC and the permutation $p$ agree — they are two views of one quantity.**
+ICC is the *variance ratio* $\sigma^2_{\text{between}}/(\sigma^2_{\text{between}}+\sigma^2_{\text{within}})$;
+the permutation $p$ is the *significance* that $\sigma^2_{\text{between}}$ exceeds
+label-shuffled chance. High ICC ⇔ low $p$. Here `logged` (0.841 / 0.018) is
+dependent, `active`/`active-loud` (0.000 / 0.92, 0.88) are independent, `random`
+(0.510 / 0.062) is borderline — consistent on both. Use $p$ as the significance
+guard on the ICC **point** estimate; expect them to move together.
+
+**(b) ICC and $CV$ can disagree — because only ICC removes seed noise.**
+`active` has ICC $=0.000$ but $CV=0.212$. $CV$ is the raw spread of the
+per-operator means $\{\bar y_o\}$; ICC *decomposes* it. When $\sigma^2_{\text{within}}$
+is large, the ANOVA gives $MS_B<MS_W$, so
+
+$$
+\sigma^2_{\text{between}}=\max\!\Big(\tfrac{MS_B-MS_W}{k_0},0\Big)=0
+\;\Rightarrow\;\mathrm{ICC}=0,
+$$
+
+**even though $CV>0$.** Reading: the operators *do* land at different mean SRs
+($CV\approx0.21$), but that spread is **statistically indistinguishable from
+run-to-run noise**. This is *noise-dominated independence / instability*, which is
+**not** the same as clean uniformity — a saturated run drives *both* ICC **and**
+$CV$ to 0 (§7.1), whereas instability drives ICC→0 while $CV$ stays positive.
+
+**(c) Dependency (ICC) and performance (SR) are orthogonal axes.** The lowest-ICC
+methods (`active`/`active-loud`, ICC 0) are **not** the best (`logged`, SR 78 %).
+ICC $=0$ was reached by (i) **flattening** the skill gradient toward the middle
+(expert $93\%\!\to\!76\%$, novice $52\%\!\to\!63\%$) and (ii) **seed instability**
+(§7.5) — never by lifting everyone to a uniform high. *Operator-independent* can
+mean *uniformly mediocre* or *uniformly noisy*. Always read ICC **with** mean SR
+and the tier gradient; "most operator-independent" alone is not "best".
+
+## 7.5 The $\sigma^2_{\text{within}}$ "surprising values"
+
+$\sigma^2_{\text{within}}=MS_W$ is the mean squared **seed** deviation around each
+operator mean. Two things make it look strange, for different reasons:
+
+- **Final-SR table — a large within that *exceeds* between** (`active`
+  $\sigma^2_{\text{within}}=0.128$ vs $\sigma^2_{\text{between}}=0.000$). This is
+  **training instability**: the *same* operator on two seeds can land far apart —
+  e.g. `exp00` scored $100\%$ on one seed and $0\%$ on the other (a full $1.0$-SR
+  swing), which is why `active`'s *worst* operator is an **expert**. A handful of
+  $\sim\!0.5$–$1.0$ within-operator swings pushes $MS_W$ to $\sim0.12$. It is the
+  **mechanical cause** of ICC$\to$0 (seed noise swamps the operator signal), and a
+  genuine finding about the method, not a defect.
+- **Steps-to-convergence table — values in the millions** (e.g.
+  $15{,}127{,}748$). This is purely **units**: the outcome is env-steps,
+  $O(3\times10^4)$, so its variance is $O((3\times10^4)^2)=O(10^9)$. Interpret via
+  $\sqrt{\sigma^2_{\text{within}}}\approx3{,}000$–$6{,}000$ steps, or via the
+  unit-free steps-ICC. Only **converged** cells enter this table, so sparse
+  samples (a tier with few converged cells, or `n/a`) make these estimates noisy.
+
+> **Takeaway.** A big $\sigma^2_{\text{within}}$ on SR is a red flag that the
+> method is **seed-unstable**, and that its low ICC is "noise $\approx$ operator",
+> not robustness. A big $\sigma^2_{\text{within}}$ on steps is just the squared
+> units of a large-magnitude outcome.
+
+---
+
 ## 8. Why this happens — the ceiling/floor caveat
 
 Dependency conclusions on SR require the **baseline** to have **non-trivial
@@ -302,20 +374,29 @@ saturates, fall back on the **steps-to-convergence** axis (§6), which still var
 
 1. Check **mean SR and spread first** — are you near ceiling/floor?
 2. Read $\sigma^2_{\text{between}}$, $\sigma^2_{\text{within}}$ and ICC **together**.
-3. Confirm with $\sigma_{op}$, $CV$, range, worst-operator.
-4. Use the permutation $p$ as the "operator matters" evidence.
+   A large $\sigma^2_{\text{within}}$ (bigger than $\sigma^2_{\text{between}}$) is a
+   **seed-instability** flag: the low ICC is "noise $\approx$ operator", not
+   robustness (§7.4b, §7.5).
+3. Confirm with $\sigma_{op}$, $CV$, range, worst-operator. If ICC$=0$ but
+   $CV>0$, the per-operator spread is being attributed to noise, **not** removed —
+   that is instability, not clean uniformity (§7.4b).
+4. Use the permutation $p$ as the "operator matters" evidence; it should **agree**
+   with ICC (high ICC ⇔ low $p$) (§7.4a).
+5. **Dependency $\neq$ performance.** The lowest-ICC method is not necessarily the
+   best — ICC$=0$ can mean uniformly mediocre or uniformly noisy. Always pair ICC
+   with mean SR and the tier gradient (§7.4c).
 
 **Between methods**
 
-5. Compare $\Delta\mathrm{ICC}$ and $\Delta\sigma^2_{\text{between}}$ vs baseline.
-6. Trust conclusions only when the **baseline has non-trivial variance and a tier
+6. Compare $\Delta\mathrm{ICC}$ and $\Delta\sigma^2_{\text{between}}$ vs baseline.
+7. Trust conclusions only when the **baseline has non-trivial variance and a tier
    gradient**.
-7. Use **steps-to-convergence** dependency as a second axis when final SR
+8. Use **steps-to-convergence** dependency as a second axis when final SR
    saturates.
 
 **Reliability**
 
-8. Inspect the ICC bootstrap CI width (especially at small $K$) and keep the
+9. Inspect the ICC bootstrap CI width (especially at small $K$) and keep the
    permutation $p$ in view.
 
 ---

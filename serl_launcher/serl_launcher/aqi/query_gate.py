@@ -32,6 +32,10 @@ C_human is an exponential moving average of the intervention indicator
 (recent human workload).
 """
 
+import numpy as np
+
+from collections import deque
+
 from serl_launcher.aqi.normalization import RunningZScore
 
 # legacy flat log keys per term: (raw_key, z_key)
@@ -61,6 +65,10 @@ class ActiveQueryGate:
         self._on_steps_left = 0
         self._cooldown_left = 0
         self.n_requests = 0
+        self._rng = np.random.default_rng(int(getattr(cfg, "random_request_seed", 0)))
+        # running window of A(s_t) behind the optional target-rate quantile
+        self._score_window = deque(
+            maxlen=int(getattr(cfg, "query_quantile_window", 2000)))
 
     # ------------------------------------------------------------------
     def update_cost(self, intervening: bool) -> None:
@@ -111,9 +119,11 @@ class ActiveQueryGate:
             record[raw_key] = float(raw[name])
             record[z_key] = float(z)
         a_score = self._combine(weighted_z)
+        self._score_window.append(float(a_score))
 
         request = False
         reason = ""
+        tau_eff = float(self.cfg.tau_A)
         if hard_violation:
             request = True
             reason = "safety"
@@ -127,19 +137,28 @@ class ActiveQueryGate:
                 self._cooldown_left = self.cfg.query_cooldown_steps
         elif (self.total_steps > self.cfg.query_warmup_steps
               and self._cooldown_left == 0):
-            above = a_score > self.cfg.tau_A
+            # explicit target-rate quantile overrides the fixed tau_A: request
+            # the top `query_target_rate` fraction of recent scores (scale-free
+            # rate control), else fall back to the absolute threshold tau_A.
+            target = getattr(self.cfg, "query_target_rate", None)
+            if target is not None and len(self._score_window) >= 10:
+                tau_eff = float(np.quantile(self._score_window, 1.0 - target))
+            above = a_score > tau_eff
             lcb_trip = (self.cfg.lcb_request_threshold is not None
                         and hasattr(self, "_last_lcb")
                         and self._last_lcb < self.cfg.lcb_request_threshold)
-            if above or lcb_trip:
+            rand_trip = (self.cfg.random_request_rate > 0.0
+                         and self._rng.random() < self.cfg.random_request_rate)
+            if above or lcb_trip or rand_trip:
                 request = True
-                reason = "score" if above else "lcb"
+                reason = "score" if above else ("lcb" if lcb_trip else "random")
                 self.n_requests += 1
                 self._on_steps_left = self.cfg.query_min_on_steps - 1
         if self._cooldown_left > 0 and not request:
             self._cooldown_left -= 1
 
-        record.update(a_score=float(a_score), request=request, reason=reason,
+        record.update(a_score=float(a_score), tau_eff=float(tau_eff),
+                      request=request, reason=reason,
                       hard_violation=bool(hard_violation))
         return record
 

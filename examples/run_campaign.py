@@ -172,7 +172,8 @@ def apply_config(args, cfg: dict, explicit) -> dict:
 
     ops = cfg.get("operators") or {}
     tier_keys = [k for k in ops if k not in ("jitter", "sample_seed",
-                                             "unified_monitoring")]
+                                             "unified_monitoring",
+                                             "tier_s_exec", "tier_s_mon")]
     ops_map = {}
     if tier_keys and "ops_per_tier" not in explicit:
         # per-tier populations from the config (unless the CLI forced a scalar)
@@ -182,6 +183,12 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     setk("jitter", ops.get("jitter"))
     setk("sample_seed", ops.get("sample_seed"))
     setk("unified_monitoring", ops.get("unified_monitoring"))
+    if ops.get("tier_s_exec") is not None and "tier_s_exec" not in explicit:
+        args.tier_s_exec = {str(k): float(v)
+                            for k, v in dict(ops["tier_s_exec"]).items()}
+    if ops.get("tier_s_mon") is not None and "tier_s_mon" not in explicit:
+        args.tier_s_mon = {str(k): float(v)
+                           for k, v in dict(ops["tier_s_mon"]).items()}
 
     demos = cfg.get("demos") or {}
     setk("demos", demos.get("per_operator"))
@@ -308,6 +315,9 @@ def apply_config(args, cfg: dict, explicit) -> dict:
                       ("quality_consistency_weight", bool),
                       ("quality_consistency_k", int),
                       ("quality_consistency_sigma_ref", float),
+                      ("query_target_rate", float),
+                      ("query_cooldown_steps", int),
+                      ("query_min_on_steps", int),
                       ("quality_cf_diag", bool),
                       ("quality_drop_fraction", float)):
         if aqi.get(key) is not None and key not in explicit:
@@ -574,7 +584,7 @@ _EXEC_JITTER_KEYS = {"sigma0", "k_sdn", "sigma_tr", "sigma_perc",
 
 
 def sample_operators(tiers, ops_per_tier, sample_seed, jitter,
-                     unified_monitoring=""):
+                     unified_monitoring="", tier_s_exec=None, tier_s_mon=None):
     """Draw ``ops_per_tier`` DISTINCT operators for each tier by jittering the
     tier anchor theta (doc S3.5): tiers become overlapping clouds, so within a
     tier operators genuinely differ (that is the between-operator variance the
@@ -583,14 +593,28 @@ def sample_operators(tiers, ops_per_tier, sample_seed, jitter,
     When ``unified_monitoring`` names a tier, every operator's MONITORING skill
     (the intervention signal: when/whether to take over) is pinned to that tier
     and left un-jittered, so operators differ ONLY in EXECUTION skill (how well
-    the correction is carried out). This isolates the execution channel."""
+    the correction is carried out). This isolates the execution channel.
+
+    ``tier_s_exec`` / ``tier_s_mon`` map a tier name to a continuous skill scale
+    in [0, 1] that OVERRIDES the tier anchor's execution / monitoring skill
+    (0 = novice anchor, 1 = expert anchor). Use e.g. {"novice": 0.25} to make a
+    weak-but-informative novice (sigma0 ~ 5 mm/s instead of 10) whose
+    corrections are worse than an expert's yet still better than the untrained
+    policy -- so a quality/active gate can LIFT it rather than only ignore it."""
     import numpy as np
     rng = np.random.default_rng(sample_seed)
+    tier_s_exec = tier_s_exec or {}
+    tier_s_mon = tier_s_mon or {}
     roster = []
     for tier in tiers:
-        if unified_monitoring:
-            anchor = theta_from_scale(TIER_S[tier], TIER_S[unified_monitoring])
-            jit_keys = _EXEC_JITTER_KEYS
+        se = float(tier_s_exec.get(tier, TIER_S[tier]))
+        sm_default = (TIER_S[unified_monitoring] if unified_monitoring
+                      else TIER_S[tier])
+        sm = float(tier_s_mon.get(tier, sm_default))
+        if unified_monitoring or tier in tier_s_exec or tier in tier_s_mon:
+            anchor = theta_from_scale(se, sm)
+            # pin + un-jitter monitoring only when it is unified across tiers
+            jit_keys = _EXEC_JITTER_KEYS if unified_monitoring else None
         else:
             anchor = make_operator_theta(tier)
             jit_keys = None
@@ -940,6 +964,9 @@ def _document_demos(args, campaign: Path, operator: str, seed: int):
 # train_aqi_rlpd.py drops any of these that do not apply to the run's mode.
 _AQI_FLAG_SPEC = (
     ("trigger_terms", "str"), ("trigger_combiner", "str"),
+    ("tau_A", "val"), ("query_target_rate", "val"),
+    ("query_cooldown_steps", "val"), ("query_min_on_steps", "val"),
+    ("random_request_rate", "val"), ("bootstrap_p", "val"),
     ("quality_filters", "str"), ("quality_disagreement_gate", "bool"),
     ("bc_loss_weight", "val"), ("per_standardize", "bool"),
     ("per_delta_init", "val"), ("per_eta", "val"), ("per_eps", "val"),
@@ -989,10 +1016,14 @@ def _wandb_flags(args):
     return ["--debug"] if getattr(args, "wandb", "off") == "off" else []
 
 
-def _wandb_env(args):
+def _wandb_env(args, campaign: Path | None = None):
     """Extra subprocess env for wandb. 'offline' writes local runs without a
     key or TTY; the other modes need nothing here."""
-    return {"WANDB_MODE": "offline"} if getattr(args, "wandb", "off") == "offline" else {}
+    env = ({"WANDB_MODE": "offline"}
+           if getattr(args, "wandb", "off") == "offline" else {})
+    if campaign is not None and not os.environ.get("WANDB_RUN_GROUP"):
+        env["WANDB_RUN_GROUP"] = campaign.name
+    return env
 
 
 WANDB_TAG_MAX = 64   # W&B rejects longer tags
@@ -1077,6 +1108,9 @@ ARM_KEYS = {
     "per_member_targets": _to_bool,
     # active gate (active/aqi)
     "trigger_terms": _to_csv, "trigger_combiner": str,
+    "tau_A": float, "query_target_rate": float,
+    "query_cooldown_steps": int, "query_min_on_steps": int,
+    "random_request_rate": float, "bootstrap_p": float,
     # quality module (quality/aqi)
     "quality_filters": _to_csv, "quality_disagreement_gate": _to_bool,
     "bc_loss_weight": float, "quality_score_mode": str,
@@ -1451,7 +1485,7 @@ def train_cell(args, campaign: Path, cell: Cell):
     lp, lf = _launch(lcmd, llog, background=True, extra_env={
         "JAX_PLATFORMS": args.jax_platform,
         "XLA_PYTHON_CLIENT_MEM_FRACTION": args.gpu_mem_learner,
-        **_wandb_env(args), **_wandb_tag_env(args, campaign, cell),
+        **_wandb_env(args, campaign), **_wandb_tag_env(args, campaign, cell),
         **_sim_env(args)})
     try:
         # Demo pretraining runs BEFORE the learner prints "LEARNER READY", so
@@ -2299,6 +2333,11 @@ def print_plan(args, roster, cells, seeds, grid):
     if getattr(args, "unified_monitoring", ""):
         print(f"  monitoring   : UNIFIED at '{args.unified_monitoring}' "
               f"(skill varies only in EXECUTION)")
+    if getattr(args, "tier_s_exec", None):
+        print(f"  exec scale   : {args.tier_s_exec} "
+              f"(0=novice anchor, 1=expert anchor)")
+    if getattr(args, "tier_s_mon", None):
+        print(f"  monitor scale: {args.tier_s_mon}")
     if getattr(args, "synthetic_rotation_control", False):
         print("  operator     : rotation control (corrects orientation too)")
     if getattr(args, "synthetic_orientation_monitor", False):
@@ -2843,7 +2882,9 @@ def main(argv=None):
 
     # -- stage 1: roster + grid + manifest (always; cheap, deterministic) -----
     roster = sample_operators(tiers, _ops_effective(args), args.sample_seed,
-                              args.jitter, args.unified_monitoring)
+                              args.jitter, args.unified_monitoring,
+                              getattr(args, "tier_s_exec", None),
+                              getattr(args, "tier_s_mon", None))
     if args.list_cells:
         for cell in enumerate_cells(methods, roster, seeds):
             print(cell.id)

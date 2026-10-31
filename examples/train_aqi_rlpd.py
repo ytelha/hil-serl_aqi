@@ -319,6 +319,28 @@ flags.DEFINE_string("trigger_terms", None,
 flags.DEFINE_enum("trigger_combiner", None, ["weighted_sum", "max"],
                   "Logic combining the selected terms: proposal weighted "
                   "sum, or max (= request when ANY weighted term > tau_A).")
+flags.DEFINE_float("tau_A", None,
+                   "Active-gate threshold on the z-combined score "
+                   "(request if A(s_t) > tau_A). active/aqi only.")
+flags.DEFINE_float("query_target_rate", None,
+                   "Explicit request-rate control (0,1): request the top "
+                   "`rate` fraction of recent scores via a running quantile, "
+                   "overriding the brittle absolute tau_A. Scale-free, so it "
+                   "is robust to sigma_Q's drift and lets a run match the "
+                   "engineered monitor's rate with one number. active/aqi only.")
+flags.DEFINE_integer("query_cooldown_steps", None,
+                     "Steps after a request window before a new request may "
+                     "fire. This duty cycle CAPS the rate, so the rate knob "
+                     "(tau_A / query_target_rate) only has leverage when it is "
+                     "small; lower it to spread a rate sweep. active/aqi only.")
+flags.DEFINE_integer("query_min_on_steps", None,
+                     "Hysteresis: steps a request stays raised once triggered "
+                     "(keep >= the operator reaction so takeovers can fire). "
+                     "active/aqi only.")
+flags.DEFINE_float("random_request_rate", None,
+                   "Control arm: request at random with this per-eligible-step "
+                   "probability (active mode; trigger_terms may be empty). "
+                   "Isolates whether the trigger's TIMING beats chance.")
 flags.DEFINE_boolean("quality_disagreement_gate", None,
                      "Apply g(sigma_Q) to the counterfactual advantage. "
                      "False = quality signal is A_hat alone.")
@@ -380,14 +402,16 @@ flags.DEFINE_float("per_is_beta", -1.0,
                    "(quality/aqi; 0 = off; <0 = experiment default).")
 flags.DEFINE_enum("quality_score_mode", None,
                   ["counterfactual", "behavioral", "hindsight", "progress",
-                   "outcome", "uniform"],
+                   "outcome", "uniform", "oracle"],
                   "Graded intervention signal: 'counterfactual' = A_hat "
                   "critic Q-gap (default); 'behavioral' = critic-free "
                   "z(d_value)-z(t_int)-z(f_peak) composite; 'hindsight' = "
                   "n-step advantage from onset to handback+K on the visited "
                   "states' V(s); 'progress' = insertion-depth change from "
                   "onset to handback+K; 'outcome' = +1/-1 episode success; "
-                  "'uniform' = no grading (control). quality/aqi only.")
+                  "'uniform' = no grading (control); 'oracle' = simulator "
+                  "ground-truth ceiling (needs --quality_cf_diag). quality/aqi "
+                  "only.")
 flags.DEFINE_integer("quality_post_release_steps", None,
                      "K: steps after the handback included in the hindsight/"
                      "progress window (default 10). Logged in every logging "
@@ -1739,6 +1763,17 @@ def main(_):
         overrides["trigger_terms"] = _csv(FLAGS.trigger_terms)
     if FLAGS["trigger_combiner"].present:
         overrides["trigger_combiner"] = FLAGS.trigger_combiner
+    if FLAGS["tau_A"].present:
+        overrides["tau_A"] = FLAGS.tau_A
+    if FLAGS["query_target_rate"].present:
+        overrides["query_target_rate"] = FLAGS.query_target_rate
+    if FLAGS["query_cooldown_steps"].present:
+        overrides["query_cooldown_steps"] = FLAGS.query_cooldown_steps
+    if FLAGS["query_min_on_steps"].present:
+        overrides["query_min_on_steps"] = FLAGS.query_min_on_steps
+    if FLAGS["random_request_rate"].present:
+        overrides["random_request_rate"] = FLAGS.random_request_rate
+        overrides["random_request_seed"] = int(FLAGS.seed)  # per-cell variation
     if FLAGS["quality_disagreement_gate"].present:
         overrides["quality_disagreement_gate"] = FLAGS.quality_disagreement_gate
     if FLAGS["quality_filters"].present:
@@ -1810,7 +1845,10 @@ def main(_):
     def _override_relevant(key: str) -> bool:
         if key.startswith("e2hil_"):
             return aqi_cfg.e2hil_on
-        if key in ("trigger_terms", "trigger_combiner"):
+        if key in ("trigger_terms", "trigger_combiner", "tau_A",
+                   "query_target_rate",
+                   "query_cooldown_steps", "query_min_on_steps",
+                   "random_request_rate", "random_request_seed"):
             return aqi_cfg.active_on
         if key in ("quality_disagreement_gate", "quality_filters",
                    "bc_loss_weight", "per_standardize", "per_delta_init",
@@ -2038,15 +2076,37 @@ def main(_):
             include_label=include_label,
             **bootstrap_kwargs,
         )
+        def _wandb_description():
+            if FLAGS.run_name:
+                return FLAGS.run_name
+            if FLAGS.checkpoint_path:
+                ckpt = os.path.abspath(FLAGS.checkpoint_path.rstrip(os.sep))
+                base = os.path.basename(ckpt)
+                if base:
+                    return base
+            return (f"{FLAGS.exp_name}_{FLAGS.arm or aqi_cfg.mode}_"
+                    f"{FLAGS.operator_id}_s{FLAGS.seed}")
+
+        def _wandb_group():
+            if not FLAGS.checkpoint_path:
+                return None
+            ckpt = os.path.abspath(FLAGS.checkpoint_path.rstrip(os.sep))
+            if os.path.basename(os.path.dirname(ckpt)) == "checkpoints":
+                campaign = os.path.basename(
+                    os.path.dirname(os.path.dirname(ckpt)))
+                return campaign or None
+            base = os.path.basename(ckpt)
+            return base or None
+
         # set up wandb and logging
         wandb_logger = make_wandb_logger(
             project="hil-serl",
-            description=(f"{FLAGS.exp_name}_{FLAGS.arm or aqi_cfg.mode}_"
-                         f"{FLAGS.operator_id}"),
+            description=_wandb_description(),
             debug=FLAGS.debug,
             output_dir=(os.path.join(os.path.abspath(FLAGS.checkpoint_path),
                                      "wandb")
                         if FLAGS.checkpoint_path else None),
+            group=_wandb_group(),
         )
         return replay_buffer, wandb_logger
 

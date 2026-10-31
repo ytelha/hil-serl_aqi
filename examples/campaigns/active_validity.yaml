@@ -1,0 +1,122 @@
+# =====================================================================
+# active_validity.yaml -- START of the ACTIVE part (ensemble disagreement).
+#
+# Motivation (from the quality-signal audit, 2026-09-30): on the leakage-clean
+# subset EVERY replay-priority quality score collapses to ~0.5 AUROC
+# (behavioral B: 0.725 all -> 0.499 clean; hindsight 0.52 window-clean;
+# counterfactual a_hat 0.15 = inverted). The ONE signal that survives the
+# leakage + difficulty stratification is the ensemble disagreement sigma_Q
+# (clean AUROC 0.849, time-strat 0.812, diff-strat 0.791). That is exactly the
+# ACTIVE gate's trigger -> pivot the thesis energy here.
+#
+# This run measures whether the disagreement trigger sigma_Q (and the full
+# acquisition score A(s_t)) fires when the operator is GENUINELY in trouble,
+# using the SIMULATOR GROUND TRUTH (patch 0010: op_z_task, true lateral error,
+# jam) as a timing-free label -- NOT episode success. It is the RQ3 validity
+# gate, the active analogue of the quality validity panel.
+#
+#   arm      mode     what it logs for the audit
+#   active   active   per step: sigma_Q, the acquisition score A(s_t), the
+#                     request flag; quality_cf_diag adds the simulator ground
+#                     truth + op_z_task. trigger = uncertainty only (pure
+#                     ensemble disagreement), combiner max.
+#
+# Base = the RQ4 FIXED ensemble (K=8, M=1, per-member, warm start 5000, LR
+# 1.5e-4) so the critic is healthy and sigma_Q is epistemic. query_behavior
+# continue: the request is only a CUE (policy keeps acting), so the run also
+# yields a clean autonomous SR.
+#
+# Design: 3 ops/tier x 3 tiers x 1 seed = 9 cells (per-tier validity).
+#
+# Read-out (to build next, like the quality audit): AUROC/ECE of sigma_Q and
+# A(s_t) against the ground-truth "trouble" label, per tier + time-stratified.
+#
+# Launch (OOM-protected):
+#   WANDB_RUN_GROUP=active_validity systemd-run --user --unit=active_val \
+#     --collect -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/active_validity.yaml \
+#          --campaign runs/active_validity \
+#          --converge_require_autonomous --wandb off \
+#          >> runs/active_validity.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - active                         # pure ensemble-disagreement trigger
+
+replicates:
+  seeds: 1
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000
+  minutes_per_cell: 240
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  # RQ4 fixed-ensemble base (healthy critic -> epistemic sigma_Q)
+  demo_pretrain: true
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+
+aqi:
+  synthetic_intervention_mode: signal
+  trigger_terms: [uncertainty]     # pure ensemble disagreement sigma_Q
+  trigger_combiner: max
+  query_behavior: continue         # request is a CUE -> clean autonomous SR
+  quality_cf_diag: true            # logging only: simulator ground truth + op_z_task
+  # fixed-ensemble critic settings
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: active
+  plots: true

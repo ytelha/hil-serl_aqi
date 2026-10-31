@@ -1,0 +1,139 @@
+# =====================================================================
+# baseline_vs_e2hil_hiril.yaml -- external-baseline comparison (RQ5 chapter).
+#
+# plain HIL-SERL vs E2HiL vs HiRIL (+ the clean controls / ablations), on the
+# RQ4 base, so RQ4's 18 scored `hilserl` cells can be reused. Full deep dive +
+# every issue/consideration: docs/thesis/baseline_comparison_e2hil_hiril.md.
+#
+# ARMS (methods + arms:):
+#   hilserl        plain 2-critic HIL-SERL  -- the anchor (reuse RQ4 cells)
+#   e2hil          E2HiL, official q_agg=min -> entropy mask + min-vs-mean
+#   e2hil-mean     E2HiL, q_agg=mean         -> ISOLATES the entropy mask
+#   hiril          HiRIL, WITH the F2 fix (periodic re-calibration), du=dual
+#   hiril-no-epi   HiRIL w/o epistemic  (du_mode=aleatoric)   [paper Fig. 6]
+#   hiril-no-rd    HiRIL w/o risk-difference replay (use_rd=false) [Fig. 8]
+#   hiril-no-bc    HiRIL w/o imitation  (lambda_bc=0)           [Fig. 8]
+#
+# F2 FIX (critical): HiRIL calibrated tau_risk ONCE collapses to 0 requests as
+# DU decays under sparse reward -> degenerates to plain TD3. The campaign-wide
+# `hiril.recalib_period: 1000` re-calibrates the threshold every 1000 steps over
+# the rolling DU window, keeping the request rate ~ 1-calib_quantile. Set once;
+# never change within a campaign.
+#
+# COMPUTE NOTE (F3): E2HiL's K=8 MC passes make it ~2x slower (~1.3 vs ~2.6
+# updates/env-step) -> at equal env-step budget it gets less training. Report
+# updates/env-step alongside SR; do not read the raw SR gap as pure algorithm.
+#
+# REUSE (halves compute): this base is byte-identical to RQ4's `hilserl` arm, so
+# copy RQ4's 18 `hilserl_*` cells + their aqi_logs AND `operators/` (patch 0009;
+# needs 0007) into runs/baseline_vs_e2hil_hiril BEFORE launching, then audit with
+# examples/roster_audit.py. Without copying operators/ the paired design breaks.
+#
+# COST: 7 arms x 3 ops/tier x 3 tiers x 2 seeds = 126 cells (108 new after the
+# hilserl reuse). Multi-day. To stage: launch the headline 4 (hilserl, e2hil,
+# e2hil-mean, hiril) first by trimming `methods`, add the 3 hiril ablations later.
+#
+# Launch (OOM-protected, wandb online):
+#   WANDB_RUN_GROUP=baseline_vs_e2hil_hiril systemd-run --user \
+#     --unit=baselines_campaign --collect -p ManagedOOMPreference=avoid \
+#     -p WorkingDirectory=<repo> -- bash -c './.venv/bin/python \
+#       examples/run_campaign.py \
+#       --config examples/campaigns/baseline_vs_e2hil_hiril.yaml \
+#       --campaign runs/baseline_vs_e2hil_hiril \
+#       --converge_require_autonomous --wandb online \
+#       >> runs/baseline_vs_e2hil_hiril.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4 (reuse hilserl cells)
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - hilserl                        # anchor
+  - e2hil                          # official (q_agg=min)
+  - e2hil-mean                     # mask-only control
+  - hiril                          # F2-fixed
+  - hiril-no-epi                   # ablation: w/o epistemic
+  - hiril-no-rd                    # ablation: w/o risk-difference replay
+  - hiril-no-bc                    # ablation: w/o imitation
+
+# Non-plain arms = base mode + per-arm knob overrides (patch 0002).
+arms:
+  e2hil-mean:   {mode: e2hil, e2hil_q_agg: mean}
+  hiril-no-epi: {mode: hiril, hiril_du_mode: aleatoric}
+  hiril-no-rd:  {mode: hiril, hiril_use_rd: false}
+  hiril-no-bc:  {mode: hiril, hiril_lambda_bc: 0.0}
+
+# Campaign-wide HiRIL settings (apply to every hiril arm; arms override on top).
+hiril:
+  recalib_period: 1000             # F2 fix -- periodic tau_risk re-calibration
+  du_mode: dual                    # paper default (aleatoric + epistemic)
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000                 # per-cell env-step cap (as RQ4)
+  minutes_per_cell: 300            # wall-clock anti-hang safety only
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: false             # all arms plain (no warm start) -- matches
+  demo_pretrain_steps: 0           # RQ4's hilserl and the papers' setups
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # 0 = built-in 3e-4 (as RQ4's hilserl)
+
+aqi:
+  synthetic_intervention_mode: signal
+  # ---- E2HiL knobs (inert for hilserl / hiril) ----
+  e2hil_K: 8
+  e2hil_q_low: 0.05
+  e2hil_q_high: 0.90
+  e2hil_q_agg: min                 # e2hil arm; the e2hil-mean arm overrides to mean
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI
+
+analysis:
+  baseline: hilserl                # deltas vs plain HIL-SERL
+  plots: true

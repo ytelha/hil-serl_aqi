@@ -1,0 +1,137 @@
+# =====================================================================
+# active_mild_novice.yaml -- is the novice too weak to LIFT? (anchor ablation).
+#
+# WHY. The default novice is near-catastrophic for the cuboid (sigma0=10 mm/s,
+# tremor 9, perceptual bias 2.2 mm -- all >= the 5 mm clearance), so its
+# corrections are effectively random relative to the tolerance. Against such an
+# operator "active helps" is TRIVIAL: any trigger wins just by asking for less
+# of pure noise. That is leveling, not lifting, and it cannot demonstrate the
+# real thesis claim -- that a weak operator's policy can be LIFTED toward a
+# strong operator's.
+#
+# WHAT CHANGES. `operators.tier_s_exec: {novice: 0.25}` rebuilds the novice
+# tier at execution-skill scale 0.25 (0 = old novice anchor, 1 = expert),
+# giving a WEAK-BUT-INFORMATIVE novice: sigma0 ~ 5 mm/s, perceptual bias
+# ~1.24 mm, tremor ~6 mm/s -- corrections clearly worse than an expert's yet
+# better than the untrained policy, so using them CAN lift. Monitoring stays at
+# the novice anchor (s_mon left at 0.0) so "when to help" is still weak. Expert
+# and intermediate tiers are UNCHANGED. ONLY the novice strength differs from
+# active_effect.yaml; the four arms are identical to it, so the two runs form a
+# clean novice-strength ablation.
+#
+# TRADE-OFF (expected, report both): a milder novice narrows the expert<->novice
+# gradient, so baseline ICC/operator-spread shrink -- there is less dependence
+# to reduce. Read this run FOR the lift question (does the novice tier rise with
+# active/quality while the expert holds), and active_effect.yaml FOR the maximal
+# measurable gradient.
+#
+#   arm          mode     timing
+#   logged       logged   engineered geometric monitor (~54%)
+#   active       active   sigma_Q gate, tau_A=0.5 (~15%, as in active_effect)
+#   random       active   rate-matched random (~15%) control
+#   active-loud  active   louder ensemble (bootstrap_p 0.5)
+#
+# RQ4 fixed base otherwise; cuboid.
+#
+# Design: 4 arms x 3 tiers x 3 ops x 2 seeds = 72 cells.
+# NOTE: use a FRESH campaign dir (its own frozen roster) -- the novice theta
+# differs from active_effect's, so do not reuse that roster/demos.
+#
+# Launch:
+#   WANDB_RUN_GROUP=active_mild_novice systemd-run --user --unit=active_mn \
+#     --collect -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/active_mild_novice.yaml \
+#          --campaign runs/active_mild_novice \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/active_mild_novice.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0
+  tier_s_exec:
+    novice: 0.25                   # weak-but-informative novice (sigma0 ~5 mm/s)
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:
+  - logged
+  - active
+  - random
+  - active-loud
+
+arms:
+  logged:      {mode: logged}
+  active:      {mode: active}
+  random:      {mode: active, trigger_terms: [], random_request_rate: 0.030}
+  active-loud: {mode: active, bootstrap_p: 0.5}
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000
+  minutes_per_cell: 240
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+
+aqi:
+  synthetic_intervention_mode: signal
+  trigger_terms: [uncertainty]
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: logged
+  plots: true

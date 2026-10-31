@@ -47,6 +47,7 @@ import shutil
 import signal
 import sys
 import time
+from collections import deque
 
 import jax
 import jax.numpy as jnp
@@ -254,22 +255,28 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
         pass
     obs, _ = env.reset(seed=int(env_seed))
 
-    # ---- risk threshold (Eq. 23): absolute, or calibrated once --------------
+    # ---- risk threshold (Eq. 23): absolute, calibrated once, or (F2 fix)
+    # periodically re-calibrated -----------------------------------------------
     # KNOWN LIMITATION (cluster method test 2026-09-26, handoff FINDINGS F2):
     # DU(s, a_RL) roughly halved every episode under the sparse reward
-    # (0.46 -> 0.0005 in 3000 steps), so the quantile frozen at calib_end was
-    # never exceeded again and the run made 0 requests. Requests are only
-    # possible after calibration (see `request` below). Decide how HiRIL
-    # should trigger before running a HiRIL campaign; do not change it
-    # between cells of one campaign.
+    # (0.46 -> 0.0005 in 3000 steps), so a quantile frozen at calib_end was
+    # never exceeded again and the run made 0 requests. FIX: hiril.recalib_period
+    # > 0 re-calibrates tau_risk every recalib_period steps over the last
+    # recalib_period DU values, keeping the request rate ~ 1-calib_quantile as
+    # DU decays (a relative trigger, like AQI's z-gate). Set it once per
+    # campaign; never change it between cells.
     tau_risk = hiril.tau_risk if hiril.tau_risk > 0 else None
     calib_start = config.random_steps + hiril.calib_delay_steps
     calib_end = calib_start + hiril.calib_steps
     calib_vals = []
+    recalib = hiril.tau_risk <= 0 and int(hiril.recalib_period) > 0
+    du_window = deque(maxlen=int(hiril.recalib_period)) if recalib else None
     if tau_risk is None:
+        _mode = (f"re-calibrated every {hiril.recalib_period} steps over the "
+                 f"rolling window" if recalib else "then frozen")
         print_green(f"tau_risk will be calibrated as the "
                     f"{hiril.calib_quantile:.2f}-quantile of DU(s, a_RL) over "
-                    f"env steps [{calib_start}, {calib_end}) and then frozen")
+                    f"env steps [{calib_start}, {calib_end}), {_mode}")
 
     # ---- convergence / budget bookkeeping (as train_aqi_rlpd) --------------
     converge_on = FLAGS.converge_success > 0.0
@@ -344,6 +351,14 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
                                    "calib_n": len(calib_vals),
                                    "calib_quantile": hiril.calib_quantile},
                                   {}, extra={"step": step})
+        # F2 fix: keep a rolling DU window and re-calibrate periodically so the
+        # threshold tracks the decaying DU instead of freezing.
+        if recalib and step >= calib_start:
+            du_window.append(du_rl["du"])
+            if (tau_risk is not None and step > calib_end
+                    and step % int(hiril.recalib_period) == 0
+                    and len(du_window) >= max(int(hiril.recalib_period) // 4, 10)):
+                tau_risk = float(np.quantile(du_window, hiril.calib_quantile))
         request = bool(tau_risk is not None and step >= config.random_steps
                        and du_rl["du"] > tau_risk)
         if synthetic:

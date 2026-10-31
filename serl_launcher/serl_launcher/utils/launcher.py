@@ -348,6 +348,7 @@ def make_wandb_logger(
     description: str = "serl_launcher",
     debug: bool = False,
     output_dir: str = None,
+    group: str = None,
 ):
     wandb_config = WandBLogger.get_default_config()
     wandb_config.update(
@@ -357,6 +358,7 @@ def make_wandb_logger(
             # a list: wandb.init(tags=...) iterates its argument, so a bare
             # string became one tag per character ("s", "i", "m", "_", ...)
             "tag": [description],
+            "group": group,
         }
     )
     wandb_logger = WandBLogger(

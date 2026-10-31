@@ -64,6 +64,11 @@ class InterventionSegment:
     forces: List = field(default_factory=list)         # |F| per step
     torques: List = field(default_factory=list)        # |tau| per step
     hard_violation: bool = False
+    # simulator ground truth per step (captured only when quality_cf_diag is
+    # on; consumed by quality_score_mode="oracle"):
+    gt_z_task: List = field(default_factory=list)      # true task trouble
+    gt_jammed: List = field(default_factory=list)      # physical jam flag
+    gt_height: List = field(default_factory=list)      # mm above the hole
     # filled by score_segment():
     a_hat: Optional[np.ndarray] = None
     sigma: Optional[np.ndarray] = None
@@ -150,6 +155,7 @@ class QualityScorer:
         # negative hindsight advantage / lost depth stays negative.
         self._hind_scale = RunningZScore(center=False)
         self._prog_scale = RunningZScore(center=False)
+        self._oracle_scale = RunningZScore(center=False)
 
     def behavioral_q(self, t_int: float, d_value: float, f_peak: float) -> float:
         """Critic-free intervention score: short + value-increasing + force-
@@ -191,6 +197,25 @@ class QualityScorer:
     def outcome_q(episode_success: bool) -> float:
         """quality_score_mode="outcome": +1 success, -1 failure."""
         return 1.0 if episode_success else -1.0
+
+    def oracle_q(self, seg: "InterventionSegment",
+                 episode_success: Optional[bool]) -> float:
+        """quality_score_mode="oracle": a simulator-GROUND-TRUTH ceiling.
+
+        Scores a takeover by how much it actually resolved task trouble, using
+        the per-step ground truth captured under quality_cf_diag:
+            resolved = op_z_task(onset) - op_z_task(handback)   (>= 0 = helped)
+            q_raw    = resolved - jam_end + 0.5 * (+1 success / -1 fail)
+        then standardised by the running mean |q_raw| so quality_gamma stays
+        dimension-free. This is the "perfect quality score" the counterfactual
+        and behavioral scores only approximate -- not deployable, a ceiling."""
+        z = np.asarray(seg.gt_z_task, dtype=np.float64)
+        z = z[np.isfinite(z)]
+        resolved = float(z[0] - z[-1]) if z.size >= 1 else 0.0
+        jam_end = 1.0 if (seg.gt_jammed and bool(seg.gt_jammed[-1])) else 0.0
+        outcome = 1.0 if episode_success else -1.0
+        q_raw = resolved - jam_end + 0.5 * outcome
+        return self._scaled(self._oracle_scale, q_raw)
 
     def apply_segment_score(self, seg: InterventionSegment,
                             q_seg: float) -> InterventionSegment:

@@ -1,0 +1,77 @@
+# Oracle-path smoke test (NOT a result run). One short aqi-oracle cell to prove
+# the real-sim oracle scoring path runs + produces oracle-scored segments before
+# committing ~6 days to aqi_oracle_quality.yaml (campaign C).
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  intermediate: 1
+  jitter: 0.15
+  sample_seed: 0
+
+demos:
+  per_operator: 3
+  filtered: true
+  max_attempts: 150
+
+methods:
+  - aqi-oracle
+
+arms:
+  aqi-oracle: {mode: aqi, query_target_rate: 0.30, query_cooldown_steps: 5}
+
+replicates:
+  seeds: 1
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 2500
+  minutes_per_cell: 20
+  converge_success: 0.0
+  converge_eval_threshold: 0.0
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 2
+  demo_pretrain: false
+  demo_pretrain_steps: 0
+  learning_rate: 0.00015
+
+aqi:
+  synthetic_intervention_mode: signal
+  trigger_terms: [uncertainty]
+  trigger_combiner: max
+  query_behavior: continue
+  query_cooldown_steps: 5
+  quality_cf_diag: true
+  quality_score_mode: oracle
+  per_standardize: true
+  per_eta: 1.0
+  bc_loss_weight: 0.1
+  quality_warmup_steps: 0
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+
+eval:
+  dx_mm: [0]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 100
+  last_k: 2
+  select: best_window
+  window_k: 1
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"
+
+analysis:
+  baseline: aqi-oracle
+  plots: false

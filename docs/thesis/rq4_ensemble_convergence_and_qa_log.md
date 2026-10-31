@@ -299,6 +299,20 @@ RQ4 gave a **healthy** critic (converged, operator-independent, parity with plai
 
 ## 12. Score redesign (2026-09-23/24) — a critic-free *behavioral* score fixes the signal
 
+> **⚠️ CORRECTION (2026-09-30): this section's positive result is OVERTURNED by a
+> leakage audit.** The behavioral score's AUROC 0.78 was **timing leakage**, not a
+> real signal. On the leakage-clean subset (takeovers the operator actually handed
+> back) the behavioral score drops to **AUROC 0.499 — a coin flip**; pure timing
+> (`-start_step`) beats it at 0.825, because the synthetic operator hands back at a
+> tier-fixed `d_max` cap (`t_int/cap = 0.80`, `corr(t_int,cap)=1.00`). So **no
+> replay-priority quality score survives** (counterfactual inverted, behavioral
+> leakage, hindsight = difficulty, progress = noise). The one signal that *does*
+> survive is **ensemble disagreement σ_Q** (clean AUROC 0.849) — which motivates the
+> active-gate pivot. See [handoff_evaluation_and_next_steps.md](handoff_evaluation_and_next_steps.md)
+> §2–§4 for the audit and the corrected verdict. Read §12 below as the *hypothesis*
+> that the audit then refuted.
+
+
 §11 concluded the fix must be the **numerator**, not the critic. This section does exactly that: it identifies which intervention-time signals *are* predictive, replaces the counterfactual Q-gap with a critic-free composite, implements it as an ablatable mode, and validates it live. This is the constructive resolution of the whole quality thread (RQ2 → RQ3 → RQ4).
 
 ### 12.1 Offline re-score (zero new training) — which signals predict outcome?
