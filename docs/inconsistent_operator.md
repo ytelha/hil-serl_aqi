@@ -308,7 +308,7 @@ driver reads `runs/inconsistent_operator/stage0/limits.json` first, then
 
 Stage 0, Q1, the keep-all / oracle / random check (3 pairs) and the two-arm pilot
 and confirmation (18 pairs) ran on the `_new` stack with the behavioral score. All
-57 cells converged. The sequence bug below was still in the code. Full log:
+57 cuboid cells converged. The sequence bug below was still in the code. Full log:
 [thesis/inconsistent_operator_results_and_qa_log.md](thesis/inconsistent_operator_results_and_qa_log.md).
 
 | question | result |
@@ -323,10 +323,13 @@ and confirmation (18 pairs) ran on the `_new` stack with the behavioral score. A
 - The 5000-step warm-up covered 61 % of the takeovers and 58 % of the operator
   steps; half the cells succeeded unaided before it ended. The filter dropped 17 %
   of all takeovers, not 40 %.
-- All operators with one seed shared the same condition sequence (fixed in patch
-  0021), so only two sequences existed, and their first 25 takeovers were about
-  10 % inattentive.
-- The same cell run twice gave SR 1.00 and 0.67. Across pairs the two arms' SR
+- All operators with one seed shared the same condition sequence, in every campaign
+  (fixed in patch 0021), so only two sequences existed, and their first 25 takeovers
+  were about 10 % inattentive.
+- One novice-model caveat: an inattentive takeover uses fixed novice anchors, and some
+  novices are noisier than those, so for them "inattentive" can be smoother.
+- The same cell run twice (`exp00`, the one operator shared by the rosters) gave SR
+  1.00 and 0.67. Across pairs the two arms' SR
   correlates at −0.21, so about 75 pairs would be needed for ±5 points. Steps to
   converge pair better (+0.56; about 38 pairs for ±1000 steps) and are the better
   primary measure on this stack, together with the operator share.

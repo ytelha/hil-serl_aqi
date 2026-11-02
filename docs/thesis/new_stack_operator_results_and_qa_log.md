@@ -2,16 +2,18 @@
 
 Companion to [second_machine_synthesis.md](second_machine_synthesis.md). This log covers
 what was measured on the **second training machine** without or before the quality
-question: the operator alone in the simulator, the orientation tolerance, the smoke test
-and how fast training runs on the new stack.
+question: the operator alone in the simulator, the orientation tolerance, the smoke test,
+how fast training runs on the new stack, and the engineering record.
 
-- Machine: `LSPEM499`, one RTX 5090 (32 GB), 24 CPU threads, repo at commit `d191f9d`
+- Machine: `LSPEM499`, one RTX 5090 (32 GB, driver 610.88), 24 CPU threads, Linux under WSL2, repo at commit `d191f9d`
   (patches 0001–0019), Python 3.12.3, JAX 0.11.0, MuJoCo 3.10.0: the first machine's exact
   package lock.
 - Dates: 24–29 October 2026.
-- Raw results: `presentation_bundle/results/second_machine_stage0/` and
-  `presentation_bundle/results/S_smoke/`.
+- Raw results: `presentation_bundle/results/second_machine_stage0/`,
+  `presentation_bundle/results/S_smoke/` and `presentation_bundle/results/second_machine_reports/`.
 - Tools: `examples/oracle_insertion_test.py`, `examples/synthetic_suite.py stage0`.
+- All tables are generated from those files and the raw logs. Checked on 2026-11-03 against the machine's
+  reports; section 9 lists what that check changed.
 
 ---
 
@@ -23,11 +25,13 @@ from 13 / 10 / 7 % (expert / intermediate / novice) to 100 / 100 / 70 %. The cau
 measured: the peg is about 21° twisted at the takeover, and without rotation control the
 expert tolerates about 8° of yaw.
 
-**On the new stack the slow start of the cuboid is gone:** the first success without help
-comes after about 4 200–5 400 environment steps, against about 17 000 in the first
-machine's logs. This compares two machines and five changes at once, so it shows the size
-of what can be gained, not which change gains it. The ladder that separates them
-(`synthetic_suite` pilots) has **not** been run.
+**On the new stack the slow start of the cuboid is gone.** For the same method (ensemble extended), the first
+success without help comes after about 4 600 environment steps, against about 18 000–20 000 on the first machine.
+This compares two machines and five changes at once, so it shows the size of what can be gained, not which change gains it. The ladder that
+separates them (`synthetic_suite` pilots) has **not** been run.
+
+**Learning got faster; a whole cell did not get much shorter.** Training takes about 30 minutes per cell, but the final ruler takes about 55
+more, so a cell still costs about 1.5 h.
 
 ---
 
@@ -35,13 +39,13 @@ of what can be gained, not which change gains it. The ladder that separates them
 
 "New stack" means all of these switched on, with the settings of `L5_full`:
 
-| change | patch | what it does |
-|---|---|---|
-| rotation control | 0014 | the operator also turns the tool to the nearest insertable orientation |
-| orientation box | 0016 | the task clips the commanded orientation: ±0.1 rad roll and pitch, ±0.4 rad yaw |
-| orientation channel | 0016 | a twist raises the operator's trouble signal |
-| mini-eval convergence | 0015 | the autonomous mini-eval decides when a cell stops (threshold 0.6, 2 passes in a row, 5 poses) |
-| fixed update ratio | 0015 | 1 learner step per environment step, so learning per step does not depend on the GPU |
+| change | patch | what it does | type |
+|---|---|---|---|
+| rotation control | 0014 | the operator also turns the tool to the nearest insertable orientation | operator |
+| orientation box | 0016 | the task clips the commanded orientation: ±0.1 rad roll and pitch, ±0.4 rad yaw | task |
+| orientation channel | 0016 | a twist raises the operator's trouble signal | operator |
+| mini-eval convergence | 0015 | the autonomous mini-eval decides when a cell stops (threshold 0.6, 2 passes in a row, 5 poses, every 2 000 steps) | training |
+| fixed update ratio | 0015 | 1 learner step per environment step, so learning per step does not depend on the GPU | training |
 
 The "original" platform is the operator and task of the finished campaigns.
 
@@ -51,66 +55,140 @@ The "original" platform is the operator and task of the finished campaigns.
 takes over after 60 random actions. No learning is involved, so these numbers should carry
 over to any machine with the same package versions.
 
-| peg | tier | solo, rotation off → on | rescue, rotation off → on | twist at takeover |
-|---|---|---|---|---|
-| cuboid | expert | 96.7 → 100 % | **13.3 → 100 %** | 21.0° |
-| cuboid | intermediate | 86.7 → 100 % | **10.0 → 100 %** | 21.0° |
-| cuboid | novice | 40.0 → 83.3 % | **6.7 → 70.0 %** | 21.0° |
-| cylinder | expert | 100 → 100 % | 96.7 → 100 % | 15.0° |
-| cylinder | intermediate | 100 → 100 % | 86.7 → 100 % | 15.0° |
-| cylinder | novice | 90.0 → 83.3 % | 70.0 → 76.7 % | 15.0° |
+| peg | tier | start | success, rotation off → on | median steps of a success run, off → on | twist when the operator starts (mean) |
+|---|---|---|---|---|---|
+| cuboid | expert | solo | 96.7 → 100.0 % | 17 → 17 | 2.4° (max 4.6°) |
+| cuboid | expert | rescue | 13.3 → 100.0 % | 69.5 → 31 | 21.0° (max 32.3°) |
+| cuboid | intermediate | solo | 86.7 → 100.0 % | 24.5 → 22 | 2.4° (max 4.6°) |
+| cuboid | intermediate | rescue | 10.0 → 100.0 % | 87 → 56 | 21.0° (max 32.3°) |
+| cuboid | novice | solo | 40.0 → 83.3 % | 59 → 103 | 2.4° (max 4.6°) |
+| cuboid | novice | rescue | 6.7 → 70.0 % | 158.5 → 109 | 21.0° (max 32.3°) |
+| cylinder | expert | solo | 100.0 → 100.0 % | 16.5 → 16.5 | 0.2° (max 0.2°) |
+| cylinder | expert | rescue | 96.7 → 100.0 % | 36 → 28 | 15.0° (max 29.7°) |
+| cylinder | intermediate | solo | 100.0 → 100.0 % | 20.5 → 20 | 0.2° (max 0.2°) |
+| cylinder | intermediate | rescue | 86.7 → 100.0 % | 56.5 → 40 | 15.0° (max 29.7°) |
+| cylinder | novice | solo | 90.0 → 83.3 % | 41 → 43 | 0.2° (max 0.2°) |
+| cylinder | novice | rescue | 70.0 → 76.7 % | 140 → 80 | 15.0° (max 29.7°) |
 
-The cylinder barely changes, as expected: a round peg has no yaw to get wrong. This is why
-the problem only showed on the cuboid.
+- **The cuboid's rescue is what changes:** the expert goes from 13 to 100 %, and when it succeeds it also takes less than half the steps.
+- **The cylinder barely changes,** as expected: a round peg has no yaw to get wrong. This is why
+  the problem only showed on the cuboid.
+- **Solo starts are not the problem.** The twist there is 2.4° on average, within the tolerance below.
+- **The novice is slower when it can turn** from a training reset (59 → 103 steps), probably because it now also waits to align the yaw. It succeeds twice as often.
 
 ## 3. Orientation tolerance (no training)
 
-10 episodes per angle, starting centred over the bore with a set twist.
+10 episodes per angle, starting centred over the bore with a set twist. Success in %:
 
-| expert, cuboid, rotation off | 0–4° | 6–8° | 10° | 12° | ≥ 15° |
-|---|---|---|---|---|---|
-| success at that yaw | 100 % | 90 % | 50 % | 30 % | 0 % |
+| peg | axis | tier | rotation | 0° | 2° | 4° | 6° | 8° | 10° | 12° | 15° | 18° | 22° |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cuboid | yaw | expert | off | 100 | 100 | 100 | 90 | 90 | 50 | 30 | 0 | 0 | 0 |
+| cuboid | yaw | expert | on | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| cuboid | yaw | novice | off | 50 | 20 | 30 | 10 | 40 | 30 | 30 | 0 | 0 | 0 |
+| cuboid | yaw | novice | on | 50 | 70 | 80 | 60 | 80 | 60 | 70 | 80 | 50 | 80 |
+| cuboid | tilt | expert | off | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 90 |
+| cuboid | tilt | expert | on | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| cuboid | tilt | novice | off | 50 | 30 | 40 | 50 | 40 | 40 | 30 | 30 | 10 | 20 |
+| cuboid | tilt | novice | on | 50 | 70 | 60 | 70 | 80 | 60 | 80 | 90 | 50 | 20 |
+| cylinder | tilt | expert | off | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| cylinder | tilt | expert | on | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| cylinder | tilt | novice | off | 90 | 100 | 100 | 90 | 90 | 90 | 90 | 80 | 90 | 90 |
+| cylinder | tilt | novice | on | 90 | 100 | 70 | 80 | 90 | 70 | 100 | 80 | 90 | 90 |
+
+By the rule "largest angle with at least 80 % of the success at 0°":
+
+| peg | axis | tier | tolerance by the rule |
+|---|---|---|---|
+| cuboid | tilt | expert | 22° |
+| cuboid | tilt | novice | 0° |
+| cuboid | yaw | expert | 8° |
+| cuboid | yaw | novice | 0° |
+| cylinder | tilt | expert | 22° |
+| cylinder | tilt | novice | 22° |
 
 - **With rotation control, the expert succeeds at every angle tested (0–22°),** in yaw and
   in tilt.
-- **Yaw tolerance of the expert: 8°** (0.1396 rad), by the rule "largest angle with at least
-  80 % of the success at 0°". That is well below the geometric 19.6° of a perfectly centred
+- **Yaw tolerance of the expert: 8°** (0.1396 rad). That is well below the geometric 19.6° of a perfectly centred
   peg, and below the placeholder limit of 0.25 rad.
 - **Tilt tolerance: at least 22°.** The value 0.384 rad written to `limits.json` is only the
   top of the sweep, not a measured limit. With the orientation box at ±0.1 rad the tilt part of
   the channel practically cannot fire; the channel works through yaw.
 - **Novice tolerance reads 0°** because the novice's success at 0° is already only 50 %, with
-  10 noisy episodes per angle. It does not mean a novice cannot insert.
+  10 noisy episodes per angle. It does not mean a novice cannot insert. With rotation control it holds 50–80 % across the whole yaw sweep.
+- **Limits used by all later campaigns:** cuboid tilt 0.384, yaw 0.1396 rad; cylinder tilt 0.384 rad, yaw free.
 
 ## 4. Smoke test
 
-One cell: plain HIL-SERL, expert, cylinder, full stack. All checks passed (box in every
-process, orientation monitor, fixed ratio in both processes, takeover channels, mini-eval,
-scored). Ruler 93 %, first unaided success at 1 221 steps, converged at 4 286 steps, operator
-share 28 %. Not a result, as intended.
+One cell: plain HIL-SERL, expert, cylinder, full stack, W&B off, 0.41 h in all. All nine checks passed: the box in the actor, learner and ruler; the
+orientation monitor; the fixed ratio in both processes; takeover channels; mini-eval; scored. Ruler 92.6 %, first unaided success at 1 221 steps, converged at 4 286 steps, operator
+share 28 %, 92 training episodes with 88 successes, 61 of them without help. Not a result, as intended.
+
+| mini-eval at env step | 1 221 | 2 275 | 3 283 | 4 286 |
+|---|---|---|---|---|
+| success | 0.0 | 0.2 | 1.0 | 1.0 |
+| passes in a row | 0 | 0 | 1 | 2: stop |
 
 ## 5. Training speed on the new stack
 
-All cells below are cuboid, new stack, inconsistent operator (see
-[inconsistent_operator_results_and_qa_log.md](inconsistent_operator_results_and_qa_log.md)).
+"Speed" means three different things, so they are kept apart.
 
-| | first machine, original platform (B1/B2 W&B logs) | second machine, new stack (36 cells) |
+**(a) Learning per environment step: much faster.** Same-method rows are the fairest comparison: ensemble extended on both sides, recomputed from the raw logs (W&B episodes on the first machine, `episodes.jsonl` on the second).
+
+| machine and platform | arm | cells | first success without help (median steps) | episodes out of time, first 10 000 steps | success, first 10 000 steps | steps when training stopped (median) | operator share | env steps per second | training time per cell |
+|---|---|---|---|---|---|---|---|---|---|
+| first machine, original | `hilserl`, first ensemble campaign | 12 | 18 836 | 95 % | 5 % | 28 404 | 53 % | 9.8 | 49 min |
+| first machine, original | `hilserl`, fixed-ensemble campaign | 18 | 18 164 | 95 % | 5 % | 26 801 | 52 % | 9.8 | 47 min |
+| first machine, original | ensemble extended (`logged`), fixed-ensemble campaign | 18 | 20 179 | 92 % | 8 % | 33 288 | 54 % | 9.4 | 79 min |
+| first machine, original | ensemble extended (`logged`), asking experiment | 18 | 18 330 | 93 % | 7 % | 30 395 | 54 % | 9.0 | 76 min |
+| second machine, new stack | ensemble extended (`logged`), validity (Q1) | 6 | 4 599 | 27 % | 73 % | 9 560 | 41 % | 7.7 | ≈ 36 min |
+| second machine, new stack | keep-all, perfect-filter check | 3 | 5 585 | 22 % | 78 % | 8 166 | 43 % | 8.4 | ≈ 29 min |
+| second machine, new stack | discard, pilot | 3 | 4 578 | 20 % | 80 % | 9 877 | 43 % | 7.8 | ≈ 30 min |
+| second machine, new stack | re-weight, pilot | 3 | 6 382 | 20 % | 80 % | 8 401 | 41 % | 7.7 | ≈ 30 min |
+| second machine, new stack | discard, confirmation | 18 | 4 174 | 29 % | 71 % | 9 007 | 41 % | 7.9 | ≈ 31 min |
+| second machine, new stack | re-weight, confirmation | 18 | 5 442 | 34 % | 66 % | 8 802 | 39 % | 7.9 | ≈ 31 min |
+
+- **Same method: about 4 × sooner.** First success without help 18 300–20 200 → 4 600 steps; out of time 92–93 → 27 %; success in the first 10 000 steps 7–8 → 73 %.
+- **Steps at the stop are not comparable** (about 30 000 → 9 600). The stop rule changed from a rolling window of untouched episodes at 0.9 to a mini-eval at 0.6. A lower bar stops earlier by itself.
+- **The new side has the harder operator:** about a third of its takeovers are inattentive.
+- Plain HIL-SERL on the first machine took about 18 000–19 000 steps. The docs earlier rounded this to about 17 000 from another count; the direction is the same.
+
+**(b) Clock time of training: shorter, but partly the GPU and the earlier stop.** One env step takes longer now: the env waits for the learner.
+
+| | first machine, original | second machine, new stack |
 |---|---|---|
-| first success without help | ≈ 17 000 steps (median over the plain HIL-SERL cells) | 4 174 / 5 442 steps (median, discard / re-weight arm) |
-| episodes running into the 300-step limit, first 10 000 steps | 90–99 % | 29 / 34 % |
-| success in the first 10 000 steps | about 7 % at 75–90 % operator control | 71 / 66 % |
-| converged | 15 of 18 (`logged`, oracle campaign) | 36 of 36 (at mini-eval 0.6) |
+| learner steps per env step | about 0.45 (finding F3) | 1 |
+| env steps per second | 9.0–9.8 (paced at 10 Hz) | 7.7–8.4 |
+| training per cell | 76–79 min (ensemble extended) | 29–36 min (all arms) |
 
-**Read this with care.** The left column has a consistent operator and asynchronous updates
-on another GPU. The right column has an inconsistent operator, a fixed update ratio and a
-different stop rule. The direction is very clear, and the operator being inconsistent makes
-it more remarkable, not less. But it does not say which change does the work.
+At its measured rate of about 5 learner steps per second, the first machine should train a new-stack cell in about 50 minutes instead of about 78. That is an estimate; the smoke test will measure it.
 
-Skill still shows, in time rather than in outcome. Final success is flat across tiers in the
-discard arm (92.6 / 93.2 / 93.8 %, against 94 / 78 / 65 % for ensemble extended in the first
-machine's oracle campaign), but novices need 1.5–1.8 times the steps of experts (12 616 vs
-6 946 and 11 060 vs 7 514). The ICC of 0.000 is **not** new: ensemble extended already had
-0.00–0.18 on the old stack; only plain HIL-SERL is high (0.66). Whether plain HIL-SERL stays
+**(c) Clock time of a whole cell: about 1.5 h, mostly the ruler.**
+
+| campaign | cells | total | demos | training (per cell) | ruler and reports (per cell) |
+|---|---|---|---|---|---|
+| smoke | 1 | 0.41 h | – | – | – |
+| validity (Q1) | 6 | 10.09 h | 0.19 h | ≈ 3.6 h (36 min) ¹ | ≈ 6.3 h (63 min) |
+| perfect-filter check | 9 | 12.4 h | reused | 4.3 h (29 min) | 8.1 h (54 min) |
+| pilot | 6 | 8.42 h | 0.13 h | 3.0 h (30 min) | 5.3 h (53 min) |
+| confirmation | 36 | 53.79 h | 0.74 h | 18.6 h (31 min) | 34.4 h (57 min) |
+| **all 58 cells** | | **85.1 h** | | | |
+
+¹ The machine's own estimate; Q1 spans the clock change, so file times cannot give it directly. The other rows add up to the recorded totals.
+
+The ruler scores every saved checkpoint: on average 14–17 per cell (a checkpoint every 1 000 learner steps, including the 5 000 pre-training steps), 9 trials each. Pre-training takes 5–7 minutes of the training time. Scoring fewer checkpoints is the obvious way to shorten a campaign, but it changes the ruler's "best window", so it would have to be decided before a campaign and kept the same across a comparison. For the first machine there is only a rough total: its 18-cell probe took about a day, about 1.3 h per cell.
+
+**What each change is likely doing.** No training run has tested any of them alone.
+
+| change | what we know | effect on speed |
+|---|---|---|
+| rotation control | rescue 7–13 → 70–100 %, measured without learning | probably the main cause; not isolated in training |
+| orientation box | never tested alone; it also changes the task | unknown |
+| orientation channel | triggers about 1 % of takeovers | probably small |
+| mini-eval convergence | stops training earlier; can stop in a dip | saves time, does not make learning faster |
+| fixed update ratio | 1 instead of about 0.45 learner steps per env step, but each step takes longer | may explain part of the 4 ×; costs clock time |
+
+**Is success still skill-graded?** Final success is flat across tiers in the discard arm (92.6 / 93.2 / 93.8 %, against 94 / 78 / 65 % for ensemble extended in the first
+machine's oracle campaign), but novices need 1.5–1.8 times the steps of experts (12 616 vs 6 946 and 11 060 vs 7 514). The ICC of 0.000 says little on its own: ensemble extended already has an ICC of 0.00, 0.18 and 0.84 in three campaigns on the original platform, so a single campaign's ICC is unstable. Whether plain HIL-SERL stays
 operator-dependent on the new stack is unknown, because it was not run on the cuboid.
 
 ## 6. How the takeovers end and start
@@ -135,20 +213,57 @@ at about 40 %.
 
 ## 7. Engineering record
 
-- **Tests:** 136 passed on the real stack. Two test bugs appeared and were reported rather
-  than hidden; both are fixed in patch 0021:
-  - `test_run_passes_limits...` failed once real stage-0 limits existed, because `read_limits`
-    fell back on them;
-  - `test_suite_configs` failed after the intended score edit in the two-arm configs.
-- **Stability:** all 57 cuboid training cells converged. No crash, no traceback, no repeated
-  cell. The fixed update ratio worked between real processes with no deadlock.
-- **Cost:** about 1.5 h per cell, up to 1.7 GB per cell (checkpoints included).
-- **A non-fatal error in every learner:** one `CUDA_ERROR_OUT_OF_MEMORY` allocating 4 GiB at the
-  start of demo pre-training (`XLA_PYTHON_CLIENT_MEM_FRACTION` 0.6 on 32 GB). Training continues
-  normally. Worth watching on a smaller GPU.
-- **Scope decision on the machine:** stage 0 showed the inconsistent operator cannot be separated
-  on the original platform (below 20 points in 4 of 6 rotation-off comparisons), so nothing
-  was trained on `_orig`. The driver now refuses it unless `--allow_orig` is given.
+**Environment.**
+- All 153 retained lock requirements match their pins or the pinned VCS commit. Installed with `--no-deps`, without `setup_env.sh`, sudo or system packages.
+- Requested adaptations: `opencv-python` → `opencv-python-headless` at the same version; robot hardware packages left out (`easyhid-ng`, `evdev`, `hidapi`, `pymodbus`, `pynput`, `pyrealsense2`, `pyspacemouse`, `python-xlib`, `rospkg`), with the repo's headless stubs on `PYTHONPATH`.
+- `pip check` reports metadata conflicts, recorded and not resolved: the omitted packages, the OpenCV name, `tf-keras` asking for `tensorflow` while `tensorflow_cpu` is installed, and `dm-robotics-transformations` declaring NumPy < 2 against the pinned 2.1.3. The installer also notes that the pinned cuDNN package is yanked. The import, render and GPU checks all passed.
+- No source was changed. The only tracked changes are `quality_score_mode` in the two `_new` two-arm configs. The repo reads as dirty only because of those and of untracked copied files.
+
+**Tests.** 136 repository tests passed with no skips, across 18 files, on the real stack (`test-summary.json`). Two test bugs appeared and were reported rather than hidden; both are fixed in patch 0021:
+- `test_run_passes_limits...` failed once real stage-0 limits existed, because `read_limits` fell back on them. It caused the first no-go together with the 20-point rule. The whole seven-file bundle (71 tests) then passed in a clean `git archive` of the same commit; the failed result is preserved.
+- `test_suite_configs` failed after the intended score edit in the two-arm configs (13 of 14 in that file).
+
+**Assumptions checked on the machine** (`handoff/EVALUATE_FIRST.md`, final state):
+
+| | assumption | result |
+|---|---|---|
+| IO1 | patches 0014–0019 present | holds |
+| IO2 | the actor uses the geometric oracle | holds (actor logs) |
+| IO3, IO4 | the condition reaches the takeover's segment | holds (tests) |
+| IO5 | segments carry `condition`, `drop_score`, `drop_warmup` | holds (every Q1 segment labelled) |
+| IO6 | inattentive at least 20 points worse | holds on the new platform; **fails on the original** in 4 of 6 |
+| IO7 | scores computed with window 10, discount 0.97 | holds (`meta.json`) |
+| IO8 | a dropped takeover leaves only the intervention buffer | holds |
+| IO9 | the warm-up holds the filter off | holds (pilot and confirmation) |
+| IO10 | keep-all and the drop arms replay the same way | holds |
+| IO11 | `_new` equals the full stack | holds |
+| IO12 | GPU free, disk sufficient | holds |
+| IO13 | a campaign without `hilserl` reports normally | holds |
+
+**Stability.** All 57 cuboid training cells and the smoke cell converged. No crash, no traceback, no repeated
+cell. The fixed update ratio worked between real processes with no deadlock.
+
+**A non-fatal error in every learner.** One `CUDA_ERROR_OUT_OF_MEMORY` allocating 4 GiB at the
+start of demo pre-training (`XLA_PYTHON_CLIENT_MEM_FRACTION` 0.6 on 32 GB). Training continues
+normally. The log does not show which allocation failed. Worth watching on a smaller GPU.
+
+**Other interventions on the machine.** At the user's request an unrelated backend (`Alive_Dashboard`) was stopped. About 1.6 GiB of GPU memory stayed allocated with no compute process, owner unknown, so the automation's idle check was raised from 1 500 to 4 096 MiB; the campaign memory fractions did not change. An early CPU stage-0 attempt was restarted while the automation was being tested. The automation itself lived outside the repo.
+
+**Storage.** Up to 2.4 GB per cell, checkpoints included:
+
+| campaign | cells | checkpoints per cell, mean | largest cell |
+|---|---|---|---|
+| smoke | 1 | 0.46 GB | 0.46 GB |
+| validity (Q1) | 6 | 1.74 GB | 2.38 GB |
+| perfect-filter check | 9 | 1.50 GB | 1.79 GB |
+| pilot | 6 | 1.51 GB | 1.69 GB |
+| confirmation | 36 | 1.58 GB | 2.38 GB |
+
+**The archive.** After the run the originals on the machine were deleted. The archive was verified first: 76 988 entries, 102.2 GB, every entry decompressed and compared by SHA-256 (`VERIFICATION.json`). So `AQI_HIL_SERL_complete_2026-10-29` is the only copy of the checkpoints. W&B runs of Q1, the check, the pilot and the confirmation are in the project `hil-serl`.
+
+**Scope decision on the machine.** Stage 0 showed the inconsistent operator cannot be separated
+on the original platform (below 20 points in 4 of 6 rotation-off comparisons), so nothing
+was trained on `_orig`. The driver now refuses it unless `--allow_orig` is given.
 
 ## 8. Q&A log
 
@@ -163,6 +278,8 @@ convergence times, the size of the effects and possibly the operator dependency 
 with an operator who can turn the peg. That is what the comparison of old and new stack on the
 first machine has to find out.
 
+**Did the changes speed up training?** Learning per step, yes, by about 4 × for the same method. Training clock time, yes, partly through the faster GPU and the earlier stop. The whole cell hardly, because the ruler takes about 55 minutes. Which change does it is open.
+
 **Can these numbers be compared with the first machine?** Stage 0 yes: no learning is involved.
 Training numbers no, except as a stated caveat: updates per environment step differ between
 machines (finding F3).
@@ -170,3 +287,13 @@ machines (finding F3).
 **Is the ICC of 0.000 good news?** It says little here. The ruler is near its ceiling, and
 seed noise is large, so the between-operator variance estimates to zero. The flat tier means say
 more, and only a plain HIL-SERL arm on the new stack can show whether the dependency has gone.
+
+## 9. What the check of 2026-11-03 changed in this log
+
+- **Added:** steps of a success run and twist per row (2); the full tolerance table including novice, tilt and cylinder (3); smoke timeline and checks (4); speed split into three meanings, with a same-method comparison and a clock breakdown per campaign (5); environment, tests, assumptions, interventions, storage and archive (7).
+- **Corrected:**
+  - **Wall times:** Q1 took 10.09 h, not 9.1 h; the earlier figure missed the clock change that night. The smoke test took 0.41 h, not 0.3 h.
+  - **Storage:** up to 2.4 GB per cell, not 1.7 GB.
+  - **"The ICC of 0.000 is not new: ensemble extended already had 0.00–0.18":** that left out the 0.84 of the asking experiment.
+  - **"About 17 000 steps":** this compared plain HIL-SERL with other arms. The fair same-method figure is 18 000–20 000 → 4 600.
+  - **Counts:** 57 cuboid cells plus 1 smoke cell on the cylinder, 58 in all.

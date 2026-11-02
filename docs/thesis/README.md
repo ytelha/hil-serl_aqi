@@ -33,8 +33,8 @@ Pseudocode for the algorithms chapter: **[../../tex/aqi_hil_serl_algorithms.tex]
 > detailed per-campaign logs below.
 
 > **The second training machine — START HERE for the new stack and the inconsistent operator:**
-> **[second_machine_synthesis.md](second_machine_synthesis.md)** — what ran (57 cells on the new stack), what came
-> out, and the plan and campaigns it leaves for the first machine. Details in
+> **[second_machine_synthesis.md](second_machine_synthesis.md)** — what ran (58 cells on the new stack, 57 of them on the
+> cuboid), how the run went gate by gate, what came out, and the plan and campaigns it leaves for the first machine. Details in
 > **[new_stack_operator_results_and_qa_log.md](new_stack_operator_results_and_qa_log.md)** (rotation control: cuboid
 > rescue 7–13 % → 70–100 %; orientation tolerance; training speed) and
 > **[inconsistent_operator_results_and_qa_log.md](inconsistent_operator_results_and_qa_log.md)** (scores against a
