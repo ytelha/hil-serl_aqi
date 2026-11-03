@@ -108,6 +108,12 @@ its outcome term is always +0.5. Among those, the oracle orders by trouble resol
 The oracle arm and the counterfactual arm share the filter and the imitation loss, and both collapse the novice. That
 is the reason to suspect them, not the score.
 
+**This campaign was the first to switch them on.** Every earlier quality campaign (C1–C5:
+`rq2_quality_replayonly*`, `rq3_plain_logged_quality`, `quality_on_rq4_diag`, `quality_behavioral_diag`) set
+`quality_filters: [safety_veto, jerk_veto]` and `bc_loss_weight: 0`. `aqi_oracle_quality` and the probe set no
+`quality_filters` (so the defaults, with `outcome_filter`) and `bc_loss_weight: 0.1`. So its quality arms differ from
+every earlier quality arm in two settings besides the score.
+
 ## 4. Design
 
 | arm | timing of help | grading |

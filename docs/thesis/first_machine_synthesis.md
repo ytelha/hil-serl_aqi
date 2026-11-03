@@ -4,7 +4,9 @@
 what it showed, what it means, and how well each number is checked. Companion of
 [second_machine_synthesis.md](second_machine_synthesis.md); both machines are indexed in [README.md](README.md).
 
-**Explained in depth (written here, from the code, configs and reports):**
+**Explained in depth (written here, from the code, configs and reports), in the order the campaigns ran:**
+- [first_machine_teacher_and_ensemble_results_and_qa_log.md](first_machine_teacher_and_ensemble_results_and_qa_log.md): how the teacher effect is measured, the first week's ruler bug, the two oracles, and the critic ensemble (A1–A4, B1, B2);
+- [first_machine_grading_and_asking_results_and_qa_log.md](first_machine_grading_and_asking_results_and_qa_log.md): quality replay, the counterfactual and behavioural scores and the timing audit, σ_Q against physical trouble, the first asking experiment (C1–C6, D1, D2);
 - [first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md): what the critics' disagreement σ_Q is, how it becomes a request, how the operator answers, and the asking-rate campaign D3;
 - [first_machine_oracle_quality_results_and_qa_log.md](first_machine_oracle_quality_results_and_qa_log.md): what the quality oracle computed, how a score enters training, the oracle campaign C11 and the demonstration probe.
 
