@@ -46,6 +46,10 @@ Backups to have ready: Siemens 36 (all asking variants, both references), 38 (wh
 (scores), 40 (discard or re-weight), 41 (perfect score and novice test), 49 (score ideas); long deck 223 (runs on
 the second machine), 168 (counterfactual study).
 
+**If asked how σ_Q or the quality oracle work:** section 1–3 of
+[first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md) and section 1–2 of
+[first_machine_oracle_quality_results_and_qa_log.md](first_machine_oracle_quality_results_and_qa_log.md).
+
 ## Numbers to know
 
 | claim | number | where |

@@ -4,7 +4,11 @@
 what it showed, what it means, and how well each number is checked. Companion of
 [second_machine_synthesis.md](second_machine_synthesis.md); both machines are indexed in [README.md](README.md).
 
-Per-campaign detail lives in the machine's own logs, in this folder:
+**Explained in depth (written here, from the code, configs and reports):**
+- [first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md): what the critics' disagreement σ_Q is, how it becomes a request, how the operator answers, and the asking-rate campaign D3;
+- [first_machine_oracle_quality_results_and_qa_log.md](first_machine_oracle_quality_results_and_qa_log.md): what the quality oracle computed, how a score enters training, the oracle campaign C11 and the demonstration probe.
+
+Per-campaign detail also lives in the machine's own logs, in this folder:
 
 | log | campaigns |
 |---|---|
