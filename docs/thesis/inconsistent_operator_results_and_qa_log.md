@@ -63,6 +63,20 @@ inattentive with probability 0.4. Inattentive means *sloppy and wrong*: novice e
 parameters, premature commits with probability 0.5, and an aim point 1.5 commit thresholds beside the
 hole. Monitoring stays the operator's own. The condition is logged per takeover as ground truth.
 
+**How it works in the code** (`operator_model.py`: `Inconsistency`, `inattentive_theta`, `SyntheticOperator._draw_bias`):
+- **When the condition is drawn.** Once per takeover, at its onset, and held until the hand-back. With probability 0.7 it
+  stays as it was; otherwise it is drawn anew, inattentive with probability 0.4. So 40 % of takeovers are inattentive in
+  the long run, and two in a row agree with probability 0.7 + 0.3 × (0.4² + 0.6²) = 0.856: careless spells span several
+  takeovers and episodes.
+- **What inattentive changes.** Eight execution parameters take the novice anchor's values: motor noise σ₀,
+  speed-dependent noise k_sdn, tremor σ_tr, lag, top speed, pause probability and length, recovery. The operator commits
+  (starts pressing down) too early in half of the attempts. And it aims beside the hole: 1.5 commit thresholds away
+  (about 6 mm on the cuboid, whose commit threshold is 4 mm), in a random direction that stays fixed for the takeover.
+- **What it does not change.** The monitoring: when the operator takes over is its own, so the start of a takeover
+  does not depend on the condition. Its end can: a careless takeover leaves the peg in trouble longer.
+- **What reads the label.** Nothing in training, except the perfect filter of the check. The demonstrations come from the
+  consistent operator, so only corrections are careless.
+
 Measured in training: two takeovers in a row share the condition with probability 0.85–0.87 (design 0.856), and the inattentive share is 0.31–0.37 by campaign (0.40 in the long run; lower here because each sequence starts mostly attentive).
 
 **Without learning, the condition really is worse, once the operator can turn the peg.** 30 episodes per row, cuboid:
@@ -308,6 +322,27 @@ The filter acted on 649 of 1 657 takeovers and dropped 277, which is 17 % of all
 ranges from 0 to 86 % by cell.
 
 ## 4. Does using the score help?
+
+### How the arms act on training (from the configs and `runtime.py`)
+
+Every arm is the fixed 8-critic ensemble in quality mode. Every learner batch is half online experience and half a
+demonstration buffer (the demonstrations plus takeovers). No arm has an imitation loss (`bc_loss_weight: 0`), and the
+filters are set explicitly, so the outcome filter and the safety veto are **off**. That is the clean contrast with the
+first machine's oracle campaign, where both the outcome filter and an imitation loss were on
+([first_machine_oracle_quality_results_and_qa_log.md](first_machine_oracle_quality_results_and_qa_log.md)).
+
+| arm | what happens to a takeover |
+|---|---|
+| keep-all | enters the demonstration buffer; uniform priority |
+| discard (`drop-hind`) | after the 5 000-step warm-up and once 20 scores are in: dropped from the demonstration buffer if its score is below the 40th percentile of the last 200 scores; its steps stay in the online half; uniform priority |
+| perfect filter (`drop-oracle`) | after the warm-up: dropped if it was inattentive |
+| random drop | after the warm-up: dropped with probability 0.4 |
+| re-weight (`reweight-hind`) | always kept; replay priority rises with the score (standardised, refreshed every 2 000 steps, importance weights β 0.5) |
+
+**The score the arms used** is the behavioural composite, z(Δvalue) − z(t_int) − z(f_peak): the change of the critics'
+value estimate from takeover to hand-back, minus the takeover's length, minus its peak force, each standardised online. A
+short, value-raising, gentle takeover scores high. The names `drop-hind` and `reweight-hind` predate the choice; they
+do not use hindsight.
 
 ### 4.1 Discard against re-weight (`two_arm_confirm_new`)
 
