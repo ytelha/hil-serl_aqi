@@ -1,6 +1,6 @@
 # How often should the robot ask? The critics' disagreement σ_Q and the asking-rate campaign — results & QA log
 
-Companion to [first_machine_synthesis.md](first_machine_synthesis.md). This log explains **what σ_Q is, how it becomes
+Companion to [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md). This log explains **what σ_Q is, how it becomes
 a request for help, how a synthetic operator answers**, and what the asking-rate campaign `active_ratematch` (thesis D3)
 showed. It is written from the code, the campaign config and the report, and adds measurements made here from the
 report's per-takeover table (section 6).

@@ -2,7 +2,7 @@
 
 A guide for presenting what ran where and what came out, with the slide numbers of both decks
 (`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 56 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
-224 slides, 46 hidden). Sources: [first_machine_synthesis.md](first_machine_synthesis.md) and
+224 slides, 46 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
 [second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026.
 
 ## The story in one minute
@@ -45,6 +45,8 @@ machine and 1 on the second, so each comparison has its reference on its own mac
 Backups to have ready: Siemens 36 (all asking variants, both references), 38 (what ran on the second machine), 39
 (scores), 40 (discard or re-weight), 41 (perfect score and novice test), 49 (score ideas); long deck 223 (runs on
 the second machine), 168 (counterfactual study).
+
+**The first machine's latest experiments in one guide:** [first_machine_latest_experiments_guide.md](first_machine_latest_experiments_guide.md).
 
 **If asked how σ_Q or the quality oracle work:** section 1–3 of
 [first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md) and section 1–2 of

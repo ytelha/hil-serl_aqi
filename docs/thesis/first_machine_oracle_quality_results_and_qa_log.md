@@ -1,6 +1,6 @@
 # A perfect quality score? The oracle campaign and the demonstration probe — results & QA log
 
-Companion to [first_machine_synthesis.md](first_machine_synthesis.md). This log explains **what the quality oracle
+Companion to [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md). This log explains **what the quality oracle
 computed, how a quality score enters training, and what the campaign actually changed**. It then gives what
 `aqi_oracle_quality` (thesis C11) and `quality_starvation_probe` showed, and why their conclusion does not follow yet. It
 is written from the code and configs; the numbers of both campaigns come from the first machine's own log, because no

@@ -9,10 +9,10 @@ reports in `presentation_bundle/results/` and the W&B export.
 - Machine: the first training machine, original platform, cuboid peg, frozen 9-pose ruler.
 - Reports: `presentation_bundle/results/{rq1_geometric, rq1_policy_oracle, rq3_structural, rq4_convergence}/`.
 - Raw training logs: `wandb_analysis/` (B1 and B2, every episode).
-- The machine's own logs: [rq1_campaign_engineering_log.md](rq1_campaign_engineering_log.md),
-  [rq1_oracle_setup_and_qa_log.md](rq1_oracle_setup_and_qa_log.md),
-  [rq3_structural_ablation_and_qa_log.md](rq3_structural_ablation_and_qa_log.md),
-  [rq4_ensemble_convergence_and_qa_log.md](rq4_ensemble_convergence_and_qa_log.md) (old names: `rq3_*` = B1, `rq4_*` = B2).
+- The machine's own logs: [rq1_campaign_engineering_log.md](../rq1_campaign_engineering_log.md),
+  [rq1_oracle_setup_and_qa_log.md](../rq1_oracle_setup_and_qa_log.md),
+  [rq3_structural_ablation_and_qa_log.md](../rq3_structural_ablation_and_qa_log.md),
+  [rq4_ensemble_convergence_and_qa_log.md](../rq4_ensemble_convergence_and_qa_log.md) (old names: `rq3_*` = B1, `rq4_*` = B2).
 
 ---
 

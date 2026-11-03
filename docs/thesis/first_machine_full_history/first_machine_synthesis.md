@@ -2,25 +2,25 @@
 
 **Master analysis of everything that trained on the first training machine** (4 September – 31 October 2026),
 what it showed, what it means, and how well each number is checked. Companion of
-[second_machine_synthesis.md](second_machine_synthesis.md); both machines are indexed in [README.md](README.md).
+[second_machine_synthesis.md](../second_machine_synthesis.md); both machines are indexed in [README.md](../README.md).
 
 **Explained in depth (written here, from the code, configs and reports), in the order the campaigns ran:**
 - [first_machine_teacher_and_ensemble_results_and_qa_log.md](first_machine_teacher_and_ensemble_results_and_qa_log.md): how the teacher effect is measured, the first week's ruler bug, the two oracles, and the critic ensemble (A1–A4, B1, B2);
 - [first_machine_grading_and_asking_results_and_qa_log.md](first_machine_grading_and_asking_results_and_qa_log.md): quality replay, the counterfactual and behavioural scores and the timing audit, σ_Q against physical trouble, the first asking experiment (C1–C6, D1, D2);
-- [first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md): what the critics' disagreement σ_Q is, how it becomes a request, how the operator answers, and the asking-rate campaign D3;
-- [first_machine_oracle_quality_results_and_qa_log.md](first_machine_oracle_quality_results_and_qa_log.md): what the quality oracle computed, how a score enters training, the oracle campaign C11 and the demonstration probe.
+- [first_machine_asking_rate_results_and_qa_log.md](../first_machine_asking_rate_results_and_qa_log.md): what the critics' disagreement σ_Q is, how it becomes a request, how the operator answers, and the asking-rate campaign D3;
+- [first_machine_oracle_quality_results_and_qa_log.md](../first_machine_oracle_quality_results_and_qa_log.md): what the quality oracle computed, how a score enters training, the oracle campaign C11 and the demonstration probe.
 
 Per-campaign detail also lives in the machine's own logs, in this folder:
 
 | log | campaigns |
 |---|---|
-| [rq1_campaign_engineering_log.md](rq1_campaign_engineering_log.md), [rq1_oracle_setup_and_qa_log.md](rq1_oracle_setup_and_qa_log.md) | A1–A4: does HIL-SERL depend on its operator? |
-| [rq2_quality_replay_and_qa_log.md](rq2_quality_replay_and_qa_log.md) | C1–C3: quality-prioritised replay |
-| [rq3_structural_ablation_and_qa_log.md](rq3_structural_ablation_and_qa_log.md) | B1: the ensemble itself |
-| [rq4_ensemble_convergence_and_qa_log.md](rq4_ensemble_convergence_and_qa_log.md) | B2, C4, C5: the fixed ensemble, the score probes |
-| [active_ratematch_results_and_qa_log.md](active_ratematch_results_and_qa_log.md) | D3: how often to ask |
-| [aqi_oracle_quality_results_and_qa_log.md](aqi_oracle_quality_results_and_qa_log.md), [active_quality_campaigns_synthesis.md](active_quality_campaigns_synthesis.md) | C11 and the demonstration probe |
-| [wandb_guide_and_run_cleanup.md](wandb_guide_and_run_cleanup.md) | the W&B record (169 runs) |
+| [rq1_campaign_engineering_log.md](../rq1_campaign_engineering_log.md), [rq1_oracle_setup_and_qa_log.md](../rq1_oracle_setup_and_qa_log.md) | A1–A4: does HIL-SERL depend on its operator? |
+| [rq2_quality_replay_and_qa_log.md](../rq2_quality_replay_and_qa_log.md) | C1–C3: quality-prioritised replay |
+| [rq3_structural_ablation_and_qa_log.md](../rq3_structural_ablation_and_qa_log.md) | B1: the ensemble itself |
+| [rq4_ensemble_convergence_and_qa_log.md](../rq4_ensemble_convergence_and_qa_log.md) | B2, C4, C5: the fixed ensemble, the score probes |
+| [active_ratematch_results_and_qa_log.md](../active_ratematch_results_and_qa_log.md) | D3: how often to ask |
+| [aqi_oracle_quality_results_and_qa_log.md](../aqi_oracle_quality_results_and_qa_log.md), [active_quality_campaigns_synthesis.md](../active_quality_campaigns_synthesis.md) | C11 and the demonstration probe |
+| [wandb_guide_and_run_cleanup.md](../wandb_guide_and_run_cleanup.md) | the W&B record (169 runs) |
 
 The numbers below come from the reports copied into `presentation_bundle/results/`, the W&B export
 (`wandb_analysis/`) and, where nothing else came back, the machine's own logs. Section 9 says which is which.
@@ -87,7 +87,7 @@ Total 459 cells. Smoke tests, stability probes and superseded runs are not count
 
 **On the RWTH cluster, not this machine** (separate copy, never pooled): the method test of 26 Sep (3 000-step cells of
 every arm, including E2HiL and HiRIL) and the counterfactual-score study C9 (1 cell, 29 Sep; result in
-[../counterfactual_score_study.md](../counterfactual_score_study.md) §5).
+[../counterfactual_score_study.md](../../counterfactual_score_study.md) §5).
 
 ## 3. How it went: the incidents that shaped the study
 
@@ -154,7 +154,7 @@ The full reasoning per decision is in `presentation_bundle/02_DECISION_LOG.md` (
 | D4 asking follow-up | more seeds against random; OR arm; held requests |
 | E1–E3 E2HiL and HiRIL comparison (54+) | the state of the art; never ran here |
 
-The order, cost and reading rules are in [second_machine_synthesis.md](second_machine_synthesis.md) §6 and
+The order, cost and reading rules are in [second_machine_synthesis.md](../second_machine_synthesis.md) §6 and
 `handoff/first_machine/HANDOFF_first_machine.md`. The bundle `first_machine_bundle_2026-10-31.tgz` carries the novice test
 and patches 0011–0021; patches 0024–0029 are not in it yet.
 

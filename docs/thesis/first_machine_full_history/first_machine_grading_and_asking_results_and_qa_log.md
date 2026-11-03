@@ -4,14 +4,14 @@ Companion to [first_machine_synthesis.md](first_machine_synthesis.md). This log 
 the counterfactual score and why it is inverted, the behavioural score and the timing audit that undid it, how σ_Q was
 tested against physical trouble, and the first asking experiment.** It covers C1–C3 (10–18 September), C4–C6
 (23–30 September), D1 (1–2 October) and D2 (2–6 October). The follow-ups have their own explained logs:
-[first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md) (D3, with the details of
-σ_Q and the request gate) and [first_machine_oracle_quality_results_and_qa_log.md](first_machine_oracle_quality_results_and_qa_log.md)
+[first_machine_asking_rate_results_and_qa_log.md](../first_machine_asking_rate_results_and_qa_log.md) (D3, with the details of
+σ_Q and the request gate) and [first_machine_oracle_quality_results_and_qa_log.md](../first_machine_oracle_quality_results_and_qa_log.md)
 (C11). Numbers are from the thesis (chapter 6), the reports in `presentation_bundle/results/` and the W&B export.
 
 - Reports: `presentation_bundle/results/{quality_on_rq4_diag, quality_behavioral, active_validity, active_effect}/`.
-- The machine's own logs: [rq2_quality_replay_and_qa_log.md](rq2_quality_replay_and_qa_log.md) (C1–C3, old name `rq2_*`),
-  [rq4_ensemble_convergence_and_qa_log.md](rq4_ensemble_convergence_and_qa_log.md) §11–12 (C4, C5).
-- Tool: `examples/quality_signal_audit.py` ([../quality_signal_audit.md](../quality_signal_audit.md)).
+- The machine's own logs: [rq2_quality_replay_and_qa_log.md](../rq2_quality_replay_and_qa_log.md) (C1–C3, old name `rq2_*`),
+  [rq4_ensemble_convergence_and_qa_log.md](../rq4_ensemble_convergence_and_qa_log.md) §11–12 (C4, C5).
+- Tool: `examples/quality_signal_audit.py` ([../quality_signal_audit.md](../../quality_signal_audit.md)).
 
 ---
 
@@ -70,7 +70,7 @@ flat across tiers, and its AUROC against episode success was **0.175**: it ranks
 
 Training the critic longer on the same data removes none of the three, which is why the healthy critic did not help. A
 pre-registered study on the cluster (C9, 29 September) later tested five better-built variants against simulator ground
-truth: all below chance, so the score is abandoned ([../counterfactual_score_study.md](../counterfactual_score_study.md) §5).
+truth: all below chance, so the score is abandoned ([../counterfactual_score_study.md](../../counterfactual_score_study.md) §5).
 
 ## 3. The behavioural score, and the timing audit (C5, C6)
 
@@ -158,7 +158,7 @@ rate nobody chose (about 9 %), which led to the quantile gate of the asking-rate
    construction, the behavioural one by timing leakage, hindsight measures difficulty, progress is noise. The thesis keeps
    the null result and a uniform-priority control.
 2. **Asking (RQ4):** the gate is not a detector but works as a trigger; the follow-up (D3) showed that asking more often
-   beats the operator's own monitor ([first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md)).
+   beats the operator's own monitor ([first_machine_asking_rate_results_and_qa_log.md](../first_machine_asking_rate_results_and_qa_log.md)).
 3. **What stayed open:** whether grading can pay off when an operator's corrections really differ in quality (the
    inconsistent operator of the second machine), and whether a perfect score helps (C11, confounded; the novice test decides).
 
