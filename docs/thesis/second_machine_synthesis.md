@@ -3,6 +3,8 @@
 **Master analysis of everything that ran on the second training machine** (24–29 October 2026),
 what it means, and the plan it leaves for the first machine.
 
+The first machine's counterpart: [first_machine_synthesis.md](first_machine_synthesis.md); both are indexed in [README.md](README.md).
+
 Detailed companions:
 - [new_stack_operator_results_and_qa_log.md](new_stack_operator_results_and_qa_log.md): the operator
   alone, the orientation tolerance, training speed on the new stack, the engineering record;

@@ -4,6 +4,18 @@ Everything you need to **run the study, analyse it, and write it up**, in one pl
 If you feel lost, read this page top to bottom; it links to the exact doc, command,
 and output for each piece.
 
+## The training machines — start here
+
+| where it ran | read first | details |
+|---|---|---|
+| **first training machine** (4 Sep – 31 Oct 2026, 459 cells, original platform: RQ1–RQ4) | **[first_machine_synthesis.md](first_machine_synthesis.md)** | the per-campaign logs listed in its header |
+| **second training machine** (24–29 Oct 2026, 58 cells, new stack: rotation control, inconsistent operator) | **[second_machine_synthesis.md](second_machine_synthesis.md)** | [new_stack_operator_results_and_qa_log.md](new_stack_operator_results_and_qa_log.md), [inconsistent_operator_results_and_qa_log.md](inconsistent_operator_results_and_qa_log.md) |
+| **RWTH cluster** (method test 26 Sep; counterfactual study C9, 29 Sep; small E2HiL campaign queued 3 Nov) | [../counterfactual_score_study.md](../counterfactual_score_study.md) §5, [../e2hil_inconsistent_operator.md](../e2hil_inconsistent_operator.md) | `cluster/claix/README.md`, `handoff/FINDINGS_cluster_method_test.md` |
+| presenting both machines | **[presenting_the_training_machines.md](presenting_the_training_machines.md)** | slide map, key numbers, likely questions |
+
+Never pool cells of different machines: learner updates per environment step differ (about 0.45 on the first,
+1 on the second, more on the cluster).
+
 ## The two core files
 
 | file | what it gives you |
@@ -27,10 +39,11 @@ Pseudocode for the algorithms chapter: **[../../tex/aqi_hil_serl_algorithms.tex]
 > **AQI active + quality results — START HERE for the Oct-2026 arc:**
 > **[active_quality_campaigns_synthesis.md](active_quality_campaigns_synthesis.md)** —
 > the master synthesis of every campaign (A active trigger, C quality-gate oracle
-> ceiling, demo probe) with the unified interpretation: **timing helps (use
-> `active`), quality filtering hurts operator-independence even at the oracle
-> ceiling (drop `aqi`)**, and the two objectives conflict. Links to the two
-> detailed per-campaign logs below.
+> ceiling, demo probe), written on the first machine: **timing helps (use
+> `active`)**; its reading that quality filtering hurts operator-independence even at
+> the oracle ceiling is **not established**, because the quality arms also ran the hard
+> `outcome_filter` and a BC loss (note of 2026-10-31; `../novice_ablation.md` decides).
+> Links to the two detailed per-campaign logs below.
 
 > **The second training machine — START HERE for the new stack and the inconsistent operator:**
 > **[second_machine_synthesis.md](second_machine_synthesis.md)** — what ran (58 cells on the new stack, 57 of them on the
@@ -52,12 +65,11 @@ Pseudocode for the algorithms chapter: **[../../tex/aqi_hil_serl_algorithms.tex]
 > **Quality gate — the oracle ceiling (the quality half of the thesis):**
 > **[aqi_oracle_quality_results_and_qa_log.md](aqi_oracle_quality_results_and_qa_log.md)** —
 > campaign C (90 cells): does a PERFECT simulator-oracle quality score reduce
-> operator-dependence on top of σ_Q timing? **Decisive negative:** a quality gate
-> (even the oracle) AMPLIFIES dependence (ICC 0.18 → 0.93) by starving the weak
-> operator — it keeps good corrections and correctly discards bad novice ones,
-> collapsing the novice tier (65% → 9–36%). Proves RQ2–RQ4's quality failure is a
-> *paradigm* problem, not a score bug. Combined with A: use `active` (timing),
-> drop `aqi` (timing + quality).
+> operator-dependence on top of σ_Q timing? Its arms raised the ICC (0.18 → 0.93) and
+> collapsed the novice tier (65 % → 9–36 %). The log calls this a *paradigm* problem; that
+> does **not** follow yet: the quality arms changed three things at once (the oracle score,
+> the hard `outcome_filter`, a BC loss of 0.1). The novice test (`../novice_ablation.md`,
+> 24 cells, not run) separates them.
 
 ## Start here (the shortest path to a result)
 

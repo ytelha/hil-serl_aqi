@@ -1,7 +1,7 @@
 # Counterfactual intervention score: why it fails, and can it be saved?
 
 Status: **decision rule fixed before the results** (this section is
-committed before the study cell finished). Results are added below.
+committed before the study cell finished). Results added 2026-11-03 in §5: **abandon**.
 
 ## 1. The score and its history
 
@@ -95,4 +95,36 @@ signal exists. That's the question that decides between pursue and abandon.
 
 ## 5. Results
 
-*(pending: filled in from `cf_score_analysis.py` on `runs/cf-study`)*
+Ran on CLAIX on 2026-09-29 (cell job 4529759, 53 min on one H100; analysis job 4530130), read on 2026-11-03.
+Report and analysis: `presentation_bundle/results/cf_study/`. One cell (`int00`, seed 0), 25 000 environment
+steps, 90 episodes, 264 takeover segments with 11 015 steps. Logged and recomputed values agree to 5e-6; no bad
+segments.
+
+**Verdict by the rule of §4: abandon the per-step counterfactual score.** No variant reaches any of the three bars,
+and every variant stays below 0.5 on the ground-truth labels.
+
+| score (per segment) | AUROC(aligned at handback) | Spearman(lateral-error reduction) | AUROC(episode success, time-stratified) | AUROC(not jammed at handback) |
+|---|---|---|---|---|
+| bar to pursue | ≥ 0.65 | ≥ 0.25 | ≥ 0.60 | – |
+| A_cf (current) | 0.31 | 0.15 | 0.29 | 0.33 |
+| A_mode | 0.30 | 0.12 | 0.27 | 0.32 |
+| A_V | 0.29 | 0.13 | 0.28 | 0.32 |
+| pct | 0.41 | 0.17 | 0.48 | 0.38 |
+| t_k | 0.48 | 0.05 | 0.48 | 0.45 |
+
+| hypothesis | verdict | evidence |
+|---|---|---|
+| H1 noisy baseline | rejected | one-sample baseline error 0.0007 against median \|A_V\| 0.0072; A_cf and A_V rank alike |
+| H2 argmax bias | **supported** | A_mode < 0 in 99.7 %, A_V in 96.4 %, A_cf in 92.7 % of the steps; the score rises the closer a_H is to the policy mean (Spearman 0.46–0.50) |
+| H3 wrong uncertainty | partly | the critics' disagreement on the difference (0.0024) is half the gate's σ_Q (0.0049), not much smaller |
+| H4 label artifact | partly | strong drift (Spearman with episode index −0.68; mean A_cf −0.006 → −0.019 while success rises 0 → 63 % over the thirds), but the time-stratified AUROC stays 0.29, so drift is not the whole story |
+| H5 critic cannot rank single actions | **supported** | per step, Spearman with the change of the lateral error 0.02–0.09 for every variant |
+
+**Labels are informative.** 31 % of the takeovers end aligned and 24 % jammed; ending aligned predicts episode success
+(AUROC 0.68). The scores miss what the label carries.
+
+**Reading.** The score measures how far the operator's action is from the policy's, not how good it is. It is lowest
+for the corrections that differ most from the policy, and those end aligned more often. Flipping the sign is no way out:
+it was not part of the rule, it would still fail the Spearman bar, and it would only measure the distance between the
+human and the policy action, which needs no critic. The critic-light scores of patch 0005 and E2HiL remain the paths;
+one cell settles that the signal is absent, not how a training campaign would turn out.
