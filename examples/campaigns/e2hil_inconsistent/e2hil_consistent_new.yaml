@@ -14,8 +14,9 @@
 # channel with the stage-0 limits of the second machine, mini-eval convergence, fixed update ratio 1).
 # Both arms are plain HIL-SERL from scratch, as in the paper: 2 critics, no demo pre-training.
 #
-# On CLAIX:
-#   bash cluster/claix/submit_campaign.sh examples/campaigns/e2hil_inconsistent/e2hil_consistent_new.yaml e2hil_consistent_new
+# On the second training machine (docs/e2hil_inconsistent_operator.md, section 3):
+#   ./.venv/bin/python examples/run_campaign.py --config examples/campaigns/e2hil_inconsistent/e2hil_consistent_new.yaml \
+#       --campaign runs/e2hil_inconsistent/e2hil_consistent_new >> runs/e2hil_inconsistent/e2hil_consistent_new.out 2>&1
 # Never mix its cells with cells of another machine (F3).
 # =====================================================================
 task:

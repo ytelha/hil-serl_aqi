@@ -6,8 +6,9 @@
 # HIL-SERL? The operator's hidden condition is redrawn at every takeover (inattentive in 0.4 of them,
 # persistence 0.7) and logged as ground truth (docs/inconsistent_operator.md). Neither arm reads it.
 #
-# Confirmation: 2 arms x 3 operators per tier x 2 seeds = 36 cells, 40 k cap. Run it after the pilot
-# (e2hil_pilot_new.yaml). Same 3-per-tier roster as the second machine's confirmation (sample_seed 0); its
+# Confirmation: 2 arms x 3 operators per tier x 2 seeds = 36 cells, 40 k cap. Runs on the second training
+# machine once the small CLAIX campaign passed its go rule (docs/e2hil_inconsistent_operator.md).
+# Same 3-per-tier roster as the second machine's confirmation (sample_seed 0); its
 # novices have more tremor than the inattentive anchors, so the test rests on the two upper tiers.
 # Primary measures: steps to converge and operator share (paired by operator and seed); ruler SR secondary.
 # Its consistent-operator twin is e2hil_consistent_new.yaml: only both together say whether a gain of
@@ -16,8 +17,9 @@
 # channel with the stage-0 limits of the second machine, mini-eval convergence, fixed update ratio 1).
 # Both arms are plain HIL-SERL from scratch, as in the paper: 2 critics, no demo pre-training.
 #
-# On CLAIX:
-#   bash cluster/claix/submit_campaign.sh examples/campaigns/e2hil_inconsistent/e2hil_confirm_new.yaml e2hil_confirm_new
+# On the second training machine (docs/e2hil_inconsistent_operator.md, section 3):
+#   ./.venv/bin/python examples/run_campaign.py --config examples/campaigns/e2hil_inconsistent/e2hil_confirm_new.yaml \
+#       --campaign runs/e2hil_inconsistent/e2hil_confirm_new >> runs/e2hil_inconsistent/e2hil_confirm_new.out 2>&1
 # Never mix its cells with cells of another machine (F3).
 # =====================================================================
 task:

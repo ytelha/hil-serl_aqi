@@ -1,21 +1,27 @@
 # =====================================================================
-# e2hil_inconsistent/e2hil_pilot_new.yaml -- E2HiL against plain HIL-SERL with the inconsistent operator, pilot
+# e2hil_inconsistent/e2hil_small_claix.yaml -- E2HiL against plain HIL-SERL with the inconsistent operator,
+# small campaign within the CLAIX student quota (9 GPU-h)
 #
 # Question: E2HiL (Deng et al., RA-L 2026) drops the batch states whose estimated influence on the policy
 # entropy is extreme. Does that selection cope with an operator who is sometimes careless better than plain
 # HIL-SERL? The operator's hidden condition is redrawn at every takeover (inattentive in 0.4 of them,
 # persistence 0.7) and logged as ground truth (docs/inconsistent_operator.md). Neither arm reads it.
 #
-# Pilot: 2 arms x 1 operator per tier x 1 seed = 6 cells, 40 k cap. It checks that both arms run end to end
-# on the new stack and measures the cost per cell before the confirmation (e2hil_confirm_new.yaml).
-# Same 1-per-tier roster as the second machine's validity test, check and pilot (sample_seed 0).
+# Small campaign: 2 arms x expert and intermediate (1 each) x 1 seed = 4 cells. It decides whether the
+# comprehensive campaign (e2hil_confirm_new + e2hil_consistent_new, 72 cells) runs on the second training
+# machine; the rule is fixed in docs/e2hil_inconsistent_operator.md. Cut to the budget:
+#   - no novice: the inattentive execution uses the novice anchor, so a novice's two conditions barely differ;
+#   - 20 k cap instead of 40 k, and the ruler scores the last 8 checkpoints instead of up to 25.
+# About 1-1.7 GPU-h per cell, 4-7 GPU-h with the prepare job.
+# Same operators as exp00 and int00 of the second machine's 1-per-tier roster (sample_seed 0).
 # Platform: the new stack of the inconsistent-operator suite (rotation control, orientation box, orientation
 # channel with the stage-0 limits of the second machine, mini-eval convergence, fixed update ratio 1).
 # Both arms are plain HIL-SERL from scratch, as in the paper: 2 critics, no demo pre-training.
 #
 # On CLAIX:
-#   bash cluster/claix/submit_campaign.sh examples/campaigns/e2hil_inconsistent/e2hil_pilot_new.yaml e2hil_pilot_new
-# Never mix its cells with cells of another machine (F3).
+#   bash cluster/claix/submit_campaign.sh examples/campaigns/e2hil_inconsistent/e2hil_small_claix.yaml \
+#       e2hil_small_claix --time 03:00:00
+# Its cells are never pooled with cells of another machine or another campaign (F3).
 # =====================================================================
 task:
   exp_name: sim_peg_insertion
@@ -25,7 +31,7 @@ task:
 operators:
   expert: 1
   intermediate: 1
-  novice: 1
+  novice: 0
   jitter: 0.15
   sample_seed: 0
 
@@ -44,8 +50,8 @@ replicates:
 
 budget:
   mode: steps
-  steps_cap: 40000
-  minutes_per_cell: 300
+  steps_cap: 20000                 # budget cut (comprehensive: 40 k)
+  minutes_per_cell: 150
   converge_success: 0.9
   converge_window: 20
   converge_min_steps: 3000
@@ -64,7 +70,7 @@ budget:
   total_hours: 0
   learner_max_steps: 1000000
   buffer_period: 0
-  checkpoint_keep: 25
+  checkpoint_keep: 8               # budget cut: the ruler scores the last 8 (comprehensive: 25)
   demo_pretrain: false             # both arms plain: the paper plugs E2HiL
   demo_pretrain_steps: 0           # into HIL-SERL trained from scratch
   demo_pretrain_batch_size: 0
@@ -102,7 +108,7 @@ gpu:
 logging:
   wandb: "off"
   takeover_channels: true
-  wandb_tags: [e2hil_inconsistent, e2hil_pilot_new]
+  wandb_tags: [e2hil_inconsistent, e2hil_small_claix]
 
 analysis:
   baseline: hilserl
