@@ -5,6 +5,9 @@ A guide for presenting what ran where and what came out, with the slide numbers 
 227 slides, 49 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
 [second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026.
 
+**The file to show:** [presentation_summary_both_machines.md](presentation_summary_both_machines.md), both machines in one
+file, with formulas, worked examples, the questions asked while preparing and a glossary.
+
 ## The story in one minute
 
 The first training machine answered the four research questions on the original platform (459 runs). The teacher

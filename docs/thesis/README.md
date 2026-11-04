@@ -13,6 +13,7 @@ and output for each piece.
 | **second training machine** (24–29 Oct 2026, 58 cells, new stack: rotation control, inconsistent operator) | **[second_machine_latest_experiments_guide.md](second_machine_latest_experiments_guide.md)**, then [second_machine_synthesis.md](second_machine_synthesis.md) | [new_stack_operator_results_and_qa_log.md](new_stack_operator_results_and_qa_log.md), [inconsistent_operator_results_and_qa_log.md](inconsistent_operator_results_and_qa_log.md) |
 | **RWTH cluster** (method test 26 Sep; counterfactual study C9, 29 Sep; small E2HiL campaign queued 3 Nov) | [../counterfactual_score_study.md](../counterfactual_score_study.md) §5, [../e2hil_inconsistent_operator.md](../e2hil_inconsistent_operator.md) | `cluster/claix/README.md`, `handoff/FINDINGS_cluster_method_test.md` |
 | presenting both machines | **[presenting_the_training_machines.md](presenting_the_training_machines.md)** | slide map, key numbers, likely questions |
+| **both machines in one file, to show** | **[presentation_summary_both_machines.md](presentation_summary_both_machines.md)** | mechanisms with formulas and worked examples, results, what is against HIL-SERL, the weak novice, questions and glossary |
 
 Never pool cells of different machines: learner updates per environment step differ (about 0.45 on the first,
 1 on the second, more on the cluster).
