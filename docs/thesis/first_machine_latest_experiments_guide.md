@@ -25,6 +25,40 @@ almost every novice correction, and an imitation loss. Which of the three did it
 All on the original platform (the operator moves the peg but cannot turn it), cuboid peg, the fixed 8-critic ensemble,
 3 operators per tier × 2 seeds, the same 9 operators in all four.
 
+## The setup they ran on: the original platform, no rotation control
+
+The first machine's code is patches 0001–0010 plus its own local features (the quantile trigger, random asking, the oracle
+score, milder novices, the HiRIL fix). Rotation control came later, in patch 0014, and the copy of its code from 31 October
+does not contain it at all. So none of these campaigns had any part of the new stack:
+
+| | first machine (asking rate, perfect score, more demonstrations) | new stack (second machine) |
+|---|---|---|
+| the operator can turn the peg | **no**: rescue of a twisted cuboid 13 / 10 / 7 % (expert / intermediate / novice) | yes: 100 / 100 / 70 % |
+| orientation limit, twist channel | no | yes |
+| stop rule | 90 % success over the last 20 untouched training episodes, with the mini-eval (0.6) as an extra check | the mini-eval alone: 5 poses, 0.6, twice in a row |
+| learner updates per environment step | free-running, about 0.45 (the robot paced at 10 Hz) | fixed at 1 |
+| step cap | 35 000 (asking rate); 40 000 (perfect score, more demonstrations) | 30 000–40 000 |
+| operator | always careful (consistent) | sometimes careless |
+
+**What it means for reading them:**
+- **The comparisons inside each campaign stay fair.** Every arm had the same operator, so "asking beats the operator
+  deciding" and "the perfect-score arms collapse the novice" hold as paired comparisons on this platform.
+- **The operator's weakness shapes the numbers, especially for novices.** At a takeover the peg is about 21 degrees twisted,
+  and without rotation control even the expert tolerates only about 8, so most takeovers could not rescue it. In the
+  asking-rate campaign 97 % of a novice's takeovers sat in failed episodes, so the outcome filter of the perfect-score
+  campaign threw away almost all novice corrections. With an operator who can turn the peg that picture may change.
+- **Absolute numbers do not carry over:** steps to converge, minutes, and possibly the size of the teacher effect may differ
+  on the new stack. Never compare these runs one by one with the second machine's.
+
+**What comes next on this machine** (`handoff/first_machine/HANDOFF_first_machine.md`):
+1. **The novice test stays on the original platform, on purpose.** It pairs with the perfect-score campaign's cells, so it
+   runs on the current code before any patch.
+2. **Then the new stack is installed:** patches 0011–0021, and 0037 for the shorter ruler.
+3. **Then the ladder (27 runs)** adds the changes one at a time, starting from this original platform, so it shows which
+   change (rotation control or another) removes the slow start on this machine, and what the fixed update ratio costs here.
+   After it, the old-against-new comparison at thesis scale repeats plain HIL-SERL, ensemble extended and asking with the
+   chosen stack.
+
 ## Words you need
 
 | word | meaning |
