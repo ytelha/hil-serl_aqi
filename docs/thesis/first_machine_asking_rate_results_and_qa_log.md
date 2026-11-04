@@ -87,8 +87,9 @@ $$
 
 A request **opens** at step $t$ if no request is on, the cool-down is over, $t > 1\,000$ (the gate's warm-up), and
 $A_t > \tau_t$. It then stays on for exactly 10 steps ($t, \dots, t+9$, `query_min_on_steps`), followed by 5 steps without a
-request (`query_cooldown_steps`). At an eligible step $P(A_t > \tau_t) \approx r$, because $\tau_t$ is that quantile of the
-recent scores. A breach of the hard force or torque limit opens or extends a request whatever the score (a safety
+request (`query_cooldown_steps`). About a share $r$ of all recent steps lie above $\tau_t$, because $\tau_t$ is that
+quantile of the recent scores. At the steps where a request may start the chance is lower, because unsure stretches
+are already covered by a request (section 3.2). A breach of the hard force or torque limit opens or extends a request whatever the score (a safety
 override, reason `safety`). The 10-on, 5-off cycle caps the requested share of the steps:
 
 $$
@@ -100,13 +101,16 @@ probability 0.08 at every step where a request may start, with the same 10-step 
 similar operator share to "asks 30 %" (25.7 against 28.5 %), so the two differ only in *when* they ask.
 
 In formulas: $A_t \equiv 0$ never exceeds a threshold, and at every eligible step a request opens with probability
-$p = 0.08$ (`random_request_rate`), so the wait for the next one is geometric with mean $1/p = 12.5$ steps. One cycle is
-then 10 steps on, 5 off and about 12.5 waiting:
+$p = 0.08$ (`random_request_rate`). The step that opens a request is its first requested step, so on average
+$(1 - p)/p = 11.5$ steps pass without a request before it. One cycle is then about 11.5 waiting, 10 on and 5 off:
 
 $$
-\text{requested share} \approx \frac{10}{10 + 5 + 1/p} = \frac{10}{27.5} \approx 36\,\%, \qquad
-p = \frac{1}{10/f - 15} \ \text{ for a target share } f
+\text{requested share} \approx \frac{10}{10 + 5 + (1 - p)/p} = \frac{10}{14 + 1/p} = \frac{10}{26.5} \approx 38\,\%, \qquad
+p = \frac{1}{10/f - 14} \ \text{ for a target share } f
 $$
+
+Replaying the real gate with $p = 0.08$ on 9 logged runs gives 37.9 % (37.4–38.6 %; section 3.2). An earlier version of
+this log wrote $10 / (15 + 1/p) \approx 36\,\%$, which counts the opening step twice.
 
 The config chose $p = 0.08$ to match the roughly 34 % that asks 30 % reached in the probe.
 
@@ -168,6 +172,158 @@ Novices have more lag, more noise and slower reactions. **A 10-step request ofte
 signal crosses its threshold**, and a pending reaction is cancelled when the signal drops. On the W&B logs of the first
 asking experiments the share of requests answered was about 77 % for experts, 47 % for intermediates and 2–9 % for
 novices. This is a property of the synthetic operator model, and it matters for every result below.
+
+### 3.1 A worked example, step by step
+
+One tricky moment in a run, followed through the gate and the three kinds of operator. The σ_Q values are made up so that
+the arithmetic is easy (in the logs σ_Q is about 0.005–0.03). The rules and the timelines are from running the real
+`query_gate.py` and `operator_gate.py` on these numbers (computed here on 2026-11-04).
+
+**Step 1 – How unsure is the robot?** The 8 critics value the action the robot is about to take. σ_Q is their spread.
+
+| situation | the 8 critics' values | σ_Q |
+|---|---|---|
+| familiar: they agree | 5.0, 5.1, 4.9, 5.0, 5.2, 4.8, 5.0, 5.0 | **0.11** |
+| unfamiliar: they disagree | 5.0, 6.1, 4.2, 5.5, 3.9, 6.0, 4.6, 5.3 | **0.75** |
+
+**Step 2 – Is that unusual for this run?** Say σ_Q has so far averaged 0.40 in this run, with a typical spread of 0.20.
+
+- familiar: z = (0.11 − 0.40) / 0.20 = **−1.4**, calmer than usual;
+- unfamiliar: z = (0.75 − 0.40) / 0.20 = **+1.75**, much less sure than usual.
+
+**Step 3 – Unusual enough to ask?** The gate ranks the current z among the last 2 000 steps (200 seconds):
+
+| arm | asks when this step is more uncertain than … | the line, if the last 2 000 z were bell-shaped |
+|---|---|---|
+| asks 10 % | 1 800 of the last 2 000 steps | z > 1.27 |
+| asks 30 % | 1 400 of them | z > 0.51 |
+| asks 55 % | 900 of them | z > −0.15 |
+
+Real σ_Q is lopsided (many calm steps, a few very unsure ones), so the real lines sit lower. In a logged run at step
+2 000 they were +0.56, −0.27 and −0.70 (section 3.2).
+
+**Step 4 – The timing rule: 10 steps on, 5 off.** The robot meets a tricky moment; z rises from −1.4 to 2.0 and falls
+again. `ask` = request on, `-` = forced pause (it may not ask), `.` = no request:
+
+```
+step         1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17   18   19   20
+z         -1.4 -0.9 -0.5  0.0  0.3  0.7  1.1  1.6  2.0  1.8  1.5  1.2  0.9  0.6  0.4  0.2  0.1  0.0 -0.2 -0.4
+asks 10 %    .    .    .    .    .    .    .  ask  ask  ask  ask  ask  ask  ask  ask  ask  ask    -    -    -
+asks 30 %    .    .    .    .    .  ask  ask  ask  ask  ask  ask  ask  ask  ask  ask    -    -    -    -    -
+asks 55 %    .    .    .  ask  ask  ask  ask  ask  ask  ask  ask  ask  ask    -    -    -    -    -    .    .
+```
+
+- Asks 55 % crosses its line first (step 4, z 0.0 > −0.15), asks 30 % at step 6 (0.7 > 0.51), asks 10 % at step 8
+  (1.6 > 1.27). All three ask about the same tricky moment; the low line simply starts sooner and also catches the
+  milder moments.
+- A request stays on for 10 steps (1 second) even when z drops, then 5 steps of pause.
+- So at most 10 of every 15 steps can be requested: in 1 000 steps (100 seconds) at most 66 requests and 667 requested
+  steps. The first 1 000 steps of a run never ask.
+
+**Step 5 – The random arm.** No σ_Q: at every step where a request may start, a coin comes up "ask" with probability
+0.08. On average 11.5 steps pass before it does; then 10 steps on and 5 off. One cycle is about 26.5 steps, 10 of them
+requested: **about 38 %** of the steps, close to asks 30 %. Only *when* it asks differs.
+
+**Step 6 – Does the operator answer?** While a request is on, the operator's input is 1. Its attention ẑ builds up
+slowly (0.40, 0.64, 0.78, 0.87, 0.92, …, 0.99) and decays when the request ends (0.60, 0.36, 0.22). Each tier needs a
+level, held for some steps, and then reaction time. Without noise:
+
+| step | ẑ | expert: above 0.54 for 2 steps, reacts in 4 | intermediate: above 0.67 for 3, reacts in 6 | novice: above 0.80 for 4, reacts in 8 |
+|---|---|---|---|---|
+| 1 | 0.40 | – | – | – |
+| 2 | 0.64 | above, 1 of 2 | – | – |
+| 3 | 0.78 | 2 of 2 → **reacting** | above, 1 of 3 | – |
+| 4 | 0.87 | reacting | 2 of 3 | above, 1 of 4 |
+| 5 | 0.92 | reacting | 3 of 3 → **reacting** | 2 of 4 |
+| 6 | 0.95 | **TAKES OVER** | reacting | 3 of 4 |
+| 7 | 0.97 | | reacting | 4 of 4 → **reacting** (would take over at step 14) |
+| 8–9 | 0.98–0.99 | | reacting | reacting |
+| 10 | 0.99 | | **TAKES OVER**, on the request's last step | reacting |
+| 11 | 0.60 | | | request over; ẑ below 0.80 → **reaction cancelled** |
+
+With noise and the chance of missing a request (20 000 simulated requests per tier):
+
+| tier | answers, of 100 requests | why |
+|---|---|---|
+| expert | **87.5** | only its 12.5 % chance of missing; 4 steps to spare |
+| intermediate | **54** | 24 % misses, and one step of delay from noise is already too late |
+| novice | **0.4** | always 4 steps too slow; the few cases are late takeovers just after the request ended |
+
+In the campaign, with operators spread around these anchors, the logs show 77, 47 and 2–9 answers per 100 requests.
+
+**Step 7 – Over a whole run (asks 55 % against the operator's own monitor, section 6).** An expert takes over 936 times
+per run instead of 615 and controls 63.8 % of the steps instead of 60.5 %. A novice takes over 85 times instead of 206
+and controls 13.4 % instead of 46.9 %. The "less help" of asks 55 % is the novices' missing answers.
+
+### 3.2 What the gate keeps in memory, and how its line moves
+
+**What is stored.**
+
+- **For the z-score: three numbers, not a list.** A running count, mean and sum of squared deviations (Welford's method,
+  `normalization.RunningZScore`) over every step since the run started. Each new σ_Q updates them and is then dropped.
+  This memory never forgets: step 30 000 is still compared with an average that includes step 1.
+- **For the line: the last 2 000 scores, as a list** (`deque(maxlen=2000)`), about 200 seconds of robot time. Each new
+  score pushes the oldest one out. Every step goes in: during requests, pauses and takeovers too.
+- **For the analysis only:** σ_Q, z, the score and the request flag of every step are written to `steps.jsonl`
+  (`log_every_step`, on by default). The gate never reads that file.
+
+**No normal distribution is fitted.** The z-score only shifts and rescales σ_Q. The line is the empirical quantile of the
+2 000 stored scores (`np.quantile`): it counts, it does not assume a shape. The bell-shaped lines in section 3.1 are an
+illustration only.
+
+**The line is adaptive: it is recomputed at every step** from the last 2 000 scores. Below, the real gate replays real
+σ_Q traces: 9 runs of the second machine's headroom diagnostic (inconsistent-operator suite, quality mode, 5 700–11 900
+steps; `runs/inconsistent_operator/headroom_diagnostic_new/aqi_logs/*/steps.jsonl` in the 2026-10-29 export). These are
+not the asking campaign's runs (its raw logs stay on the first machine), and the replay is open loop: the requests do
+not change the data. It shows the mechanism, not a result.
+
+Asks 55 %, its line translated back into σ_Q:
+
+| run | typical σ_Q (median), steps 1 000–2 000 → 4 000–5 000 | line at step 2 000 | at 4 000 | at 6 000 |
+|---|---|---|---|---|
+| expert run, σ_Q falls | 0.0147 → 0.0085 | 0.0131 | 0.0061 | 0.0083 |
+| novice run, σ_Q rises | 0.0060 → 0.0092 | 0.0045 | 0.0072 | 0.0088 |
+
+A line fixed at its step-2 000 value would have gone wrong both ways. In the expert run, σ_Q above 0.0131 at steps
+4 000–5 000: 28 % of the steps instead of 55 %. In the novice run, σ_Q above 0.0045: 88 %.
+
+Requested share of the steps after the warm-up, mean over the 9 runs (range across runs):
+
+| rule | requested | first 2 000 steps → last 2 000 | of all recent steps above the line | chance at a step where a request may start |
+|---|---|---|---|---|
+| fixed line z > 0.5 (the old τ_A) | 28.8 % (19.8–36.0) | 18.6 → 36.0 % | – | 5.0 % |
+| asks 10 % | 23.8 % (20.0–29.0) | 19.9 → 26.4 % | 11.5 % | 3.6 % |
+| asks 30 % | 42.9 % (40.2–45.3) | 41.1 → 44.4 % | 33.4 % | 10.8 % |
+| asks 55 % | 57.1 % (53.1–59.6) | 58.5 → 56.5 % | 59.3 % | 29.2 % |
+| random, p = 0.08 | 37.9 % (37.4–38.6) | 35.5 → 37.7 % | – | 8.1 % |
+
+Reading the table:
+
+- **"Asks r %" holds what it promises:** about r of the recent steps are above the line (11.5 / 33.4 / 59.3 %).
+- **The requested share is different:** 24 / 43 / 57 %. Each crossing buys 10 steps of request, even when z drops back,
+  and the pause skips some crossings. A brief crossing of the 10 % line therefore costs 10 steps.
+- **At a step where a request may start, the chance is lower than r** (3.6 / 10.8 / 29 %). Unsure stretches are already
+  covered by a request, so the free steps are mostly calm ones.
+- **The fixed line drifts:** its share doubles within a run (18.6 → 36 %) and differs between runs (20–36 %). On the
+  first machine the same rule gave about 9 % in D2. The rank line keeps asks 55 % at 53–60 % in every run, early and late.
+
+**What this taught us.**
+
+1. **A fixed line gives an accidental rate**, set by σ_Q's shape and drift: about 9 % on the first machine, 20–36 % on
+   the second machine's traces. A rank line sets the rate on purpose.
+2. **A set rate makes the arms comparable** at known budgets. That is what produced the clean ladder 70 → 81 → 87 %
+   success at 16 → 29 → 42 % operator share.
+3. **With one signal the z-score matters little.** Within 2 000 steps the running mean and spread barely move, so ranking z
+   is almost the same as ranking σ_Q: the same above/below decision at 92 % of the steps (at least 88 % in every run of
+   the replay). The z-score matters when several signals are added.
+4. **The label is not the help.** "Asks 55 %" means 55 % of recent steps are above the line. The 10-on, 5-off timing turns
+   that into the requested share, and the operator's answers into the operator share (41.8 % on the first machine).
+5. **A rank line always asks.** Even a confident robot has a "most uncertain 10 %", so the requests never fade as the
+   policy improves. That is fair for a comparison, but a deployed system would need a floor (never ask below a fixed
+   σ_Q) or a falling rate. It is also one reason the gated arms see fewer autonomous episodes and converge less often
+   (section 5.4).
+6. **The timing rules shape the rate as much as the line:** with a 20-step pause the three rates collapsed onto one
+   (section 2).
 
 ## 4. Design
 
@@ -324,8 +480,11 @@ HIL-SERL 59.5 / 55.0 / 43.0 %.
 |---|---|
 | Is σ_Q a measure of danger? | No. It measures how much the 8 critics disagree about the robot's next action: unfamiliarity. D1 showed it does not detect jams. |
 | Why the robot's own action, not the operator's? | The gate must decide before anyone acts, so it can only ask about what the robot would do next. |
-| What does "asks 55 %" mean exactly? | A request opens when the current disagreement is above the 45th percentile of the last 2 000 steps, lasts 10 steps, then a 5-step pause. The realised operator share was 41.8 %. |
-| Why not simply a fixed threshold? | σ_Q shrinks as the critics converge; a fixed threshold on its z-score fired at about 4–9 %, a rate nobody chose. |
+| What does "asks 55 %" mean exactly? | A request opens when the current disagreement is above the 45th percentile of the last 2 000 steps, lasts 10 steps, then a 5-step pause. The realised operator share was 41.8 %. Worked example with numbers: section 3.1. |
+| Does "asks 55 %" request 55 % of the steps? | No. About 55 % of the recent steps are above the line; the 10-on, 5-off timing turns that into the requested share (57 % in a replay on logged σ_Q; 24 % for asks 10 %, 43 % for asks 30 %), and the operator's answers into the operator share (41.8 %). Section 3.2. |
+| Is σ_Q stored for every step, or fitted to a normal distribution? | For the z-score only three running numbers are kept (count, mean, sum of squared deviations) over the whole run; for the line, the last 2 000 scores. No distribution is fitted: the line is the empirical quantile of those 2 000 values. Every step's σ_Q is also written to `steps.jsonl`, for the analysis only. |
+| Is the threshold adaptive? | Yes: it is recomputed every step from the last 2 000 scores, so it follows σ_Q down as the critics converge (and up when σ_Q rises). It keeps the rate fixed, so it never stops asking; a deployed system would need a floor or a falling rate. Section 3.2. |
+| Why not simply a fixed threshold? | Its rate is an accident of σ_Q's shape and drift: about 4–9 % on the first machine in D2; in a replay on second-machine traces 20–36 % per run, doubling within a run. The rank line keeps asks 55 % at 53–60 % in every run. |
 | Does the robot stop while asking? | No (`continue`): it keeps executing its own action until the operator takes over. |
 | Why do novices answer so little? | In the model, a novice's monitoring is slow and noisy; a 10-step request often ends before its smoothed signal crosses the threshold. Real people may differ. |
 | Is "less help" a saving? | Partly. Experts help more under the gate; the total falls because novices answer little. |

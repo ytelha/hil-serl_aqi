@@ -100,7 +100,9 @@ $$
 
 with $m_t, s_t$ the running mean and standard deviation over the run, $r$ = 0.10 / 0.30 / 0.55, no request in the first
 1 000 steps, then 10 steps on and 5 off, so at most $10/15 = 67\,\%$ of the steps are requested. The random arm requests
-about $10 / (15 + 1/0.08) \approx 36\,\%$ of the steps. The operator sees the request through
+about $10 / (14 + 1/0.08) \approx 38\,\%$ of the steps. The line is recomputed at every step from the last 2 000
+scores, so it follows σ_Q's drift; no distribution is fitted (a worked example with numbers, and what the gate keeps
+in memory: [asking-rate log, sections 3.1–3.2](first_machine_asking_rate_results_and_qa_log.md)). The operator sees the request through
 $\hat z_t = 0.6\, \hat z_{t-1} + 0.4\, z_t + \mathcal N(0, \sigma_{mon}^2)$, and takes over after $\hat z > \delta_{in}$ for
 $m_{in}$ steps plus a reaction of $l_{react}$ steps, unless $\hat z$ drops below $\delta_{in}$ first. Run through the real gate,
 the tier anchors answer an isolated 10-step request:
