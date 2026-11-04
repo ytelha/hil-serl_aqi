@@ -141,27 +141,54 @@ share 28 %, 92 training episodes with 88 successes, 61 of them without help. Not
 | first machine, original | `hilserl`, fixed-ensemble campaign | 18 | 18 164 | 95 % | 5 % | 26 801 | 52 % | 9.8 | 47 min |
 | first machine, original | ensemble extended (`logged`), fixed-ensemble campaign | 18 | 20 179 | 92 % | 8 % | 33 288 | 54 % | 9.4 | 79 min |
 | first machine, original | ensemble extended (`logged`), asking experiment | 18 | 18 330 | 93 % | 7 % | 30 395 | 54 % | 9.0 | 76 min |
-| second machine, new stack | ensemble extended (`logged`), validity (Q1) | 6 | 4 599 | 27 % | 73 % | 9 560 | 41 % | 7.7 | ≈ 36 min |
-| second machine, new stack | keep-all, perfect-filter check | 3 | 5 585 | 22 % | 78 % | 8 166 | 43 % | 8.4 | ≈ 29 min |
-| second machine, new stack | discard, pilot | 3 | 4 578 | 20 % | 80 % | 9 877 | 43 % | 7.8 | ≈ 30 min |
-| second machine, new stack | re-weight, pilot | 3 | 6 382 | 20 % | 80 % | 8 401 | 41 % | 7.7 | ≈ 30 min |
-| second machine, new stack | discard, confirmation | 18 | 4 174 | 29 % | 71 % | 9 007 | 41 % | 7.9 | ≈ 31 min |
-| second machine, new stack | re-weight, confirmation | 18 | 5 442 | 34 % | 66 % | 8 802 | 39 % | 7.9 | ≈ 31 min |
+| second machine, new stack | ensemble extended (`logged`), validity (Q1) | 6 | 4 599 | 27 % | 73 % | 9 560 | 41 % | 6.3 | ≈ 36 min |
+| second machine, new stack | keep-all, perfect-filter check | 3 | 5 585 | 22 % | 78 % | 8 166 | 43 % | 6.5 | ≈ 29 min |
+| second machine, new stack | discard, pilot | 3 | 4 578 | 20 % | 80 % | 9 877 | 43 % | 6.1 | ≈ 30 min |
+| second machine, new stack | re-weight, pilot | 3 | 6 382 | 20 % | 80 % | 8 401 | 41 % | 6.4 | ≈ 30 min |
+| second machine, new stack | discard, confirmation | 18 | 4 174 | 29 % | 71 % | 9 007 | 41 % | 6.1 | ≈ 31 min |
+| second machine, new stack | re-weight, confirmation | 18 | 5 442 | 34 % | 66 % | 8 802 | 39 % | 6.5 | ≈ 31 min |
 
 - **Same method: about 4 × sooner.** First success without help 18 300–20 200 → 4 600 steps; out of time 92–93 → 27 %; success in the first 10 000 steps 7–8 → 73 %.
 - **Steps at the stop are not comparable** (about 30 000 → 9 600). The stop rule changed from a rolling window of untouched episodes at 0.9 to a mini-eval at 0.6. A lower bar stops earlier by itself.
 - **The new side has the harder operator:** about a third of its takeovers are inattentive.
+- **Env steps per second** are averages over the online training (medians over cells); on the second machine from the actor's progress lines (corrected 2026-11-04, see (b)).
 - Plain HIL-SERL on the first machine took about 18 000–19 000 steps. The docs earlier rounded this to about 17 000 from another count; the direction is the same.
 
-**(b) Clock time of training: shorter, but partly the GPU and the earlier stop.** One env step takes longer now: the env waits for the learner.
+**(b) Clock time of training: 2.5 × shorter, while the steps at the stop fell 3.4 ×.** Split measured on 2026-11-04 from
+the progress lines in `logs/<cell>.learner.log` and `logs/<cell>.actor.log` of all 57 cells; the first machine from
+the table above.
 
-| | first machine, original | second machine, new stack |
+| part of a cell's training | first machine, ensemble extended | second machine, all arms |
 |---|---|---|
 | learner steps per env step | about 0.45 (finding F3) | 1 |
-| env steps per second | 9.0–9.8 (paced at 10 Hz) | 7.7–8.4 |
-| training per cell | 76–79 min (ensemble extended) | 29–36 min (all arms) |
+| demo pre-training (5 000 learner steps) | about 20 min (about 4 per second; engineering log, 6 Sep) | 5.1 min median (4.7–7.5; 16–21 per second) |
+| online training: env steps | 30 400–33 300 | 8 700 median |
+| online: env steps per second, average | 9.0–9.4 (paced at 10 Hz) | 6.2–6.4 (about 7 while stepping) |
+| online training time | 56–59 min | 23–25 min (validity campaign: 29) |
+| training per cell | 76–79 min | 29–36 min |
 
-At its measured rate of about 5 learner steps per second, the first machine should train a new-stack cell in about 50 minutes instead of about 78. That is an estimate; the smoke test will measure it.
+Check: plain HIL-SERL on the first machine has no pre-training, and 26 801 steps at 9.8 per second are 46 minutes,
+against 47 measured. The earlier version of this table gave 7.7–8.4 steps per second for the second machine: that was
+the progress bar's smoothed rate at the end of a run, not the average.
+
+Why the time fell less than the steps:
+1. **The 4 × is the first success without help, not where training stops.** Training runs on until the mini-eval passes
+   twice: 3.4 × fewer steps than on the first machine.
+2. **Each env step takes about 1.45 × longer** (9.2 → 6.3 per second on average). On the first machine the 10 Hz pacing
+   was the limit, and the learner did what it could alongside, about 4 updates per second. With the fixed update ratio
+   the pacing is off, but the learner must make one update per step, about 7 per second, on the same GPU that renders
+   the two cameras and runs the actor's policy. The actor waited for the learner only 0.5–0.7 minutes per cell (its own
+   log line), so the limit is the actor's step on a shared GPU. Even the ruler, with no learner at all, ran at only
+   about 9 steps per second on that machine. The two or three mini-evals and the start-up take another 1–3 minutes.
+3. **Pre-training does not shrink with fewer steps.** It is a fixed 5 000 learner steps. The RTX 5090 made it 4 × faster
+   (20 → 5 minutes), but it is still a sixth of a new-stack cell's training.
+
+From 77 to 31 minutes: fewer env steps save about 40 minutes, faster pre-training about 15, and the slower steps cost
+about 8 back. At the first machine's step rate a new-stack cell would train in about 23 minutes. Whether the slower
+step comes from the fixed update ratio or from the machine (another GPU, under WSL2) shows only on one machine: the
+ladder rung that adds the fixed update ratio measures it. At its measured rate of about 5 learner steps per second,
+the first machine should train a new-stack cell in about 50 minutes instead of about 78. That is an estimate; the smoke
+test will measure it.
 
 **(c) Clock time of a whole cell: about 1.5 h, mostly the ruler.**
 
@@ -193,8 +220,8 @@ The ruler scores every saved checkpoint: on average 14–17 per cell (a checkpoi
 3. **Early checkpoints fail every trial, and a failed trial runs to the 300-step limit.** About 72 % of all trials do.
    Example `drop-hind_exp00_s0`: checkpoints 1 000–8 000 score 0 of 9, all at 300 steps; from 13 000 on, 9 of 9 at 12–17 steps.
 4. **So the ruler simulates about 30 000 steps per cell, three times the training's 9 000–10 000.** Each step renders two
-   camera images and runs the policy, so it runs at about 9 steps per second (30 372 steps in about 57 minutes), not much
-   faster than training (7.7–8.4), even without the 10 Hz pacing.
+   camera images and runs the policy, so it runs at about 9 steps per second (30 372 steps in about 57 minutes), only a
+   little faster than training (6.2–6.4 on average, see (b)), even without the 10 Hz pacing and without a learner.
 5. **Faster learning did not reduce the number of checkpoints.** Checkpoints count learner steps, and the fixed update ratio
    doubled the learner steps per environment step (1 against about 0.45). The old setup made about 30 000 × 0.45 + 5 000 ≈
    18 500 learner steps per cell; the new one about 9 500 + 5 000 = 14 500: almost as many checkpoints, in a third of the
@@ -317,7 +344,7 @@ convergence times, the size of the effects and possibly the operator dependency 
 with an operator who can turn the peg. That is what the comparison of old and new stack on the
 first machine has to find out.
 
-**Did the changes speed up training?** Learning per step, yes, by about 4 × for the same method. Training clock time, yes, partly through the faster GPU and the earlier stop. The whole cell hardly, because the ruler takes about 55 minutes. Which change does it is open.
+**Did the changes speed up training?** Learning per step, yes, by about 4 × for the same method. Training clock time, yes, 2.5 × (77 → 31 minutes), less than the steps (3.4 × fewer at the stop): each step takes about 1.45 × longer now, and the 5-minute pre-training does not shrink with the steps (§5 (b)). The whole cell hardly, because the ruler takes about 55 minutes. Which change does it is open.
 
 **Can the ruler be made shorter without changing the results?** On these cells, yes: skipping the pre-training checkpoints
 and scoring only the newest 8 keeps 36 % of the ruler time and leaves all 57 scores unchanged (§5 (c)). Scoring every
