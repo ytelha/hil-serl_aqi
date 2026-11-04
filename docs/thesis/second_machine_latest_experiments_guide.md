@@ -105,10 +105,27 @@ per run. Skipping the pre-training checkpoints and scoring only the newest 8 kee
 was last time; otherwise it is drawn anew: careless with probability 0.4. So 40 % of takeovers are careless in the long run,
 and two in a row agree 86 % of the time: careless spells last several takeovers.
 
+$$
+c_n = \begin{cases} c_{n-1} & \text{prob. } \rho = 0.7 \\ \text{careless} & \text{prob. } (1-\rho)\,b = 0.12 \\ \text{careful} & \text{prob. } (1-\rho)(1-b) = 0.18 \end{cases}
+\qquad \pi_{careless} = b = 0.4, \qquad P(c_n = c_{n-1}) = \rho + (1-\rho)\big(b^2 + (1-b)^2\big) = 0.856
+$$
+
+Careless spells last $1/0.18 \approx 5.6$ takeovers on average, careful ones $1/0.12 \approx 8.3$, often across episodes.
+Code: `operator_model.py` (`Inconsistency`, `inattentive_theta`, `begin_takeover`); every step in the
+[log, section 2.1](inconsistent_operator_results_and_qa_log.md).
+
 **What careless changes.**
 1. Execution at novice level: motor noise, tremor, lag, speed, pauses, recovery take the novice's values.
 2. A premature push in half the attempts.
 3. An aim point about **6 mm beside the hole** (1.5 × the 4 mm commit threshold), fixed for the takeover; the cuboid allows 5 mm.
+
+The operator's command each step is $a_t = (1-\lambda)\,a_{t-1} + \lambda\,(u_t + \varepsilon_t + \tau_t)$ with motor noise
+$\varepsilon_t \sim \mathcal N(0, (\sigma_0 + k_{sdn}\lVert u_t\rVert)^2)$, tremor $\tau_t$ of size $\sigma_{tr}$ and
+$\lVert a_t \rVert \le v_{max}$. Careless sets $\sigma_0, k_{sdn}, \sigma_{tr}, \lambda, v_{max}$, the pauses and the recovery to
+the novice anchor (for example $\sigma_0$: expert 0.63, novice 10), $p_{early} = 0.5$, and replaces the small aiming error
+$\mathbf b \sim \mathcal N(0, \sigma_{perc}^2 I)$ by $\mathbf b = 1.5\, c_{commit}\, \mathbf d / \lVert \mathbf d \rVert$, a fixed
+6 mm offset in a random direction. Every episode starts with the operator's own values, so the demonstrations are always
+careful.
 
 **What it does not change:** *when* the operator steps in (its own monitor), so the start of a takeover gives nothing away.
 
@@ -123,15 +140,21 @@ tiers.**
 
 ## 3. Do scores spot careless corrections?
 
-Confirmation, 3 357 takeovers, compared within one run, training phase and onset time:
+Confirmation, 3 357 takeovers, compared within one run, training phase and onset time. A takeover covers steps $t_0..t_1$
+($T$ steps), $a^H$ is the operator's action, $a^R$ the policy's at the same state, $\mu_Q$ the mean of the 8 critics, $z(\cdot)$
+a running standardisation over the run's takeovers:
 
-| score | all | expert / intermediate / novice |
-|---|---|---|
-| behavioural (value rise − length − peak force) | **0.66** | 0.71 / 0.67 / 0.52 |
-| takeover length alone | 0.65 | 0.69 / 0.68 / 0.51 |
-| hindsight | 0.62 | 0.66 / 0.63 / 0.49 |
-| counterfactual (critics' score) | 0.49 | 0.46 / 0.50 / 0.54 |
-| smoothness (not available live; circular) | 0.76 | 0.86 / 0.85 / 0.40 |
+| score | formula (higher = more careful) | all | expert / intermediate / novice |
+|---|---|---|---|
+| behavioural | $B = z(\Delta V) - z(T) - z(F_{peak})$, $\ \Delta V = \mu_Q(s_{t_1}, a^H_{t_1}) - \mu_Q(s_{t_0}, a^R_{t_0})$, $F_{peak} = \max_t F_t$ | **0.66** | 0.71 / 0.67 / 0.52 |
+| takeover length alone | $-T$ | 0.65 | 0.69 / 0.68 / 0.51 |
+| hindsight | $A_{hind} = \sum_{t=t_0}^{t_e-1} \gamma^{t-t_0} r_t + \gamma^{t_e-t_0} V(s_{t_e}) - V(s_{t_0})$, $t_e = t_0 + T + 10$, $V(s) = \mu_Q(s, a^R)$ | 0.62 | 0.66 / 0.63 / 0.49 |
+| counterfactual (critics' score) | $\frac1T \sum_t \big[\mu_Q(s_t, a^H_t) - \mu_Q(s_t, a^R_t)\big]$ | 0.49 | 0.46 / 0.50 / 0.54 |
+| smoothness (not available live; circular) | $-\frac1T \sum_t \lVert a^H_t - 2a^H_{t-1} + a^H_{t-2} \rVert$ | 0.76 | 0.86 / 0.85 / 0.40 |
+
+The number is the AUROC, $P(\text{score of a random careful takeover} > \text{score of a random careless one})$, counting only
+pairs within the same run, training phase and onset time. Every score's formula, with the yardsticks and the reasons: the
+[log, section 3.0](inconsistent_operator_results_and_qa_log.md).
 
 **Reading.** Moderate at best, and mostly length: careless takeovers last longer (44 against 38 steps). The live score
 reaches the same 0.66, but none passes the 0.70 bar. The critics' score is at chance.
@@ -144,8 +167,8 @@ machine's perfect-score campaign).
 | arm | what happens to a takeover |
 |---|---|
 | keep-all | always enters the demonstration half |
-| discard | after the 5 000-step warm-up: dropped from the demonstration half if its score is in the lowest 40 % of the last 200 (its steps stay in the online half) |
-| re-weight | always kept; replayed more often the higher its score |
+| discard | after the 5 000-step warm-up: dropped from the demonstration half if $B < Q_{0.4}$ of the last 200 scores, its 40th percentile (its steps stay in the online half) |
+| re-weight | always kept; replay priority $p_i = (0.05 + \lvert\delta_i\rvert + \max(B, 0)/\bar q)^{0.6}$, so a higher score is replayed more often |
 | perfect filter | after the warm-up: dropped if it was careless |
 | random drop | after the warm-up: dropped with probability 0.4 |
 

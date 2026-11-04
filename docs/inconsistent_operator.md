@@ -39,6 +39,9 @@ the operator is exactly the previous one: its actions are identical in 15 runs
 
 The persistence works across episodes: a bad spell can continue after a reset.
 
+Every step of the model in formulas (the two-state chain and its spell lengths, the motor model, the replaced parameter
+values, the aim offset): [docs/thesis/inconsistent_operator_results_and_qa_log.md](thesis/inconsistent_operator_results_and_qa_log.md) section 2.1.
+
 Switches: `--synthetic_inconsistent`, `--synthetic_bad_share`,
 `--synthetic_bad_persistence` (actor only; YAML `aqi.synthetic_inconsistent`,
 `aqi.synthetic_bad_share`, `aqi.synthetic_bad_persistence`). It needs the
@@ -70,6 +73,9 @@ None of them is in the default pipeline:
 **Re-weighting** is the existing quality replay priority,
 `(per_eps + |δ| + per_eta · q)^α`. It keeps every correction and replays the
 well-scored ones more often.
+
+The formula of every score (behavioural, hindsight, progress, outcome, counterfactual, consistency, smoothness, the
+yardsticks), of the AUROC used to judge them and of both arms: the same log, section 3.0.
 
 ## 3. The experiments
 

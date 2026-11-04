@@ -63,7 +63,7 @@ inattentive with probability 0.4. Inattentive means *sloppy and wrong*: novice e
 parameters, premature commits with probability 0.5, and an aim point 1.5 commit thresholds beside the
 hole. Monitoring stays the operator's own. The condition is logged per takeover as ground truth.
 
-**How it works in the code** (`operator_model.py`: `Inconsistency`, `inattentive_theta`, `SyntheticOperator._draw_bias`):
+**How it works in the code** (`operator_model.py`: `Inconsistency`, `inattentive_theta`, `SyntheticOperator._draw_bias`; step by step and in formulas in section 2.1):
 - **When the condition is drawn.** Once per takeover, at its onset, and held until the hand-back. With probability 0.7 it
   stays as it was; otherwise it is drawn anew, inattentive with probability 0.4. So 40 % of takeovers are inattentive in
   the long run, and two in a row agree with probability 0.7 + 0.3 × (0.4² + 0.6²) = 0.856: careless spells span several
@@ -156,7 +156,241 @@ cells reach the end of the warm-up after 34–38 takeovers (section 3.4), just b
 corrections is confounded with training phase and with tier. Patch 0021 makes the sequence depend on seed and operator, keeping the arms of one
 operator and seed paired.
 
+### 2.1 The implementation, step by step and in formulas
+
+Code: `serl_launcher/aqi/operator_model.py` (`Inconsistency`, `inattentive_theta`, `SyntheticOperator.begin_takeover`,
+`_next_condition`, `_apply_condition`, `_draw_bias`); switched on with `--synthetic_inconsistent`, `--synthetic_bad_share`
+($b = 0.4$) and `--synthetic_bad_persistence` ($\rho = 0.7$). "Attentive" is careful, "inattentive" careless.
+
+**1. The hidden condition is a two-state chain over takeovers.** Let $c_n \in \{A, I\}$ be the condition of the $n$-th
+takeover of a run. The first is drawn with $P(c_0 = I) = b$; then, at each takeover onset,
+
+$$
+c_n =
+\begin{cases}
+c_{n-1} & \text{with probability } \rho \\
+I & \text{with probability } (1-\rho)\,b \\
+A & \text{with probability } (1-\rho)(1-b)
+\end{cases}
+\qquad
+P = \begin{pmatrix} P(A \to A) & P(A \to I) \\ P(I \to A) & P(I \to I) \end{pmatrix}
+  = \begin{pmatrix} 0.88 & 0.12 \\ 0.18 & 0.82 \end{pmatrix}
+$$
+
+- Long-run share of careless takeovers: $\pi_I = b = 0.4$.
+- Two takeovers in a row agree with $\rho + (1-\rho)\,(b^2 + (1-b)^2) = 0.856$.
+- Mean spell length: careless $1 / 0.18 \approx 5.6$ takeovers, careful $1 / 0.12 \approx 8.3$. Spells cross episode
+  boundaries, because the condition is kept between episodes.
+- The chain has its own random stream. Since patch 0021 it is seeded by the operator's seed **and** its name (a draw from
+  the seed's generator together with `crc32(operator_id)`), so the arms of one operator and seed see the same sequence (a
+  paired comparison) and different operators do not. On the second machine it was seeded by the seed alone: every operator
+  with one seed shared one sequence (the bug of section 2).
+
+**2. What is drawn when.**
+
+| moment | what happens |
+|---|---|
+| episode reset | the operator's own parameters $\theta_{own}$ are restored; the condition is kept for the next takeover |
+| takeover onset (`begin_takeover`) | draw $c_n$; set $\theta \leftarrow \theta_{bad}$ if $c_n = I$, else $\theta_{own}$; redraw the premature-commit event and the aim offset |
+| during the takeover | the operator acts with $\theta$ and the fixed aim offset |
+| hand-back | decided by the operator's own monitoring, unchanged |
+
+So the demonstrations, which are recorded from resets, always use $\theta_{own}$: only corrections can be careless.
+
+**3. The motor model, and which parameters a careless takeover replaces.** Each step the operator turns its intent $u_t$
+(from the geometric oracle) into a command:
+
+$$
+a_t = (1-\lambda)\,a_{t-1} + \lambda\,(u_t + \varepsilon_t + \tau_t), \qquad
+\varepsilon_t \sim \mathcal N\!\big(0,\, (\sigma_0 + k_{sdn}\,\lVert u_t \rVert)^2\big), \qquad \lVert a_t \rVert \le v_{max}
+$$
+
+with $\tau_t$ an Ornstein-Uhlenbeck tremor of size $\sigma_{tr}$, random pauses (probability $p_{pause}$ per step, mean length
+`pause_len_mean`) and a recovery behaviour $q_{rec}$ (retract and re-align rather than push on). A careless takeover sets
+$\theta_{bad}$ = the operator's own $\theta$ with these eight execution parameters replaced by the **novice anchor**, and
+$p_{early} = 0.5$:
+
+| parameter | meaning | expert anchor | intermediate anchor | novice anchor = careless |
+|---|---|---|---|---|
+| $\sigma_0$ | motor noise | 0.629 | 2.508 | 10.0 |
+| $k_{sdn}$ | speed-dependent noise | 0.03 | 0.055 | 0.10 |
+| $\sigma_{tr}$ | tremor | 1.732 | 3.948 | 9.0 |
+| $\lambda$ (`lag`) | how fast a command follows the intent | 0.641 | 0.506 | 0.40 |
+| $v_{max}$ | top speed | 79.6 | 66.2 | 55.0 |
+| $p_{pause}$ | pause probability per step | 0.028 | 0.054 | 0.08 |
+| `pause_len_mean` | mean pause length (s) | 0.186 | 0.472 | 1.2 |
+| $q_{rec}$ | recovery | 0.17 | 0.125 | 0.08 |
+| $p_{early}$ | premature commit per attempt | 0.052 | 0.116 | 0.18 → **0.5** when careless |
+
+Real operators are jittered around these anchors (roster jitter 0.15), so `nov00` is not exactly the novice anchor; that
+is why a careless takeover can be smoother than a novice's own (section 2). A premature commit means the operator starts
+pressing down after a random 0.2–0.7 s, aligned or not.
+
+**4. The aim offset.** The attentive operator aims at the hole with a small perception error, the careless one beside it:
+
+$$
+\text{attentive: } \mathbf b \sim \mathcal N(0,\, \sigma_{perc}^2 I_2), \qquad
+\text{careless: } \mathbf b = 1.5\, c_{commit}\, \frac{\mathbf d}{\lVert \mathbf d \rVert},\ \ \mathbf d \sim \mathcal N(0, I_2)
+$$
+
+drawn at the onset and fixed for the takeover. On the cuboid $c_{commit} = 4$ mm, so $\lVert \mathbf b \rVert = 6$ mm,
+beyond the 5 mm the peg allows.
+
+**5. What it leaves alone.** The monitoring parameters ($\sigma_{mon}$, $\delta_{in}$, $m_{in}$, $l_{react}$, $p_{miss}$,
+$\rho_{fa}$, $\delta_{out}$, $k_{out}$, $d_{max}$) are not in $\theta_{bad}$, so *when* a takeover starts does not depend on
+the condition; rotation control works in both conditions.
+
+**6. The label.** Every takeover segment stores `condition` (in `segments.jsonl`). Only the perfect filter reads it.
+
 ## 3. Do the scores find the bad corrections?
+
+### 3.0 The scores, defined
+
+A *score* is one number per takeover that should be high for a careful correction and low for a careless one. Live scores
+are computed at the end of each episode by `serl_launcher/aqi/runtime.py` and `quality.py`; the offline ones by
+`examples/inconsistent_operator_audit.py` (with `quality_signal_audit.py`).
+
+**Notation.** A takeover covers steps $t_0, \dots, t_1$, so its length is $T = t_1 - t_0 + 1$, and control returns to the
+robot at $t_1 + 1$. At each step, $s_t$ is the state, $a^H_t$ the operator's action and $a^R_t$ the action the policy
+would have taken in the same state. The ensemble has $K = 8$ critics:
+
+$$
+\mu_Q(s,a) = \frac1K \sum_{k=1}^{K} Q_k(s,a), \qquad \sigma_Q(s,a) = \sqrt{\frac1K \sum_{k=1}^{K} \big(Q_k(s,a) - \mu_Q(s,a)\big)^2}
+$$
+
+$F_t$ is the contact-force magnitude, $r_t$ the reward, $p(s) = -z_{tcp}(s)$ the insertion depth (the tool's height below
+the reset pose), $\gamma = 0.97$ and $H = 10$ steps after the hand-back. The critics are those of the moment the episode is
+scored.
+
+**Running standardisation** (live scores). For a takeover feature $x$, after adding $x$ to this run's earlier values:
+
+$$
+z(x) = \frac{x - m_n}{s_n + \epsilon}, \qquad m_n, s_n = \text{running (Welford) mean and std over the run's first } n \text{ takeovers}
+$$
+
+and $z(x) = 0$ while $n < 10$. The offline audit uses the mean and std of the whole run instead, which a live system
+cannot; the live score reaches the same AUROC (section 3.3), so this does not inflate the result.
+
+#### How a score is judged
+
+$$
+\mathrm{AUROC} = \frac{1}{n_A\, n_I} \sum_{i \in A} \sum_{j \in I} \Big[\mathbb 1(S_i > S_j) + \tfrac12\,\mathbb 1(S_i = S_j)\Big]
+$$
+
+the probability that a random careful takeover ($A$) scores higher than a random careless one ($I$): 0.5 is chance, 1 is
+perfect, below 0.5 the score points the wrong way. **Within** counts only pairs inside the same stratum $g$ = (run,
+training-phase bin of 15 takeovers, onset-time bin of 50 steps):
+
+$$
+\mathrm{AUROC}_{within} = \frac{\sum_g U_g}{\sum_g n_{A,g}\, n_{I,g}}, \qquad U_g = \text{the pair count above, inside } g
+$$
+
+Because careless takeovers come in spells, the condition is tied to the training phase, and a pooled AUROC can reward a
+score that only tells early from late. The 95 % CI resamples whole episodes (500 times). Verdict: **valid** if
+AUROC ≥ 0.70 and the CI's lower bound > 0.5, **weak** between, **invalid** at or below 0.5.
+
+#### The score both arms used
+
+**Behavioural composite** (`quality_score_mode: behavioral`):
+
+$$
+B = z(\Delta V) - z(T) - z(F_{peak}), \qquad
+\Delta V = \mu_Q\big(s_{t_1}, a^H_{t_1}\big) - \mu_Q\big(s_{t_0}, a^R_{t_0}\big), \qquad
+F_{peak} = \max_{t_0 \le t \le t_1} F_t
+$$
+
+The critics' value at the takeover's last step (at the operator's action) minus at its first (at the robot's action), minus
+its length, minus its peak force. A short, value-raising, gentle correction scores high.
+
+**How the two arms turn $B$ into training:**
+
+- **Discard** (`score_filter`, `quality_drop_fraction` 0.4). Keep the last 200 scores in a window $W$. After the warm-up
+  (env step ≥ 5 000) and once $\lvert W \rvert \ge 20$:
+
+  $$
+  \text{drop the takeover if } B < Q_{0.4}(W)
+  $$
+
+  where $Q_{0.4}$ is the 40th percentile; ties at the threshold are dropped at random so the share stays 40 %. A dropped
+  takeover leaves the demonstration buffer only; its steps stay in the online buffer. $B$ is logged as `drop_score`.
+- **Re-weight** (no filter, `per_eta` 1). Every takeover is kept, and its steps get the replay priority
+
+  $$
+  q_{int} = \max(B, 0), \qquad
+  p_i = \Big(\epsilon + \lvert \delta_i \rvert + \eta\, \frac{q_{int,i}}{\bar q}\Big)^{\alpha}, \qquad
+  P(i) = \frac{p_i}{\sum_j p_j}, \qquad
+  w_i = \frac{(N\,P(i))^{-\beta}}{\max_{j \in \text{batch}}\, (N\,P(j))^{-\beta}}
+  $$
+
+  with $\epsilon = 0.05$, $\eta = 1$, $\alpha = 0.6$, $\beta = 0.5$; $\delta_i$ the item's TD error, $\bar q$ a running mean
+  of $q_{int}$ (priorities refreshed every 2 000 steps), and $w_i$ the importance weight in the loss. The clip at 0 gives
+  every below-average takeover the same priority, which is why the logged $q_{int}$ separates less well than $B$.
+
+The other filters: the **perfect filter** drops a takeover if $c = I$; the **random drop** drops it with probability 0.4.
+Both act only after the warm-up.
+
+#### All scores, with their formula and their AUROC (confirmation, 3 357 takeovers)
+
+| score | formula (higher = more careful) | live? | within | within: expert / interm. / novice | pooled |
+|---|---|---|---|---|---|
+| behavioural composite | $B = z(\Delta V) - z(T) - z(F_{peak})$ | yes, both arms | **0.66** | 0.71 / 0.67 / 0.52 | 0.65 |
+| the score as logged | $q_{int} = \max(B, 0)$ | yes (re-weight) | 0.63 | 0.67 / 0.66 / 0.50 | 0.62 |
+| takeover length | $-T$ | part of $B$ | 0.65 | 0.69 / 0.68 / 0.51 | 0.60 |
+| value gain | $\Delta V$ | part of $B$ | 0.60 | 0.66 / 0.59 / 0.49 | 0.60 |
+| behavioural without length | $z(\Delta V) - z(F_{peak})$ | no | 0.61 | 0.65 / 0.60 / 0.53 | 0.59 |
+| peak force | $-F_{peak}$ | part of $B$ | 0.58 | 0.61 / 0.56 / 0.53 | 0.56 |
+| hindsight advantage | $A_{hind}$, below | yes (`hindsight`) | 0.62 | 0.66 / 0.63 / 0.49 | 0.55 |
+| episode outcome | $+1$ if the episode succeeded, $-1$ if not | yes (`outcome`) | 0.55 | 0.56 / 0.58 / 0.49 | 0.59 |
+| consistency | $-\bar\sigma_\beta$, below | BC weight only | 0.58 | 0.63 / 0.55 / 0.50 | 0.60 |
+| progress after hand-back | $p(s_{t_p}) - p(s_{t_0})$, $t_p = \min(t_0 + T + H,\ \text{episode end})$ | yes (`progress`) | 0.50 | 0.51 / 0.50 / 0.46 | 0.50 |
+| progress during the takeover | $p(s_{t_1}) - p(s_{t_0})$ | no | 0.49 | 0.48 / 0.51 / 0.47 | 0.49 |
+| counterfactual advantage, mean | $\bar A = \frac1T \sum_{t=t_0}^{t_1} \big[\mu_Q(s_t, a^H_t) - \mu_Q(s_t, a^R_t)\big]$ | yes (`counterfactual`) | 0.49 | 0.46 / 0.50 / 0.54 | 0.50 |
+| counterfactual at onset | $\mu_Q(s_{t_0}, a^H_{t_0}) - \mu_Q(s_{t_0}, a^R_{t_0})$ | no | 0.50 | 0.50 / 0.45 / 0.56 | 0.50 |
+| critic disagreement | $\bar\sigma = \frac1T \sum_{t=t_0}^{t_1} \sigma_Q(s_t, a^H_t)$ | no | 0.48 | 0.50 / 0.45 / 0.49 | 0.49 |
+| smoothness | $-\frac1T \sum_{t=t_0}^{t_1} j_t$, $\ j_t = \lVert a^H_t - 2a^H_{t-1} + a^H_{t-2} \rVert$ (0 for the first two steps) | no | 0.76 | 0.86 / 0.85 / **0.40** | 0.71 |
+| yardstick: start time | $-t_0$ | – | 0.49 | 0.49 / 0.45 / 0.54 | 0.59 |
+| yardstick: end time | $-(t_1 + 1)$, the hand-back step | – | 0.60 | 0.61 / 0.64 / 0.55 | 0.60 |
+| yardstick: value at onset | $\mu_Q(s_{t_0}, a^R_{t_0})$ | – | 0.58 | 0.60 / 0.62 / 0.48 | 0.55 |
+
+**Hindsight advantage** judges a correction by what the robot reached once it had control back. With
+$t_e = t_0 + T + H$ (clipped to the episode) and the value taken only at the policy's own action,
+$V(s_t) = \mu_Q(s_t, a^R_t)$:
+
+$$
+A_{hind} = \sum_{t=t_0}^{t_e - 1} \gamma^{\,t - t_0}\, r_t \;+\; \gamma^{\,t_e - t_0}\, V(s_{t_e}) \;-\; V(s_{t_0})
+$$
+
+without the bootstrap term if the episode terminated inside the window. Live it is divided by the running mean of
+$\lvert A_{hind} \rvert$. Before the critics have seen a reward, $r_t = 0$ and $V$ is nearly flat, so
+$A_{hind} \approx (\gamma^{T+H} - 1)\, V(s_{t_0})$: a measure of length and timing (finding F4). That is why it is weak
+pooled (0.55) and better within run and late in training.
+
+**Consistency** asks whether the operator acts as it did at similar states in its earlier takeovers (the SiLRI idea). For
+a state $s$, take the nearest state $s_j$ from each of the $k = 5$ earlier takeovers closest to $s$ (states standardised):
+
+$$
+\sigma_\beta(s) = \sqrt{\frac1d \sum_{i=1}^{d} \mathrm{Var}_{j = 1..k}\big[a^H_i(s_j)\big]}, \qquad
+\bar\sigma_\beta = \text{mean of } \sigma_\beta \text{ over evenly spaced steps of the takeover}
+$$
+
+A small spread means a consistent operator. Only one neighbour per earlier takeover, since steps of one trajectory are
+always close to each other.
+
+**Why each one does what it does:**
+- **Behavioural is moderate and mostly length.** Careless takeovers last longer (43.7 against 37.5 steps): the wrong aim and
+  the novice motor noise keep the peg in trouble, and the monitor hands back only when the trouble clears or at the time
+  cap. Without its length term the composite falls from 0.66 to 0.61.
+- **Counterfactual is at chance and below it once the critics are trained** (0.41 in the second half). The actor is trained
+  to maximise these same critics, so $a^R$ always looks good: the score measures distance from the policy, not quality.
+  The pre-registered cluster study abandoned it.
+- **Progress, outcome and critic disagreement carry little or nothing.** Probably because depth after the hand-back depends
+  on the robot as much as on the correction, and an episode's success on far more than one takeover.
+- **Smoothness is circular.** Careless *is* novice motor noise, which is what jerk measures, so it would say nothing about
+  a real careless person. It fails for the novices because their own tremor exceeds the anchor (section 2), was chosen
+  after seeing the validity results, and has no live mode.
+- **The yardsticks are checks, not scores.** Start time and value at the onset must sit near 0.5, because the condition is
+  drawn independently of when and where a takeover starts: within run they are 0.49 and 0.58. Pooled, start time reaches
+  0.59, which is only the spells, and the reason "within" is the number to read. End time may differ by design.
 
 ### 3.1 The confirmation
 
@@ -257,6 +491,8 @@ In that replay the behavioural filter's novice precision (0.37) is *below* a ran
 after seeing Q1, it has no online mode, and the machine's report says so.
 
 ### 3.4 Reading the scores
+
+Definitions and formulas: section 3.0.
 
 - **Behavioural is moderate, and mostly takeover length.** Without its length term it falls from 0.66 to 0.61 within run. Inattentive takeovers really do last longer
   (43.7 vs 37.5 steps).
