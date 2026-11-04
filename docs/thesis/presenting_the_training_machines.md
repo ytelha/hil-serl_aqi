@@ -1,8 +1,8 @@
 # Presenting the training machines
 
 A guide for presenting what ran where and what came out, with the slide numbers of both decks
-(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 57 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
-225 slides, 47 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
+(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 59 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
+227 slides, 49 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
 [second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026.
 
 ## The story in one minute
@@ -42,10 +42,12 @@ machine and 1 on the second, so each comparison has its reference on its own mac
 | 8 | what we learned, what comes next | 25 | 174–176 |
 | – | where it all ran | – | 161 |
 
-Backups to have ready: Siemens 36 (all asking variants, both references), 38 (what ran on the second machine), 39
-(where a run's time goes, the fixed update ratio, the shorter evaluation), 40 (scores), 41 (discard or re-weight),
-42 (perfect score and novice test), 50 (score ideas); long deck 223 (runs on the second machine), 225 (where a
-cell's time goes), 168 (counterfactual study).
+Backups to have ready: Siemens 35 (the operator in asking mode), 36 (all asking variants, both references), 37 (how
+the robot decides to ask: a worked example), 38 (the asking line adapts), 40 (what ran on the second machine), 41
+(where a run's time goes, the fixed update ratio, the shorter evaluation), 42 (scores), 43 (discard or re-weight),
+44 (perfect score and novice test), 52 (score ideas), 57 (the request gate in formulas); long deck 223 (how the robot
+decides to ask), 224 (the asking line adapts), 225 (runs on the second machine), 227 (where a cell's time goes), 168
+(counterfactual study).
 
 **The first machine's latest experiments in one guide:** [first_machine_latest_experiments_guide.md](first_machine_latest_experiments_guide.md).
 

@@ -85,7 +85,8 @@ $$
 - $\tau_t$: the empirical $(1 - r)$ quantile of the last 2 000 scores, used once 10 are in; $r$ = `query_target_rate`
   (0.10, 0.30 or 0.55). Without $r$ the threshold would be the fixed $\tau_A = 0.5$.
 
-A request **opens** at step $t$ if no request is on, the cool-down is over, $t > 1\,000$ (the gate's warm-up), and
+A request **opens** at step $t$ if no request is on, the cool-down is over, $t > 500$ (the gate's warm-up: 500 steps in the simulation config
+`sim_peg_insertion/config.py`, 1 000 is the code default), and
 $A_t > \tau_t$. It then stays on for exactly 10 steps ($t, \dots, t+9$, `query_min_on_steps`), followed by 5 steps without a
 request (`query_cooldown_steps`). About a share $r$ of all recent steps lie above $\tau_t$, because $\tau_t$ is that
 quantile of the recent scores. At the steps where a request may start the chance is lower, because unsure stretches
@@ -218,7 +219,7 @@ asks 55 %    .    .    .  ask  ask  ask  ask  ask  ask  ask  ask  ask  ask    - 
   milder moments.
 - A request stays on for 10 steps (1 second) even when z drops, then 5 steps of pause.
 - So at most 10 of every 15 steps can be requested: in 1 000 steps (100 seconds) at most 66 requests and 667 requested
-  steps. The first 1 000 steps of a run never ask.
+  steps. The first 500 steps of a run never ask (the simulation's warm-up).
 
 **Step 5 – The random arm.** No σ_Q: at every step where a request may start, a coin comes up "ask" with probability
 0.08. On average 11.5 steps pass before it does; then 10 steps on and 5 off. One cycle is about 26.5 steps, 10 of them
@@ -287,7 +288,8 @@ Asks 55 %, its line translated back into σ_Q:
 A line fixed at its step-2 000 value would have gone wrong both ways. In the expert run, σ_Q above 0.0131 at steps
 4 000–5 000: 28 % of the steps instead of 55 %. In the novice run, σ_Q above 0.0045: 88 %.
 
-Requested share of the steps after the warm-up, mean over the 9 runs (range across runs):
+Requested share of the steps after the first 1 000 (the replay uses the code-default warm-up of 1 000 steps), mean over
+the 9 runs (range across runs):
 
 | rule | requested | first 2 000 steps → last 2 000 | of all recent steps above the line | chance at a step where a request may start |
 |---|---|---|---|---|
