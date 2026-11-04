@@ -39,8 +39,10 @@ chosen member as target, M = 1).
 **What σ_Q is.** At every step the runtime asks all 8 critics for the value of the action the robot is about to take,
 a_robot, and computes
 
-    μ_Q(s, a) = mean over the 8 critics of Q_i(s, a)
-    σ_Q(s, a) = standard deviation over the 8 critics of Q_i(s, a)
+$$
+\mu_Q(s, a) = \frac1K \sum_{k=1}^{K} Q_k(s, a), \qquad
+\sigma_Q(s, a) = \sqrt{\frac1K \sum_{k=1}^{K} \big(Q_k(s, a) - \mu_Q(s, a)\big)^2}, \qquad K = 8
+$$
 
 (`uncertainty.py`; `runtime.observe_step` calls it with the robot's own action, also during a takeover, where a_robot is
 what the policy would have done.)
@@ -67,9 +69,46 @@ everywhere (finding F6). That is why the gate uses a **relative** threshold (sec
    (`query_cooldown_steps`) before it can ask again. So at most 10 of every 15 steps can be requested (67 %).
 5. **The robot keeps moving** while it asks (`query_behavior: continue`); the operator overrides the moment it steps in.
 
+**The gate in formulas** (`query_gate.ActiveQueryGate.step`, once per control step, 10 steps per second). With the robot's
+own next action $a^R_t$:
+
+$$
+z_t = \frac{\sigma_Q(s_t, a^R_t) - m_t}{s_t + \epsilon}, \qquad
+A_t = \lambda_{uq}\, z_t = z_t, \qquad
+\tau_t = Q_{1-r}\big(A_{t-1999}, \dots, A_t\big)
+$$
+
+- $m_t, s_t$: running (Welford) mean and standard deviation of $\sigma_Q$ over every step of the run so far, including this
+  one; $z_t = 0$ for the first 10 steps.
+- $A_t$: the request score. With the single term `uncertainty`, combiner `max`, $\lambda_{uq} = 1$ and no workload term, it
+  is just $z_t$.
+- $\tau_t$: the empirical $(1 - r)$ quantile of the last 2 000 scores, used once 10 are in; $r$ = `query_target_rate`
+  (0.10, 0.30 or 0.55). Without $r$ the threshold would be the fixed $\tau_A = 0.5$.
+
+A request **opens** at step $t$ if no request is on, the cool-down is over, $t > 1\,000$ (the gate's warm-up), and
+$A_t > \tau_t$. It then stays on for exactly 10 steps ($t, \dots, t+9$, `query_min_on_steps`), followed by 5 steps without a
+request (`query_cooldown_steps`). At an eligible step $P(A_t > \tau_t) \approx r$, because $\tau_t$ is that quantile of the
+recent scores. A breach of the hard force or torque limit opens or extends a request whatever the score (a safety
+override, reason `safety`). The 10-on, 5-off cycle caps the requested share of the steps:
+
+$$
+\text{requested share} \;\le\; \frac{10}{10 + 5} = 67\,\%
+$$
+
 **The random control** (`random-q30`) has no trigger term, so its score is always 0. It asks by a coin flip with
 probability 0.08 at every step where a request may start, with the same 10-step hold and 5-step pause. That gave a
 similar operator share to "asks 30 %" (25.7 against 28.5 %), so the two differ only in *when* they ask.
+
+In formulas: $A_t \equiv 0$ never exceeds a threshold, and at every eligible step a request opens with probability
+$p = 0.08$ (`random_request_rate`), so the wait for the next one is geometric with mean $1/p = 12.5$ steps. One cycle is
+then 10 steps on, 5 off and about 12.5 waiting:
+
+$$
+\text{requested share} \approx \frac{10}{10 + 5 + 1/p} = \frac{10}{27.5} \approx 36\,\%, \qquad
+p = \frac{1}{10/f - 15} \ \text{ for a target share } f
+$$
+
+The config chose $p = 0.08$ to match the roughly 34 % that asks 30 % reached in the probe.
 
 **Why the quantile.** In the first asking experiment (D2) the gate used a fixed threshold, τ_A = 0.5 on the z-score.
 Because z is normalised, it fired at a rate nobody chose (about 9 % of the steps). A 3-hour probe before this campaign
@@ -96,6 +135,35 @@ In the asking arms the operator does not watch the task itself. Its takeover gat
 - it misses whole events with probability p_miss, and sometimes steps in for no reason (false alarms at rate ρ_fa);
 - it hands back when ẑ falls below δ_out for k_out steps, or at its time cap d_max.
 
+**The operator's answer in formulas** (`operator_gate.SyntheticInterventionGate.update`). The stimulus is $z_t = 1$ while a
+request is on and $0$ otherwise; the operator sees it through a smoothed, noisy estimate
+
+$$
+\hat z_t = (1 - \lambda)\,\hat z_{t-1} + \lambda\, z_t + \nu_t, \qquad \nu_t \sim \mathcal N(0, \sigma_{mon}^2), \qquad \lambda = 0.4
+$$
+
+- **Detection:** once $\hat z_t > \delta_{in}$ for $m_{in}$ steps in a row, the event is missed with probability $p_{miss}$;
+  otherwise a reaction countdown of $l_{react}$ steps starts. If $\hat z$ falls below $\delta_{in}$ before it ends, the
+  countdown is **cancelled**.
+- **Takeover** when the countdown reaches zero.
+- **Hand-back** once $\hat z_t < \delta_{out}$ for $k_{out}$ steps in a row, or after $d_{max}$ seconds in control.
+- **False alarms:** a takeover for no reason with probability $\rho_{fa}\, \Delta t / 60$ per step ($\rho_{fa}$ per minute,
+  $\Delta t = 0.1$ s).
+
+Without noise, after $n$ request steps $\hat z = 1 - 0.6^n$: 0.40, 0.64, 0.78, 0.87, 0.92, 0.95, 0.97, 0.98, 0.99, 0.99. That
+is enough to see why a 10-step request suits experts and loses novices. With the tier anchors, run through the real gate
+(computed here on 2026-11-04, 20 000 isolated 10-step requests per tier):
+
+| tier anchor | $\delta_{in}$ | $m_{in}$ | $l_{react}$ | $\sigma_{mon}$ | $p_{miss}$ | takeover without noise | requests answered |
+|---|---|---|---|---|---|---|---|
+| expert | 0.538 | 2 | 4 | 0.072 | 0.125 | step 6 | 87.5 % |
+| intermediate | 0.669 | 3 | 6 | 0.126 | 0.237 | step 10, the request's last | 54.3 % |
+| novice | 0.80 | 4 | 8 | 0.22 | 0.35 | never: it would need step 14, but at step 11 $\hat z$ drops to 0.60 and the countdown is cancelled | 0.4 % |
+
+The novice's own monitoring is slower on every count: a higher threshold, more steps above it, a longer reaction, more
+noise and more misses. The campaign's operators are jittered around these anchors, and requests often come in trains, so
+the logs show 77 / 47 / 2–9 % (below). The direction is the same.
+
 Novices have more lag, more noise and slower reactions. **A 10-step request often ends before a novice's smoothed
 signal crosses its threshold**, and a pending reaction is cancelled when the signal drops. On the W&B logs of the first
 asking experiments the share of requests answered was about 77 % for experts, 47 % for intermediates and 2–9 % for
@@ -114,6 +182,35 @@ Same 9 operators (3 per tier, sample seed 0), 2 seeds, the same demonstrations (
 all six arms: 108 cells. Cap 35 000 environment steps (40 000 in D2). The ensemble arms start from 5 000 steps of
 demonstration pre-training with learning rate 1.5e-4; HIL-SERL stays plain. The operator's corrections come from the
 geometric oracle (path planner).
+
+**How the results are measured.** A *cell* is one arm × operator × seed; each arm has 18 cells (9 operators × 2 seeds).
+
+- **Ruler success** $SR_c$: the frozen policy's success on the 9 fixed starting poses, best mean over 3 consecutive
+  checkpoints (`best_window`), resolution $1/27 \approx 3.7$ points.
+- **Operator share** of a cell: $\dfrac{\text{steps the operator controlled}}{\text{all environment steps of the training}}$.
+- **Paired comparison** of an arm with a reference: $d_c = SR^{arm}_c - SR^{ref}_c$ over the 18 cells with the same
+  operator and seed; $W, L, T$ count $d_c > 0$, $< 0$ and $= 0$. Exact two-sided sign test over the $n = W + L$ untied pairs:
+
+  $$
+  p = \min\Big(1,\; 2 \sum_{k=0}^{\min(W, L)} \binom{n}{k}\, 0.5^{\,n}\Big)
+  $$
+
+  For example asks 55 % against ensemble extended, 13 / 3 / 2: $n = 16$, $p = 2 \cdot 697 / 65\,536 = 0.021$.
+- **ICC** (how much of the spread between cells is the operator): the one-way random-effects ICC(1,1) over operator groups
+  of per-seed success rates,
+
+  $$
+  \mathrm{ICC} = \frac{\sigma^2_{op}}{\sigma^2_{op} + \sigma^2_{seed}}, \qquad
+  \sigma^2_{op} = \max\Big(\frac{MS_{between} - MS_{within}}{k_0},\, 0\Big), \qquad
+  \sigma^2_{seed} = MS_{within}
+  $$
+
+  with the ANOVA mean squares between and within operators and $k_0$ the mean group size (2 here). 0 means the operator
+  explains nothing; 1 means everything.
+- **p (operator matters):** a permutation test. Shuffle the operator labels across the arm's 18 cells, recompute the
+  variance of the operator means, and count how often it reaches the observed one: $p = (\#\{\text{shuffled} \ge
+  \text{observed}\} + 1) / (B + 1)$.
+- **CV:** the standard deviation of the 9 operator means over their mean.
 
 ## 5. Results
 

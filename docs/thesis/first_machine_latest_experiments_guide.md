@@ -89,6 +89,30 @@ does not contain it at all. So none of these campaigns had any part of the new s
 **Random control:** a coin flip (probability 0.08 per step) opens requests with the same 10-step / 5-step timing, so only the
 *timing* differs from "asks 30 %".
 
+**In formulas** (`query_gate.py`, `operator_gate.py`; every step in the
+[asking-rate log, sections 1–4](first_machine_asking_rate_results_and_qa_log.md)):
+
+$$
+\sigma_Q(s, a) = \mathrm{std}_{k=1..8}\, Q_k(s, a), \qquad
+z_t = \frac{\sigma_Q(s_t, a^R_t) - m_t}{s_t}, \qquad
+\text{request opens if } z_t > Q_{1-r}\big(z_{t-1999}, \dots, z_t\big)
+$$
+
+with $m_t, s_t$ the running mean and standard deviation over the run, $r$ = 0.10 / 0.30 / 0.55, no request in the first
+1 000 steps, then 10 steps on and 5 off, so at most $10/15 = 67\,\%$ of the steps are requested. The random arm requests
+about $10 / (15 + 1/0.08) \approx 36\,\%$ of the steps. The operator sees the request through
+$\hat z_t = 0.6\, \hat z_{t-1} + 0.4\, z_t + \mathcal N(0, \sigma_{mon}^2)$, and takes over after $\hat z > \delta_{in}$ for
+$m_{in}$ steps plus a reaction of $l_{react}$ steps, unless $\hat z$ drops below $\delta_{in}$ first. Run through the real gate,
+the tier anchors answer an isolated 10-step request:
+
+| tier anchor | threshold $\delta_{in}$ / steps above / reaction | takeover without noise | requests answered |
+|---|---|---|---|
+| expert | 0.54 / 2 / 4 | step 6 | 87.5 % |
+| intermediate | 0.67 / 3 / 6 | step 10, the request's last | 54.3 % |
+| novice | 0.80 / 4 / 8 | never: it would need step 14, but the request ends at 10 | 0.4 % |
+
+The novice's reaction is cancelled because its smoothed signal falls below the threshold as soon as the request ends.
+
 **Results.**
 
 | arm | operator share of the steps | success | vs ensemble extended | vs HIL-SERL |
@@ -100,7 +124,9 @@ does not contain it at all. So none of these campaigns had any part of the new s
 | **asks 55 %** | **41.8 %** | **87.4 %** | **+13.2 (13 / 3 / 2, p 0.021)** | +8.0 (10 / 4 / 4, p 0.18) |
 | random 30 % | 25.7 % | 76.3 % | +2.1 (p 0.21) | −3.1 (p 1.00) |
 
-- **The teacher effect:** HIL-SERL ICC 0.66 (p 0.001); asks 55 % ICC 0.01.
+- **The teacher effect:** HIL-SERL ICC 0.66 (p 0.001); asks 55 % ICC 0.01. ICC = $\sigma^2_{op} / (\sigma^2_{op} + \sigma^2_{seed})$,
+  the share of the spread between cells that comes from the operator. The p-values of the comparisons are exact sign tests
+  over the 18 pairs of the same operator and seed.
 - **By tier**, asks 55 % against HIL-SERL: experts −4, intermediates **+31**, novices −2 points. The gain is one tier.
 - **Timing against random** at the same rate: +4.9 points, p 0.30, not shown.
 
