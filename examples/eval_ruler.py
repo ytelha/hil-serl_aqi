@@ -56,6 +56,7 @@ from serl_launcher.aqi.runtime import make_proprio_slicer, _state_vec
 from serl_launcher.aqi import stats as aqi_stats
 
 from experiments.mappings import CONFIG_MAPPING
+import ruler_select
 
 FLAGS = flags.FLAGS
 
@@ -129,6 +130,18 @@ flags.DEFINE_enum("select", "pooled", ["pooled", "best", "mean", "best_window"],
 flags.DEFINE_integer("select_window_k", 3,
                      "Window size (consecutive checkpoints) for "
                      "--select=best_window.")
+# Shortenings of the all-checkpoint sweep (ruler_select.py); all off by default.
+flags.DEFINE_integer("select_min_step", 0,
+                     "With --select best/mean/best_window: score only checkpoints "
+                     "saved after this learner step (run_campaign passes the arm's "
+                     "demo pre-training steps with eval.skip_pretrain). 0 = all.")
+flags.DEFINE_integer("select_stride", 1,
+                     "With --select best/mean/best_window: score every n-th "
+                     "checkpoint, counted back from the newest. 1 = all. Changes "
+                     "the best-window score (docs/eval_ruler.md).")
+flags.DEFINE_integer("select_newest", 0,
+                     "With --select best/mean/best_window: score only the newest N "
+                     "checkpoints (after the other two). 0 = all.")
 flags.DEFINE_integer("max_steps", 0,
                      "Per-trial step cap; 0 = env's own horizon.")
 
@@ -328,10 +341,21 @@ def main(_):
         int(os.path.basename(p).rsplit("_", 1)[-1])
         for p in glob.glob(os.path.join(ckpt_source, "checkpoint_*"))
         if os.path.basename(p).rsplit("_", 1)[-1].isdigit())
+    _filt = (FLAGS.select_min_step, FLAGS.select_stride, FLAGS.select_newest)
+    ck_filter = None
     if use_certified:
         eval_steps = [all_steps[-1]] if all_steps else [None]
         print(f"[ruler] using CERTIFIED checkpoint {eval_steps[-1]} "
               f"({certified_dir})")
+    elif (FLAGS.select in ("best", "mean", "best_window") and all_steps
+          and ruler_select.is_active(*_filt)):
+        eval_steps = ruler_select.keep_checkpoints(all_steps, *_filt)
+        ck_filter = dict(ruler_select.describe(*_filt),
+                         n_saved=len(all_steps), n_scored=len(eval_steps))
+        print(f"[ruler] select={FLAGS.select}: scoring {len(eval_steps)} of "
+              f"{len(all_steps)} checkpoints (after step {ck_filter['min_step']}, "
+              f"every {ck_filter['stride']}, newest {ck_filter['newest'] or 'all'}): "
+              f"{eval_steps}")
     elif FLAGS.select in ("best", "mean", "best_window") and all_steps:
         eval_steps = all_steps
         print(f"[ruler] select={FLAGS.select}: scoring ALL "
@@ -342,6 +366,10 @@ def main(_):
         eval_steps = [FLAGS.eval_checkpoint_step]
     else:
         eval_steps = [all_steps[-1]] if all_steps else [None]
+    if ck_filter is None and ruler_select.is_active(*_filt):
+        print("[ruler] WARNING: --select_min_step / --select_stride / "
+              "--select_newest apply only to the all-checkpoint sweep (--select "
+              "best/mean/best_window, no certified checkpoint): ignored.")
 
     slices = make_proprio_slicer(env)
     f_sl = slices.get(aqi_cfg.force_obs_key)
@@ -437,6 +465,8 @@ def main(_):
         datetime=datetime.datetime.now().isoformat(timespec="seconds"),
         outcomes=agg,
     )
+    if ck_filter is not None:          # absent = every saved checkpoint scored
+        cell["checkpoint_filter"] = ck_filter
     with open(os.path.join(FLAGS.out, "cell.json"), "w") as f:
         json.dump(cell, f, indent=2)
     lo, hi = agg["sr_wilson95"]

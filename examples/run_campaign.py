@@ -86,6 +86,7 @@ from serl_launcher.aqi.config import MODES as AQI_MODES  # noqa: E402
 from serl_launcher.aqi.config import QUALITY_SCORE_MODES  # noqa: E402
 from serl_launcher.hiril.config import CLI_FIELDS as HIRIL_FIELDS  # noqa: E402
 import provenance as prov  # noqa: E402
+import ruler_select  # noqa: E402
 
 
 # ===========================================================================
@@ -240,6 +241,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     setk("eval_last_k", ev.get("last_k"))
     setk("eval_select", ev.get("select"))
     setk("eval_window_k", ev.get("window_k"))
+    if ev.get("skip_pretrain") is not None and "eval_skip_pretrain" not in explicit:
+        args.eval_skip_pretrain = _to_bool(ev["skip_pretrain"])
+    setk("eval_stride", ev.get("stride"))
+    setk("eval_newest", ev.get("newest"))
 
     gpu = cfg.get("gpu") or {}
     setk("jax_platform", gpu.get("jax_platform"))
@@ -1633,6 +1638,64 @@ def _document_run(args, campaign: Path, cell, conv, cmds=None):
 # ===========================================================================
 # stage 4: eval one cell against the frozen ruler
 # ===========================================================================
+_SWEEP_SELECTS = ("best", "mean", "best_window")   # score every saved checkpoint
+
+
+def _ruler_filter(args, method):
+    """(min_step, stride, newest) of the checkpoints the ruler scores for an
+    arm's cells; (0, 1, 0) = every saved checkpoint (the default). min_step is
+    the arm's own demo pre-training (an arm may opt out of it)."""
+    if args.eval_select not in _SWEEP_SELECTS:
+        return (0, 1, 0)
+    min_step = 0
+    if getattr(args, "eval_skip_pretrain", False):
+        dp = bool(_arm_val(args, method, "demo_pretrain", args.demo_pretrain))
+        dps = int(_arm_val(args, method, "demo_pretrain_steps",
+                           args.demo_pretrain_steps))
+        min_step = dps if dp and dps > 0 else 0
+    return ruler_select.normalise(min_step, getattr(args, "eval_stride", 1),
+                                  getattr(args, "eval_newest", 0))
+
+
+def _ruler_filter_flags(args, method):
+    """eval_ruler.py flags of the shortened ruler; none when it is off."""
+    m, s, n = _ruler_filter(args, method)
+    return ((["--select_min_step", str(m)] if m else [])
+            + (["--select_stride", str(s)] if s > 1 else [])
+            + (["--select_newest", str(n)] if n else []))
+
+
+def _ruler_settings(args):
+    """The campaign-wide ruler shortening as configured; None when off."""
+    sp = bool(getattr(args, "eval_skip_pretrain", False))
+    s = max(int(getattr(args, "eval_stride", 1) or 1), 1)
+    n = max(int(getattr(args, "eval_newest", 0) or 0), 0)
+    if args.eval_select not in _SWEEP_SELECTS or (not sp and s == 1 and n == 0):
+        return None
+    return {"skip_pretrain": sp, "stride": s, "newest": n}
+
+
+def check_ruler_filter(args, campaign: Path, cells):
+    """Cells already scored with another checkpoint selection than the one now
+    configured (copied reference cells, or eval keys changed mid-campaign):
+    [(cell id, recorded, configured)] as (min_step, stride, newest)."""
+    mixed = []
+    for cell in cells:
+        cj = campaign / "eval_runs" / cell.id / "cell.json"
+        if not cj.exists():
+            continue
+        try:
+            rec = json.load(open(cj)).get("checkpoint_filter") or {}
+        except (ValueError, OSError):
+            continue
+        got = ruler_select.normalise(rec.get("min_step", 0), rec.get("stride", 1),
+                                     rec.get("newest", 0))
+        want = _ruler_filter(args, cell.method)
+        if got != want:
+            mixed.append((cell.id, got, want))
+    return mixed
+
+
 def eval_cell(args, campaign: Path, cell: Cell):
     out = campaign / "eval_runs" / cell.id
     if (out / "cell.json").exists():
@@ -1658,6 +1721,7 @@ def eval_cell(args, campaign: Path, cell: Cell):
         # these metrics score ALL checkpoints; don't let the certified ckpt
         # (saved late at convergence) pre-empt the sweep.
         pyargs.append("--noprefer_certified")
+    pyargs += _ruler_filter_flags(args, cell.method)
     if args.dry_run:
         _yellow("[eval] DRY: python " + " ".join(pyargs))
         return True
@@ -1697,7 +1761,8 @@ def _document_eval(args, campaign: Path, cell):
         reproduce=[f"./.venv/bin/python examples/eval_ruler.py --exp_name "
                    f"{args.exp_name} --checkpoint_path checkpoints/{cell.id} "
                    f"--grid_file eval_grid.json --out eval_runs/{cell.id} "
-                   f"--cell_id {cell.id} --argmax"])
+                   f"--cell_id {cell.id} --argmax"
+                   + "".join(" " + f for f in _ruler_filter_flags(args, cell.method))])
 
 
 
@@ -2291,6 +2356,8 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
         manifest["utd_ratio"] = float(args.utd_ratio)
     if getattr(args, "log_takeover_channels", False):
         manifest["log_takeover_channels"] = True
+    if _ruler_settings(args):
+        manifest["ruler_checkpoints"] = _ruler_settings(args)  # absent = every checkpoint
     json.dump(manifest, open(campaign / "campaign.json", "w"), indent=2)
 
 
@@ -2401,6 +2468,17 @@ def print_plan(args, roster, cells, seeds, grid):
       print(f"  campaign cap : {args.max_hours:g} h wall-clock for the whole "
           f"run (stops launching new cells after that)")
     print(f"  eval jobs    : {len(cells)}  (fixed ruler)")
+    _rs = _ruler_settings(args)
+    if _rs:
+        print("  ruler ckpts  : "
+              + ", ".join((["skip each arm's demo pre-training"] if _rs["skip_pretrain"] else [])
+                          + ([f"every {_rs['stride']}-th"] if _rs["stride"] > 1 else [])
+                          + ([f"newest {_rs['newest']}"] if _rs["newest"] else []))
+              + "  (docs/eval_ruler.md)")
+        if _rs["stride"] > 1:
+            _yellow("  ruler ckpts  : every n-th checkpoint CHANGES the best-window "
+                    "score (second machine: 46 of 57 cells, -21 points on average); "
+                    "use it for a whole comparison only, decided in advance.")
     _green("  roster:")
     for th in roster:
       print(f"    {th.operator_id:8s} tier={th.tier:12s} "
@@ -2673,6 +2751,20 @@ def build_arg_parser():
                         "= single best checkpoint; 'mean' = mean over all.")
     p.add_argument("--eval_window_k", type=int, default=3,
                    help="window size for --eval_select=best_window.")
+    # shorter ruler (ruler_select.py, docs/eval_ruler.md); all off by default
+    p.add_argument("--eval_skip_pretrain", action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help="ruler: do not score the checkpoints an arm saved during "
+                        "its demo pre-training (learner step <= its "
+                        "demo_pretrain_steps). YAML eval.skip_pretrain.")
+    p.add_argument("--eval_stride", type=int, default=1,
+                   help="ruler: score every n-th checkpoint, counted back from "
+                        "the newest (1 = all). Changes the best-window score. "
+                        "YAML eval.stride.")
+    p.add_argument("--eval_newest", type=int, default=0,
+                   help="ruler: score only the newest N checkpoints (0 = all). "
+                        "Unlike budget.checkpoint_keep, the older files stay. "
+                        "YAML eval.newest.")
     p.add_argument("--learning_rate", type=float, default=0.0,
                    help="LEARNER Adam LR override for actor/critic/temperature "
                         "(0 = built-in 3e-4; 1.5e-4 halves it for stability).")
@@ -2955,6 +3047,24 @@ def main(argv=None):
         _green(f"[shard] {i}/{n}: {len(cells)} cell(s): "
                + ", ".join(c.id for c in cells))
     print_plan(args, roster, cells, seeds, grid)
+    # The checkpoint selection is part of the ruler: refuse to mix selections
+    # within one campaign (checked before any training, over all its cells).
+    mixed = check_ruler_filter(args, campaign, enumerate_cells(methods, roster, seeds))
+    if mixed:
+        cid, got, want = mixed[0]
+        _cmd = (f"python examples/ruler_reselect.py --campaign {campaign} --apply"
+                + (" --skip_pretrain" if getattr(args, "eval_skip_pretrain", False) else "")
+                + (f" --stride {args.eval_stride}" if int(args.eval_stride or 1) > 1 else "")
+                + (f" --newest {args.eval_newest}" if int(args.eval_newest or 0) > 0 else ""))
+        _red(f"[ruler] {len(mixed)} cell(s) were already scored with another checkpoint "
+             f"selection than the one configured (eval.skip_pretrain / stride / "
+             f"newest), e.g. {cid}: scored (min_step, stride, newest) = {got}, "
+             f"configured {want}. Scores from different selections must not be "
+             f"compared. Copied reference cells: re-select them from their saved "
+             f"trials (no simulator): {_cmd} . Otherwise use a new --campaign "
+             f"folder or set the eval keys back.")
+        if "eval" in stages and not (args.plan or args.dry_run):
+            return 2
     if args.plan:
         _green("[plan] roster, eval_grid.json and campaign.json written. "
                "Re-run without --plan to execute.")

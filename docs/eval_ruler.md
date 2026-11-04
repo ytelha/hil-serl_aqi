@@ -35,6 +35,9 @@ Optional flags:
 | `--max_steps` | 0 (env default) | step cap per trial |
 | `--cell_id` | basename of `--out` | identifier stored in cell.json |
 | `--save_video` | `False` | save per-trial videos |
+| `--select_min_step` | 0 (all) | with `--select best/mean/best_window`: score only checkpoints saved after this learner step (see *A shorter ruler*) |
+| `--select_stride` | 1 (all) | every n-th checkpoint, counted back from the newest; changes the score |
+| `--select_newest` | 0 (all) | only the newest N checkpoints |
 
 ---
 
@@ -73,6 +76,81 @@ every cell is scored on exactly the same starting poses.
 
 ---
 
+## A shorter ruler (optional, off by default)
+
+**Why the ruler is slow.** Campaigns use `--select best_window`: the ruler scores *every* saved checkpoint (one per
+1000 learner steps) on the 9 grid trials and reports the best mean over 3 consecutive checkpoints. Most of its
+time goes into checkpoints that fail every trial, because a failed trial runs to the 300-step limit and a success
+ends after 12–17 steps. On the second training machine a cell's ruler simulated about 30 000 steps, three times
+its training, about 55 minutes (`docs/thesis/new_stack_operator_results_and_qa_log.md` §5c).
+
+**Three shortenings** (`examples/ruler_select.py`, shared by the ruler and the re-selection tool):
+
+| YAML `eval:` key | runner flag | ruler flag | what is scored |
+|---|---|---|---|
+| `skip_pretrain: true` | `--eval_skip_pretrain` | `--select_min_step N` | only checkpoints after the arm's demo pre-training (N = its `demo_pretrain_steps`; an arm without pre-training keeps all) |
+| `stride: 2` | `--eval_stride 2` | `--select_stride 2` | every 2nd checkpoint, counted back from the newest |
+| `newest: 8` | `--eval_newest 8` | `--select_newest 8` | only the newest 8; the older checkpoint files stay on disk |
+
+**Measured on the 57 cells of the second machine** (new stack, cuboid), by re-selecting from their own
+`trials.jsonl` (`examples/ruler_reselect.py`):
+
+| selection | checkpoints scored | ruler time | cells whose score changes |
+|---|---|---|---|
+| every checkpoint (now) | 14.9 | 100 % (≈ 55 min) | – |
+| skip pre-training | 9.9 | 55 % | 0 |
+| newest 8 | 8.0 | 39 % | 0 |
+| **skip pre-training + newest 8** | **7.6** | **36 % (≈ 20 min)** | **0** |
+| every 2nd checkpoint | 7.8 | 51 % | 46, by −21 points on average (up to −33) |
+| every 2nd, window of 2 | 7.8 | 51 % | 24, −1 point on average (−17 to +15) |
+
+Why the first two keep every score: no cell succeeded at any pre-training checkpoint, and the best window always
+sat among the newest checkpoints, because training stops once the mini-eval passes twice. Why *every 2nd* changes
+the score: only the last two or three checkpoints are good, so thinning removes one of them and the window of three
+has to reach back into failing ones. It is implemented, but it measures something else; do not use it to save time.
+Newest 4–6 also changed no cell here (7–22 % of the time); 8 leaves a margin for a policy that oscillates.
+
+**Not measured on the old stack.** Without the mini-eval stop (rolling-window convergence, a 35 k cap) the best
+window may sit earlier. Measure on that machine's own finished cells before switching (read-only, seconds):
+
+```bash
+./.venv/bin/python examples/ruler_reselect.py --campaign runs/active_ratematch --skip_pretrain --newest 8
+```
+
+**Rules.**
+1. Choose the selection before a campaign starts and keep it for every cell of that comparison. The runner
+   refuses, before any training, to evaluate a campaign whose already-scored cells used another selection.
+2. Reference cells copied from another campaign (`copy_campaign_cells.py` copies results, not policies) can be
+   re-selected in the new folder: `ruler_reselect.py --campaign <new> --skip_pretrain --newest 8 --apply`. It
+   rewrites only the cells in `copied_cells.json` and keeps each original as `cell.full_ruler.json`. Do this only
+   after `--verify` (below) showed IDENTICAL on that machine.
+3. Never add the keys to a finished or running campaign; use a new campaign folder.
+4. `budget.checkpoint_keep` is something else: it deletes older checkpoint files during training and changes the
+   learner's command. To shorten the ruler, use `eval.newest`.
+
+**The assumption, and its check.** Re-selecting is exact only if a checkpoint's trials do not depend on what was
+scored before it. The eval reset is deterministic (fixed pose, `mj_resetData`, no random draw) and the actions are
+the policy's mode, so it should hold. Check it once on a GPU (10–20 minutes; the cell needs its `checkpoint_*`
+folders): `--check_cmd` prints the cell's own ruler command from `logs/<cell>.eval.log`, re-pointed to
+`/tmp/ruler_check/<cell>` with the shorter ruler's flags. Run what it prints, then compare trial by trial:
+
+```bash
+./.venv/bin/python examples/ruler_reselect.py --campaign runs/<campaign> --skip_pretrain --newest 8 --check_cmd <cell>
+```
+
+```bash
+./.venv/bin/python examples/ruler_reselect.py --verify /tmp/ruler_check/<cell> --against runs/<campaign>/eval_runs/<cell>
+```
+
+Expected: `IDENTICAL`. Pick a cell whose newest checkpoints have both successes and failures, so the check means
+something.
+
+**Records.** `cell.json` gets `checkpoint_filter` (`min_step`, `stride`, `newest`, `n_saved`, `n_scored`) and
+`campaign.json` gets `ruler_checkpoints`; both are absent when the ruler scores every checkpoint. With all keys
+off, every existing config gives the same commands as before (64 configs, 8 555 command lines compared).
+
+---
+
 ## Connections
 
 ```
@@ -84,4 +162,7 @@ eval_ruler.py  ◀──reads──  checkpoint dir  +  eval_grid.json
 
 experiment_pipeline.py evaluate  ──reads──▶  cell.json  (primary outcome)
 run_campaign.py analyze          ──reads──▶  cell.json  (primary outcome)
+
+ruler_select.py   ◀──imports──  eval_ruler.py, run_campaign.py, ruler_reselect.py
+ruler_reselect.py ──reads──▶  eval_runs/<cell>/cell.json + trials.jsonl (--apply: copied cells only)
 ```
