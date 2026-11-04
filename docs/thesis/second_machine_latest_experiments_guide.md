@@ -38,6 +38,8 @@ counterfactual-score study (1 run, abandon) and a queued E2HiL test (4 runs).
 | behavioural score | a live grade: value rise − takeover length − peak force |
 | AUROC | how well a score separates careful from careless (0.5 = coin flip, 0.70 = the bar) |
 | warm-up | the first 5 000 training steps, during which no filter acts |
+| fixed update ratio | the learner makes exactly one update per environment step (before: as many as its GPU allowed) |
+| ruler | the final test of a run: every saved checkpoint on 9 fixed starting poses, best 3 in a row |
 | demonstration half | half of every batch: the demonstrations plus takeovers (as on the first machine) |
 
 ## 1. Why the old operator failed, and the new stack
@@ -70,11 +72,32 @@ every 2 000 steps); and exactly one learner update per environment step.
 |---|---|---|
 | first success without help | 18 300–20 200 steps | 4 600 |
 | episodes out of time, first 10 000 steps | 92–93 % | 27 % |
+| steps when training stopped | 30 400–33 300 | about 9 000 |
 | learner updates per step | about 0.45 | 1 |
-| training per run | 76–79 min | about 30 min (+ 55 min ruler ≈ 1.5 h; a shorter ruler with the same scores: ≈ 20 min) |
+| env steps per second (average) | 9.0–9.4 (paced at 10 Hz) | 6.2–6.4 |
+| training per run | 76–79 min (20 pre-training + 56–59 online) | about 30 min (5 pre-training + 23–25 online) |
+| ruler per run | – | about 55 min (a shorter ruler with the same scores: about 20) |
 
 About four times sooner in steps, but **not attributed**: another machine, another operator and five changes at once. The
 ladder (27 runs) will separate them.
+
+**Why the training time fell less than the steps** (2.5 × against 3.4 ×): the 4 × is the first success, and training stops
+later; each step takes about 1.45 × longer (one learner update per step on a GPU that also renders the cameras); and the
+demonstration pre-training is a fixed 5 000 updates. Fewer steps save about 40 minutes, faster pre-training about 15, the
+slower steps cost about 8 back.
+
+**The fixed update ratio.** Before, the robot stepped at 10 Hz and the learner trained as fast as its GPU allowed, so the
+learning per step depended on the machine (about 0.45 updates per step on the first machine, 2.5–2.7 on the cluster's H100)
+and on the method (E2HiL got about half, its update costs twice as much). Now the learner makes exactly one update per step;
+if it falls behind, the robot waits between episodes. Learning per step is then the same everywhere, which makes machines and
+methods comparable. Convergence in steps should get faster (more learning per step); in clock time it costs little on the
+second machine but about twice the time per step on the first, so it breaks even only if a cell needs about half the steps.
+Not measured alone yet: the ladder's settings with and without it will.
+
+**Why the ruler takes longer than training.** It scores every saved checkpoint (one per 1 000 learner steps, the first five
+from pre-training), and early checkpoints fail every trial, which runs to the 300-step limit: about 30 000 simulated steps
+per run. Skipping the pre-training checkpoints and scoring only the newest 8 keeps 36 % of the time and changes none of the
+57 scores; scoring every second checkpoint changes 46. Implemented, off by default, not yet used.
 
 ## 2. The sometimes-careless operator
 

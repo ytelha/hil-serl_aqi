@@ -1,8 +1,8 @@
 # Presenting the training machines
 
 A guide for presenting what ran where and what came out, with the slide numbers of both decks
-(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 56 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
-224 slides, 46 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
+(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 57 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
+225 slides, 47 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
 [second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026.
 
 ## The story in one minute
@@ -43,8 +43,9 @@ machine and 1 on the second, so each comparison has its reference on its own mac
 | – | where it all ran | – | 161 |
 
 Backups to have ready: Siemens 36 (all asking variants, both references), 38 (what ran on the second machine), 39
-(scores), 40 (discard or re-weight), 41 (perfect score and novice test), 49 (score ideas); long deck 223 (runs on
-the second machine), 168 (counterfactual study).
+(where a run's time goes, the fixed update ratio, the shorter evaluation), 40 (scores), 41 (discard or re-weight),
+42 (perfect score and novice test), 50 (score ideas); long deck 223 (runs on the second machine), 225 (where a
+cell's time goes), 168 (counterfactual study).
 
 **The first machine's latest experiments in one guide:** [first_machine_latest_experiments_guide.md](first_machine_latest_experiments_guide.md).
 
@@ -71,6 +72,9 @@ the second machine), 168 (counterfactual study).
 | training starts sooner | first success without help ≈ 18 300–20 200 → 4 600 steps, same method | across machines, not attributed |
 | a whole run | ≈ 30 min training + 55 min ruler ≈ 1.5 h | second machine |
 | a shorter ruler | ≈ 20 min, all 57 scores unchanged (skip pre-training, newest 8; not yet used) | second machine, re-selected |
+| training time split | first machine 20 min pre-training + 56–59 min online (9.0–9.4 steps/s); second 5 + 23–25 min (6.2–6.4 steps/s) | both machines, same method |
+| why training fell less than the steps | 2.5 × shorter against 3.4 × fewer steps: each step 1.45 × slower, pre-training fixed | second machine |
+| learner updates per env step without the fixed ratio | 0.45 first machine; 2.5–2.7 on the H100; E2HiL 1.3 there | finding F3 |
 | careless operator: best online score | AUROC 0.66 (0.71 / 0.67 / 0.52) | second machine |
 | discard vs re-weight | 93.2 vs 90.3 %, −2.9 points, p 0.39 | second machine |
 
@@ -105,6 +109,9 @@ the second machine), 168 (counterfactual study).
 | Why is 0.66 not "valid"? | The bar fixed in advance was 0.70. |
 | What runs next? | The novice test, then the new stack on the first machine, its ladder, and the repeat at thesis scale; a 4-run E2HiL test is queued on the cluster. |
 | Why does a run take 1.5 h if training is 30 min? | The ruler scores every saved checkpoint, and the early ones fail every trial, each running to the 300-step limit: about 30 000 simulated steps, three times the training. Skipping the pre-training checkpoints and scoring only the newest 8 cuts it to about 20 min without changing any score; it is implemented and goes to the first machine, to be measured there first. |
+| What is the fixed update ratio, and why? | The learner makes exactly one update per environment step. Before, the robot stepped at 10 Hz and the learner trained as fast as its GPU allowed, so learning per step depended on the machine (0.45 on the first, 2.5–2.7 on the H100) and on the method (E2HiL got about half). Fixing it makes machines and methods comparable. |
+| Does it make convergence slower? | In steps, probably not: each step is used for more learning. In clock time it depends: on the second machine it cost little (the robot waited for the learner half a minute per run); on the first machine each step takes about twice as long, so a run breaks even only if it needs about half the steps. The ladder measures it. |
+| Why did training time fall less than the steps? | The 4 × is the first success; training stops later (3.4 × fewer steps). Each step is about 1.45 × slower, and the 5-minute pre-training does not shrink. Result: 77 → 31 minutes. |
 | Why not the cluster for everything? | The student quota is 3 GPU-hours a month; one campaign needs 80–135. The Thesis project (1 500 GPU-hours) would change that. |
 
 ## Numbers that changed recently (do not use the old ones)
@@ -119,3 +126,4 @@ the second machine), 168 (counterfactual study).
 | counterfactual study queued | done: abandon |
 | 13 campaigns, ≈ 250 runs | about 520 runs |
 | student quota ≈ 20 GPU-h | 3 GPU-h per month |
+| 7.7–8.4 environment steps per second on the second machine | 6.2–6.4 on average (7.7–8.4 was the progress bar's smoothed rate) |

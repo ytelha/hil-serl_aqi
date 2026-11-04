@@ -76,7 +76,7 @@ The plan changed three times on the way. This matters for how the results may be
 | Could the original operator rescue a twisted cuboid? | no: 13 / 10 / 7 %; with rotation control 100 / 100 / 70 % | strong; no learning involved |
 | Why? | 21° twist at takeover against 8° yaw tolerance | strong |
 | Does the new stack remove the slow start? | same method: first unaided ≈ 18 000–20 000 → 4 600; timeouts ≤ 10 k 92–93 → 27 % | large, but not attributed |
-| Does it make a cell faster? | training about 30 min instead of about 78, partly GPU and stop rule; whole cell still about 1.5 h, because of the ruler | measured |
+| Does it make a cell faster? | training about 30 min instead of about 78 (2.5 ×, while the steps fell 3.4 ×: slower steps, fixed pre-training); whole cell still about 1.5 h, because of the ruler | measured |
 | Is success still skill-graded? | flat in the discard arm (92.6 / 93.2 / 93.8 %); novices need 1.5–1.8 × the steps | suggestive; ceiling |
 | Does the orientation channel matter? | it fires in about 1 % of takeovers | suggests not; ladder decides |
 | Do scores notice inattention? | behavioural 0.66 (0.71 / 0.67 / 0.52); the live filter score also 0.66; length alone 0.65; counterfactual 0.49, lower late in training | moderate |
@@ -125,10 +125,10 @@ for the other direction: it brought its local code into the development repo. Pa
 | lesson from the second machine | consequence |
 |---|---|
 | updates per env step differ between machines | never mix machines; every comparison needs its reference on the first machine |
-| fixed update ratio changes the pace | the env waits for the learner; cost per cell must be measured on the smoke test |
+| fixed update ratio changes the pace | each step took about 1.45 × longer (6.2–6.4 instead of 9.0–9.4 steps per second), though the actor waited for the learner only 0.5–0.7 min per cell; on the first machine, whose learner makes about 5 updates per second, a step may take about twice as long. Measure it on the smoke test and in the ladder (`L4_evalconv` against `L5_full`) |
 | ruler near the ceiling; replicates differ (100 and 67 % for one cell) | primary measures: steps to converge, first unaided success, operator share; do not read 3 pairs |
 | stopping at mini-eval 0.6 lands mid-swing | the report now shows the last-checkpoint SR; the threshold stays 0.6 until the ladder gives evidence |
-| the ruler takes about two thirds of a cell's time | plan for about 55 min per cell on top of training; decide before a campaign whether to score fewer checkpoints |
+| the ruler takes about two thirds of a cell's time | plan for about 55 min per cell on top of training. Patch 0037 can skip the pre-training checkpoints and score only the newest 8: about 20 min, none of the 57 scores changed; adopt it only after its GPU check and a measurement on the first machine's own cells |
 | quality warm-up of 5 000 steps outlasts early learning | shorten it for any new filter test |
 | one condition sequence per seed, in every campaign (bug) | fixed in 0021; do not merge label analyses with the second machine's |
 | `int00` and `nov00` are different operators in 1-per-tier and 3-per-tier rosters | the ladder's pilots and the confirmation cannot be paired by operator name; only `exp00` matches |

@@ -253,6 +253,54 @@ across a comparison, and on the old stack it has to be measured first on that ma
 | mini-eval convergence | stops training earlier; can stop in a dip | saves time, does not make learning faster |
 | fixed update ratio | 1 instead of about 0.45 learner steps per env step, but each step takes longer | may explain part of the 4 ×; costs clock time |
 
+**(d) The fixed update ratio: what it is, why it exists, what it means for convergence.**
+
+*What it is* (patch 0015, YAML `budget.utd_ratio: 1`). HIL-SERL runs two processes side by side: the actor drives the robot (it
+renders the two cameras, runs the policy, steps the simulator and lets the operator take over) and the learner trains the
+networks on batches from the replay buffer and sends new weights back. Originally they run independently: the actor at
+real-time 10 steps per second, because HIL-SERL was built for a real robot, and the learner as fast as its GPU allows. So
+the number of learner updates per environment step was not set by anyone; it fell out of the hardware and the method. With
+the fixed ratio the learner makes exactly one update per environment step collected. It writes its update count to
+`learner_progress.json`; when it is ahead it waits for data, and when it is behind the actor waits before its next episode
+(never in the middle of one). The 10 Hz pacing is switched off, since the simulator does not need it.
+
+*Why it exists* (finding F3, cluster method test of 26 September):
+
+| where | learner updates per env step |
+|---|---|
+| first training machine (8 GB GPU) | about 0.45 |
+| RWTH cluster (H100), quality and asking arms | 2.5–2.7 |
+| RWTH cluster (H100), E2HiL | 1.3 |
+
+1. **Results depended on the machine:** the same config, operator and seed got about six times more learning per step on the
+   H100 than on the first machine, so steps to converge meant something different on each.
+2. **Methods were compared unequally:** a method with a more expensive update gets fewer updates in the same steps. E2HiL's
+   update costs about twice as much, so at an equal step budget it got about half the training. The same holds for the
+   8-critic ensemble against plain HIL-SERL with 2 critics (not measured on the first machine).
+3. **The first machine learned little per step:** less than one update for every two steps of experience.
+
+The value 1 is a round value every machine can afford, not a tuned one. A higher value would slow cells further on the first
+machine, whose learner makes about 5 updates per second.
+
+*What it means for convergence.* It depends on what is counted:
+- **In environment steps** (robot experience, and with it the operator's effort): probably faster, since each step is used for
+  more learning (on the first machine about 2.2 × more). Too many updates on little data can destabilise the critics, but 1
+  is moderate.
+- **In clock time it depends on the machine.** On the second machine the cost is small: the actor waited for the learner
+  only 0.5–0.7 minutes per cell, so the actor's own step was the limit and would have been as slow without the lock. On the
+  first machine each step can take about twice as long (at most about 5 steps per second, set by the learner, against
+  9–9.8). It breaks even only if the steps needed fall by about half: old cells needed about 30 000 steps, about 55 minutes
+  online; at 13 600 steps a new cell would take about 45 minutes, and with no fewer steps about 100.
+- **Fair comparisons:** every method gets the same learning per step, whatever its update costs.
+- **Not comparable with the finished campaigns,** in steps to converge or minutes: new-stack runs need their own references
+  on the same machine.
+- **On the real UR5** the robot cannot run faster than real time: if the learner makes fewer than 10 updates per second, the
+  robot and the operator wait between episodes.
+
+None of this is measured alone. The ladder on the first machine has two settings that differ only in this switch
+(`L4_evalconv` without it, `L5_full` with it); they give the steps to converge and the minutes with and without it, on the
+machine where it costs the most time.
+
 **Is success still skill-graded?** Final success is flat across tiers in the discard arm (92.6 / 93.2 / 93.8 %, against 94 / 78 / 65 % for ensemble extended in the first
 machine's oracle campaign), but novices need 1.5–1.8 times the steps of experts (12 616 vs 6 946 and 11 060 vs 7 514). The ICC of 0.000 says little on its own: ensemble extended already has an ICC of 0.00, 0.18 and 0.84 in three campaigns on the original platform, so a single campaign's ICC is unstable. Whether plain HIL-SERL stays
 operator-dependent on the new stack is unknown, because it was not run on the cuboid.
@@ -345,6 +393,15 @@ with an operator who can turn the peg. That is what the comparison of old and ne
 first machine has to find out.
 
 **Did the changes speed up training?** Learning per step, yes, by about 4 × for the same method. Training clock time, yes, 2.5 × (77 → 31 minutes), less than the steps (3.4 × fewer at the stop): each step takes about 1.45 × longer now, and the 5-minute pre-training does not shrink with the steps (§5 (b)). The whole cell hardly, because the ruler takes about 55 minutes. Which change does it is open.
+
+**What is the fixed update ratio, and why was it added?** The learner makes exactly one update per environment step. Before,
+the learner ran as fast as its GPU allowed while the robot stepped at 10 Hz, so learning per step depended on the machine
+(about 0.45 on the first machine, 2.5–2.7 on the H100) and on the method (E2HiL got about half). Fixing it makes runs
+comparable across machines and methods (§5 (d)).
+
+**Does it make convergence slower?** In environment steps, probably not: each step is used for more learning. In clock time,
+on the first machine probably yes per step (about twice as long), so a cell only breaks even if it needs about half the
+steps; on the second machine it cost little. The ladder's settings with and without it will measure both (§5 (d)).
 
 **Can the ruler be made shorter without changing the results?** On these cells, yes: skipping the pre-training checkpoints
 and scoring only the newest 8 keeps 36 % of the ruler time and leaves all 57 scores unchanged (§5 (c)). Scoring every
