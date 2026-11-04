@@ -177,6 +177,32 @@ At its measured rate of about 5 learner steps per second, the first machine shou
 
 The ruler scores every saved checkpoint: on average 14–17 per cell (a checkpoint every 1 000 learner steps, including the 5 000 pre-training steps), 9 trials each. Pre-training takes 5–7 minutes of the training time. Scoring fewer checkpoints is the obvious way to shorten a campaign, but it changes the ruler's "best window", so it would have to be decided before a campaign and kept the same across a comparison. For the first machine there is only a rough total: its 18-cell probe took about a day, about 1.3 h per cell.
 
+**Why the ruler takes longer than training** (measured from `eval_runs/<cell>/trials.jsonl` of the four campaigns, 2026-11-04):
+
+| campaign | checkpoints scored per cell | of them from pre-training | trials per cell | ruler steps per cell | trials that run the full 300 steps |
+|---|---|---|---|---|---|
+| validity (Q1) | 16.5 | 5 | 148 | 33 157 | 71 % |
+| perfect-filter check | 14.1 | 5 | 127 | 28 198 | 72 % |
+| pilot | 14.2 | 5 | 128 | 27 907 | 70 % |
+| confirmation | 14.9 | 5 | 134 | 30 372 | 73 % |
+
+1. **The ruler scores every saved checkpoint,** not only the last, because it reports the best window of three in a row.
+2. **A checkpoint is saved every 1 000 learner steps, and the first five come from the demonstration pre-training,**
+   before the policy has acted once.
+3. **Early checkpoints fail every trial, and a failed trial runs to the 300-step limit.** About 72 % of all trials do.
+   Example `drop-hind_exp00_s0`: checkpoints 1 000–8 000 score 0 of 9, all at 300 steps; from 13 000 on, 9 of 9 at 12–17 steps.
+4. **So the ruler simulates about 30 000 steps per cell, three times the training's 9 000–10 000.** Each step renders two
+   camera images and runs the policy, so it runs at about 9 steps per second (30 372 steps in about 57 minutes), not much
+   faster than training (7.7–8.4), even without the 10 Hz pacing.
+5. **Faster learning did not reduce the number of checkpoints.** Checkpoints count learner steps, and the fixed update ratio
+   doubled the learner steps per environment step (1 against about 0.45). The old setup made about 30 000 × 0.45 + 5 000 ≈
+   18 500 learner steps per cell; the new one about 9 500 + 5 000 = 14 500: almost as many checkpoints, in a third of the
+   environment steps.
+
+Ways to shorten it, each a change of the ruler that must be fixed before a campaign and kept for its whole comparison:
+skip the five pre-training checkpoints (about a third of the ruler time, and they almost never succeed), score only every
+second checkpoint, or keep fewer (`checkpoint_keep`; the small CLAIX campaign keeps 8).
+
 **What each change is likely doing.** No training run has tested any of them alone.
 
 | change | what we know | effect on speed |
