@@ -31,7 +31,8 @@ This compares two machines and five changes at once, so it shows the size of wha
 separates them (`synthetic_suite` pilots) has **not** been run.
 
 **Learning got faster; a whole cell did not get much shorter.** Training takes about 30 minutes per cell, but the final ruler takes about 55
-more, so a cell still costs about 1.5 h.
+more, so a cell still costs about 1.5 h. A shorter ruler that leaves every one of these cells' scores unchanged would take
+about 20 minutes (§5 (c); implemented, not yet used in a campaign).
 
 ---
 
@@ -199,9 +200,21 @@ The ruler scores every saved checkpoint: on average 14–17 per cell (a checkpoi
    18 500 learner steps per cell; the new one about 9 500 + 5 000 = 14 500: almost as many checkpoints, in a third of the
    environment steps.
 
-Ways to shorten it, each a change of the ruler that must be fixed before a campaign and kept for its whole comparison:
-skip the five pre-training checkpoints (about a third of the ruler time, and they almost never succeed), score only every
-second checkpoint, or keep fewer (`checkpoint_keep`; the small CLAIX campaign keeps 8).
+**Shortening it (implemented 2026-11-04, off by default; `docs/eval_ruler.md`, *A shorter ruler*).** Three options, measured
+by re-selecting the 57 cells from their own trials (`examples/ruler_reselect.py`):
+
+| selection | ruler time | cells whose score changes |
+|---|---|---|
+| skip the pre-training checkpoints (`eval.skip_pretrain`) | 55 % | 0 |
+| only the newest 8 (`eval.newest: 8`) | 39 % | 0 |
+| **both** | **36 % (about 20 instead of 55 minutes)** | **0** |
+| every second checkpoint (`eval.stride: 2`) | 51 % | 46, by −21 points on average |
+
+Skipping costs nothing here because no cell succeeded at a pre-training checkpoint and the best window always sat among
+the newest checkpoints (training stops right after the mini-eval passes twice). Every second checkpoint does change the
+score: only the last two or three checkpoints are good, so the window of three reaches back into failing ones. With both
+safe options, a cell would take about 30 + 20 minutes instead of 1.5 h. It must still be chosen before a campaign and kept
+across a comparison, and on the old stack it has to be measured first on that machine's own cells.
 
 **What each change is likely doing.** No training run has tested any of them alone.
 
@@ -305,6 +318,11 @@ with an operator who can turn the peg. That is what the comparison of old and ne
 first machine has to find out.
 
 **Did the changes speed up training?** Learning per step, yes, by about 4 × for the same method. Training clock time, yes, partly through the faster GPU and the earlier stop. The whole cell hardly, because the ruler takes about 55 minutes. Which change does it is open.
+
+**Can the ruler be made shorter without changing the results?** On these cells, yes: skipping the pre-training checkpoints
+and scoring only the newest 8 keeps 36 % of the ruler time and leaves all 57 scores unchanged (§5 (c)). Scoring every
+second checkpoint is not a shortcut: it changes 46 of 57 scores. The options are in the code since 2026-11-04, off by
+default; they have to be chosen before a campaign, and the first machine has to measure them on its own cells first.
 
 **Can these numbers be compared with the first machine?** Stage 0 yes: no learning is involved.
 Training numbers no, except as a stated caveat: updates per environment step differ between

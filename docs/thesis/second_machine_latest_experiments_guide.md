@@ -71,7 +71,7 @@ every 2 000 steps); and exactly one learner update per environment step.
 | first success without help | 18 300–20 200 steps | 4 600 |
 | episodes out of time, first 10 000 steps | 92–93 % | 27 % |
 | learner updates per step | about 0.45 | 1 |
-| training per run | 76–79 min | about 30 min (+ 55 min ruler ≈ 1.5 h) |
+| training per run | 76–79 min | about 30 min (+ 55 min ruler ≈ 1.5 h; a shorter ruler with the same scores: ≈ 20 min) |
 
 About four times sooner in steps, but **not attributed**: another machine, another operator and five changes at once. The
 ladder (27 runs) will separate them.

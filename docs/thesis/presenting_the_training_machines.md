@@ -70,6 +70,7 @@ the second machine), 168 (counterfactual study).
 | why | peg 21 degrees twisted at the takeover; the expert tolerates 8 | second machine, no learning |
 | training starts sooner | first success without help ≈ 18 300–20 200 → 4 600 steps, same method | across machines, not attributed |
 | a whole run | ≈ 30 min training + 55 min ruler ≈ 1.5 h | second machine |
+| a shorter ruler | ≈ 20 min, all 57 scores unchanged (skip pre-training, newest 8; not yet used) | second machine, re-selected |
 | careless operator: best online score | AUROC 0.66 (0.71 / 0.67 / 0.52) | second machine |
 | discard vs re-weight | 93.2 vs 90.3 %, −2.9 points, p 0.39 | second machine |
 
@@ -103,6 +104,7 @@ the second machine), 168 (counterfactual study).
 | What did the careless operator show? | Scores notice carelessness moderately (0.66, mostly the takeover's length); discarding vs re-weighting made no detectable difference. The novices cannot test it in this model. |
 | Why is 0.66 not "valid"? | The bar fixed in advance was 0.70. |
 | What runs next? | The novice test, then the new stack on the first machine, its ladder, and the repeat at thesis scale; a 4-run E2HiL test is queued on the cluster. |
+| Why does a run take 1.5 h if training is 30 min? | The ruler scores every saved checkpoint, and the early ones fail every trial, each running to the 300-step limit: about 30 000 simulated steps, three times the training. Skipping the pre-training checkpoints and scoring only the newest 8 cuts it to about 20 min without changing any score; it is implemented and goes to the first machine, to be measured there first. |
 | Why not the cluster for everything? | The student quota is 3 GPU-hours a month; one campaign needs 80–135. The Thesis project (1 500 GPU-hours) would change that. |
 
 ## Numbers that changed recently (do not use the old ones)
