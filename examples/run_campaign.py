@@ -1339,12 +1339,10 @@ def _platform_actor_flags(args):
 def _pipeline_actor_cmd(args, ckpt, method, tier, operator, theta_json, seed,
                         run_name):
     """Actor command of a PIPELINES arm: the same operator / budget /
-    convergence flags as the AQI actor, without --aqi_mode and AQI knobs."""
-    if "synthetic_inconsistent" in _platform_switches(args):
-        raise SystemExit(
-            f"[arms] '{method}': synthetic_inconsistent is not wired into the "
-            f"{PIPELINES[_arm_mode(args, method)]} pipeline; the arms would "
-            f"differ in more than the method. Run that arm without it.")
+    convergence flags as the AQI actor, without --aqi_mode and AQI knobs.
+    The platform switches include the inconsistent operator: train_hiril.py
+    takes the same --synthetic_inconsistent / --synthetic_bad_share /
+    --synthetic_bad_persistence flags and logs each takeover's condition."""
     actor_steps, actor_minutes = _actor_budget(args)
     cmd = [PIPELINES[_arm_mode(args, method)], "--exp_name", args.exp_name,
            "--actor", "--checkpoint_path", str(ckpt),

@@ -142,6 +142,37 @@ def test_inattentive_corrections_succeed_less_and_info_names_the_condition():
     assert good > bad + 0.2, (good, bad)
 
 
+def test_hiril_wrapper_builds_the_inconsistent_operator():
+    """train_hiril.py builds its operator through synthetic_operator_env.wrap_synthetic_operator: with
+    inconsistent=True the operator gets the same Inconsistency (share and persistence as passed), and the
+    takeover's condition reaches info; off, there is none."""
+    from synthetic_operator_env import wrap_synthetic_operator
+    for on in (False, True):
+        base = _tc["_SucceedKey"](seed=0)
+        base.phase_oracle = ToyInsertionOracle()          # the wrapper's geometric oracle
+        env, theta = wrap_synthetic_operator(base, synthetic_operator="expert", synthetic_seed=0,
+                                             training_oracle="geometric", intervention_mode="always_latch",
+                                             inconsistent=on, bad_share=0.2, bad_persistence=0.7,
+                                             log=lambda *_a, **_k: None)
+        assert theta.tier == "expert"
+        if not on:
+            assert env.op.inconsistency is None
+            continue
+        assert env.op.inconsistency.bad_share == 0.2 and env.op.inconsistency.persistence == 0.7
+        conds = set()
+        env.reset()
+        for _t in range(400):
+            _o, _r, term, trunc, info = env.step(np.array([25.0, -25.0]))     # a poor policy: it needs help
+            conds.add((info.get("synthetic_operator") or {}).get("condition"))
+            if term or trunc:
+                env.reset()
+        assert conds & {"attentive", "inattentive"}, conds
+    src = (REPO / "examples" / "train_hiril.py").read_text(encoding="utf-8")
+    for needle in ('"synthetic_inconsistent"', '"synthetic_bad_share"', '"synthetic_bad_persistence"',
+                   "inconsistent=FLAGS.synthetic_inconsistent", 'condition=s.get("condition")'):
+        assert needle in src, needle
+
+
 def test_off_wrapper_info_has_no_condition():
     orc = ToyInsertionOracle()
     op = SyntheticOperator(orc, make_operator_theta("expert"), rng=np.random.default_rng(0))

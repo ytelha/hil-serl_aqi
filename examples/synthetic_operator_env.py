@@ -28,13 +28,18 @@ def wrap_synthetic_operator(env, *, synthetic_operator, synthetic_theta="",
                             respond_to_request=False, max_traj_length=300,
                             rotation_control=False, orientation_monitor=False,
                             orientation_tilt_rad=0.0, orientation_yaw_rad=0.0,
-                            log_takeover_channels=False, log=print):
+                            log_takeover_channels=False, inconsistent=False,
+                            bad_share=0.4, bad_persistence=0.7, log=print):
     """Returns (wrapped_env, theta).
 
     rotation_control, orientation_monitor (limits 0 = the oracle's default for
     the peg shape) and log_takeover_channels mean the same as the
     --synthetic_rotation_control, --synthetic_orientation_monitor and
-    --log_takeover_channels flags of train_aqi_rlpd.py. All off: as before.
+    --log_takeover_channels flags of train_aqi_rlpd.py. inconsistent,
+    bad_share and bad_persistence mean the same as --synthetic_inconsistent,
+    --synthetic_bad_share and --synthetic_bad_persistence there (the
+    sometimes-careless operator, operator_model.Inconsistency). All off: as
+    before.
 
     make_oracle_agent: () -> an agent whose .state a policy-oracle
         checkpoint restores into and which has sample_actions(); needed only
@@ -43,7 +48,8 @@ def wrap_synthetic_operator(env, *, synthetic_operator, synthetic_theta="",
     """
     from serl_launcher.aqi.operator_gate import (MonitoringSignal,
                                                  SyntheticOperatorWrapper)
-    from serl_launcher.aqi.operator_model import (PhaseOracle, PolicyOracle,
+    from serl_launcher.aqi.operator_model import (Inconsistency, PhaseOracle,
+                                                  PolicyOracle,
                                                   SyntheticOperator,
                                                   make_operator_theta,
                                                   theta_from_json)
@@ -100,7 +106,11 @@ def wrap_synthetic_operator(env, *, synthetic_operator, synthetic_theta="",
     op = SyntheticOperator(oracle, theta,
                            rng=np.random.default_rng(synthetic_seed + 17),
                            action_scale=op_action_scale,
-                           rotation_control=rotation_control)
+                           rotation_control=rotation_control,
+                           inconsistency=(Inconsistency(
+                               bad_share=bad_share,
+                               persistence=bad_persistence)
+                               if inconsistent else None))
     if orientation_monitor:
         if not op.rotation_control:
             raise ValueError(
@@ -121,7 +131,8 @@ def wrap_synthetic_operator(env, *, synthetic_operator, synthetic_theta="",
         f", mon s={theta.s_mon:.2f}, {kind} oracle, intervention="
         f"{intervention_mode}, responds to robot requests={respond_to_request}"
         f"{', rotation control' if op.rotation_control else ''}"
-        f"{', orientation monitor' if orientation_monitor else ''})")
+        f"{', orientation monitor' if orientation_monitor else ''}"
+        f"{(', inconsistent (bad share %g, persistence %g)' % (bad_share, bad_persistence)) if inconsistent else ''})")
     wrapped = SyntheticOperatorWrapper(
         env, op, monitor, rng=np.random.default_rng(synthetic_seed + 31),
         respond_to_request=respond_to_request,

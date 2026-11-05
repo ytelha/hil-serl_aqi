@@ -130,13 +130,16 @@ def test_pipeline_arms_take_the_new_stack():
     for t in _used(lcmd) | _used(acmd):              # every flag reaches a defined flag
         name = t[2:] if t.startswith("no") and t[2:] in defined else t
         assert name in defined or name.startswith("hiril_"), name
-    args = _parse("hiril_comparison.yaml", extra=["--synthetic_inconsistent"])
-    try:
-        _cmds(args, "hiril")
-    except SystemExit as exc:
-        assert "pipeline" in str(exc)
-    else:
-        raise AssertionError("hiril arm accepted the inconsistent operator")
+    # the sometimes-careless operator reaches the HiRIL actor too (it used to be refused)
+    args = _parse("hiril_comparison.yaml", extra=["--synthetic_inconsistent",
+                                                  "--synthetic_bad_share", "0.2"])
+    lcmd, acmd = _cmds(args, "hiril")
+    a = " ".join(acmd)
+    assert "--synthetic_inconsistent --synthetic_bad_share 0.2 --synthetic_bad_persistence 0.7" in a
+    assert "--synthetic_inconsistent" not in lcmd                # the operator lives in the actor only
+    for t in _used(acmd):
+        name = t[2:] if t.startswith("no") and t[2:] in defined else t
+        assert name in defined or name.startswith("hiril_"), name
 
 
 def test_run_readme_names_the_convergence_rule():

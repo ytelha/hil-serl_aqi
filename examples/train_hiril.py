@@ -148,6 +148,17 @@ flags.DEFINE_float("synthetic_orientation_yaw_rad", 0.0, "Yaw limit (rad); 0 "
 flags.DEFINE_boolean("log_takeover_channels", False, "Record per episode in "
                      "episodes.jsonl what caused each takeover and how it "
                      "ended. Logging only.")
+# the sometimes-careless operator (patch 0018), as in train_aqi_rlpd.py: each
+# takeover is attentive or inattentive, drawn at its onset; the condition is
+# logged with the takeover segment and nothing in training reads it
+flags.DEFINE_boolean("synthetic_inconsistent", False, "Inconsistent operator: "
+                     "each takeover keeps the previous condition with "
+                     "probability --synthetic_bad_persistence, else is "
+                     "inattentive with probability --synthetic_bad_share.")
+flags.DEFINE_float("synthetic_bad_share", 0.4, "--synthetic_inconsistent: "
+                   "long-run share of inattentive takeovers.")
+flags.DEFINE_float("synthetic_bad_persistence", 0.7, "--synthetic_inconsistent: "
+                   "probability that a takeover keeps the previous condition.")
 flags.DEFINE_enum("converge_mode", "rolling", ["rolling", "eval"], "'eval' = "
                   "decide convergence with the fixed-pose mini-eval alone.")
 flags.DEFINE_integer("converge_eval_every", 2000, "--converge_mode eval: env "
@@ -262,6 +273,9 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
             orientation_tilt_rad=FLAGS.synthetic_orientation_tilt_rad,
             orientation_yaw_rad=FLAGS.synthetic_orientation_yaw_rad,
             log_takeover_channels=FLAGS.log_takeover_channels,
+            inconsistent=FLAGS.synthetic_inconsistent,
+            bad_share=FLAGS.synthetic_bad_share,
+            bad_persistence=FLAGS.synthetic_bad_persistence,
             log=print_green)
 
     arm = FLAGS.arm or "hiril"
@@ -477,7 +491,11 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
                 ep["n_onsets"] += 1
                 ep["seg"] = dict(start_step=t_ep, requested=request,
                                  du_rl_at_trigger=du_rl["du"], du_h=[],
-                                 du_rl=[], rd=[], length=0)
+                                 du_rl=[], rd=[], length=0,
+                                 # inconsistent operator: the takeover's
+                                 # condition (label only; None when off)
+                                 condition=(info.get("synthetic_operator")
+                                            or {}).get("condition"))
             s = ep["seg"]
             s["length"] += 1
             s["du_rl"].append(du_rl["du"])
@@ -504,6 +522,7 @@ def actor(agent, data_store, env, sampling_rng, hiril: HiRILConfig):
                     du_rl_mean=float(np.mean(s["du_rl"])),
                     du_h_mean=float(np.mean(s["du_h"])),
                     rd_bonus_mean=float(np.mean(s["rd"])),
+                    condition=s.get("condition"),
                     features={"t_int": s["length"]}))
             du_arr = np.asarray(ep["du"], dtype=np.float64)
             ep_rec = dict(
