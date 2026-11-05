@@ -100,6 +100,14 @@ more slowly, because the robot waits for the learner. That is about 7 days one c
 
 ## Run it: one command, unattended
 
+**Before starting, on the machine (these need sudo, so the user does them; the setup script cannot):**
+- an NVIDIA driver for the RTX 5090 (version 570 or newer, CUDA 12.8 support), `nvidia-smi` working;
+- `git` and `curl`, and the EGL library MuJoCo renders with (`libegl1` on Ubuntu, usually present with the driver);
+- internet access during setup and the run (uv, Python 3.12.3, the packages, agentlace from GitHub, the ResNet
+  weights at the first run, W&B online);
+- **about 250 GB free disk** for `runs/` (176 cells, up to 12 checkpoints of about 95 MB each per cell); the machine
+  check reports a problem below that. The earlier second machine had 405 GB free.
+
 On the second training machine (Linux, RTX 5090), which nobody will look after while it runs. The repo comes from
 GitHub; the setup needs an NVIDIA driver with CUDA 12.8 support or newer (the lock's CUDA 12.9 wheels support the
 RTX 5090; the earlier second machine ran the same lock).

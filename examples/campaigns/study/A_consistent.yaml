@@ -78,7 +78,7 @@ budget:
   total_hours: 0
   learner_max_steps: 1000000
   buffer_period: 0
-  checkpoint_keep: 25
+  checkpoint_keep: 12               # the ruler scores the newest 8; about 95 MB per checkpoint (8 critics)
   demo_pretrain: true              # the fixed-ensemble base; plain HIL-SERL opts out below
   demo_pretrain_steps: 5000
   demo_pretrain_batch_size: 0

@@ -402,6 +402,13 @@ def test_push_results_to_a_local_remote():
     assert ss.push_results(res, remote_url=str(tmp / "nowhere.git"), log=lambda m: None) != 0   # fails, no exception
 
 
+def test_disk_estimate_and_checkpoint_keep():
+    assert [ss.planned_cells(n) for n in ss.ORDER] == [3, 5, 96, 72]
+    assert ss.disk_needed_gb() == round(176 * ss.GB_PER_CELL + ss.DISK_MARGIN_GB, 1)      # about 250 GB
+    for n in ("A_consistent", "B_quality"):
+        assert (ss.load_yaml(ss.config_path(n))["budget"]["checkpoint_keep"]) == 12     # >= the ruler's newest 8
+
+
 def test_unattended_wrapper():
     src = (REPO / "tools" / "run_study_unattended.sh").read_text(encoding="utf-8")
     assert "nohup setsid" in src and "systemd-inhibit" in src and "--suite study all --parallel 2" in src

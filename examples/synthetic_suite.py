@@ -288,6 +288,23 @@ def wandb_logged_in(env=None, home=None):
         return False
 
 
+GB_PER_CELL = 1.3        # disk per cell: up to 12 checkpoints of ~95 MB (8 critics), the certified one, logs, W&B
+DISK_MARGIN_GB = 20
+
+
+def planned_cells(name):
+    """Cells of a config: arms x operators x seeds."""
+    cfg = load_yaml(config_path(name))
+    ops = sum(int(v or 0) for k, v in (cfg.get("operators") or {}).items() if k in ("expert", "intermediate", "novice"))
+    seeds = int((cfg.get("replicates") or {}).get("seeds", 1) or 1)
+    return len(cfg.get("methods") or []) * ops * seeds
+
+
+def disk_needed_gb(names=None):
+    """Free disk the study needs for its runs folder: planned cells x GB_PER_CELL + a margin."""
+    return round(sum(planned_cells(n) for n in (names or ORDER)) * GB_PER_CELL + DISK_MARGIN_GB, 1)
+
+
 def configs_logging_online(names=None):
     out = []
     for n in names or ORDER:
@@ -327,8 +344,11 @@ def cmd_check(args):
         problems.append(f"the sim env does not render: {env.get('sim_render')}")
     if not any("gpu" in str(d).lower() or "cuda" in str(d).lower() for d in (env.get("jax_devices") or [])):
         problems.append(f"JAX sees no GPU: {env.get('jax_devices')}")
-    if info["disk_free_gb"] < 50:
-        problems.append(f"only {info['disk_free_gb']} GB free under {root}")
+    need = disk_needed_gb() if SUITE == "study" else 50
+    info["disk_needed_gb"] = need
+    if info["disk_free_gb"] < need:
+        problems.append(f"only {info['disk_free_gb']} GB free under {root}; the planned cells need about {need:g} GB "
+                        f"(checkpoints of every cell stay on disk)")
     online = configs_logging_online()
     info["wandb_online_configs"] = online
     info["wandb_logged_in"] = wandb_logged_in()

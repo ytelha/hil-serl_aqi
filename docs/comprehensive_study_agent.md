@@ -25,7 +25,10 @@ one unattended run, make sure it is running, and stop. The design, the decision 
    check (every line `ok`, JAX sees the GPU). If it fails, find the cause and fix the setup.
 2. **Machine check:** `./.venv/bin/python examples/synthetic_suite.py --suite study check --no_export`. Report READY or
    the problem list. A missing W&B key is fine (the run logs offline); tell the user they can still run
-   `./.venv/bin/wandb login` now. Anything else on the list: fix it if it is a setup problem, else report it.
+   `./.venv/bin/wandb login` now. **Free disk:** the check needs about 250 GB for `runs/`; if there is less, tell
+   the user before starting (they decide what to free; never delete anything yourself). Anything else on the list:
+   fix it if it is a setup problem, else report it. A missing system package or driver (anything needing `sudo`):
+   give the user the exact command to run; never enter a password yourself.
 3. **Start:** `bash tools/run_study_unattended.sh`. It prints the process id and the log path.
 4. **Confirm it runs (about 5–15 minutes):** `tail -n 40 runs/study/unattended.out` shows the machine check and then
    stage 0 starting; `results/study/RUN_STATUS.md` lists the first finished step. If the process died within these
