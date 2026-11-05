@@ -200,12 +200,18 @@ def main():
     ap.add_argument("--log_root", default=None, help="an aqi_logs folder")
     ap.add_argument("--out", default=None, help="output folder (default <campaign>/report)")
     ap.add_argument("--n_boot", type=int, default=500)
+    ap.add_argument("--modes", default="",
+                    help="comma list of run modes to keep (e.g. quality); default all runs with a condition label. "
+                         "Runs of other pipelines (hiril) log the label but not the score features")
     args = ap.parse_args()
     if not (args.campaign or args.log_root):
         ap.error("give --campaign or --log_root")
     root = args.log_root or os.path.join(args.campaign, "aqi_logs")
     out = args.out or os.path.join(args.campaign or root, "report")
     rows = qsa.load_segments(root)
+    if args.modes:
+        keep = {m.strip() for m in args.modes.split(",") if m.strip()}
+        rows = [r for r in rows if r.get("mode") in keep]
     res = analyse(rows, n_boot=args.n_boot)
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "inconsistent_audit.json"), "w") as f:

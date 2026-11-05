@@ -1,0 +1,99 @@
+# =====================================================================
+# study/S0_smoke_A.yaml -- smoke test of study A's new code paths (docs/comprehensive_study.md)
+#
+# One expert, one seed, 4 000 steps: 16 critics, the highest asking rate and the random trigger run end to end on
+# the new stack, with W&B. It also measures minutes per cell (and, with --parallel 2, whether two cells side by
+# side beat one). The FULL ruler scores every checkpoint, so afterwards
+#   ./.venv/bin/python examples/ruler_reselect.py --campaign runs/study/S0_smoke_A --skip_pretrain --newest 8
+# shows whether the shorter ruler of studies A and B would change any score.
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+  rpy_box: [0.1, 0.1, 0.4]       # orientation box (patch 0016): roll, pitch, yaw half-widths, rad
+operators:
+  expert: 1
+  intermediate: 0
+  novice: 0
+  jitter: 0.15
+  sample_seed: 0
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+methods:
+  - ens-k16
+  - asks-70
+  - random-55
+arms:
+  ens-k16:   {mode: logged, critic_ensemble_size: 16}
+  asks-70:   {mode: active, query_target_rate: 0.70, query_cooldown_steps: 5}
+  random-55: {mode: active, trigger_terms: [], random_request_rate: 0.25, query_cooldown_steps: 5}
+replicates:
+  seeds: 1
+  seed_base: 0
+budget:
+  mode: steps
+  steps_cap: 4000                  # smoke: short, every code path once
+  minutes_per_cell: 120
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  converge_mode: eval              # the autonomous mini-eval decides (patch 0015)
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1                     # one learner step per env step (patch 0015)
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true              # the fixed-ensemble base; plain HIL-SERL opts out below
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_rotation_control: true        # patch 0014
+  synthetic_orientation_monitor: true    # patch 0016; limits from stage 0 (the driver passes them)
+  synthetic_orientation_tilt_rad: 0
+  synthetic_orientation_yaw_rad: 0
+  trigger_terms: [uncertainty]     # the asking gate: the critics' disagreement alone
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true            # per-step simulator truth in the logs (analysis only)
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+  bc_loss_weight: 0.0
+method_overrides:
+  hilserl:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+logging:
+  wandb: "online"                  # needs `wandb login` on the machine once
+  takeover_channels: true
+  wandb_tags: [comprehensive_study, S0_smoke_A]
+analysis:
+  baseline: ens-k16               # the smoke has no plain HIL-SERL cell
+  plots: true

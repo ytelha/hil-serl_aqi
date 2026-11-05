@@ -1,0 +1,176 @@
+# =====================================================================
+# study/B_quality.yaml -- study B: can bad corrections be found, and does using a score help?
+# (docs/comprehensive_study.md)
+#
+# A sometimes-careless EXPERT: each takeover is careful or careless, drawn at its onset (kept with probability 0.7,
+# else careless with probability 0.2, so 20 % careless in the long run, in spells of about 4 takeovers). A careless
+# takeover moves like a novice (motor noise, tremor, lag, speed, pauses, recovery), pushes down too early in half the
+# attempts and aims about 6 mm beside the hole. The label is logged with every takeover; only the perfect filter
+# reads it. New stack and shorter ruler as in study A.
+#
+# Arms (3 experts x 3 seeds = 9 cells each, 72 cells):
+#   hilserl, e2hil, hiril    plain HIL-SERL and the two published methods, 2 critics, no demo pre-training
+#   keepall                  ensemble extended (8 critics) keeping every correction: the same-architecture reference
+#   beh-discard              behavioural score; drops the lowest 20 % of recent scores from the demonstration half
+#   beh-reweight             behavioural score; keeps everything, replays higher scores more often
+#   oracle-reweight          the simulator-truth quality oracle (trouble removed - jam + outcome) as replay priority
+#   perfect-filter           drops exactly the careless takeovers (ground truth: the ceiling of any discard filter)
+# No outcome filter and no imitation loss in any arm (the first machine's perfect-score campaign had both on, which
+# confounded it). The filters act after a warm-up of 1 000 env steps (was 5 000, which covered 61 % of the takeovers
+# on the second machine); the discard share matches the careless share.
+#
+# Run through the suite driver:
+#   ./.venv/bin/python examples/synthetic_suite.py --suite study run B_quality --parallel 2
+#   ./.venv/bin/python examples/synthetic_suite.py --suite study audit B_quality
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+  rpy_box: [0.1, 0.1, 0.4]
+operators:
+  expert: 3
+  intermediate: 0
+  novice: 0
+  jitter: 0.15
+  sample_seed: 0
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+methods:
+  - hilserl
+  - e2hil
+  - hiril
+  - keepall
+  - beh-discard
+  - beh-reweight
+  - oracle-reweight
+  - perfect-filter
+arms:
+  keepall:                         # every correction kept, uniform replay
+    mode: quality
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+  beh-discard:                     # drop the corrections the behavioural score ranks in the lowest 20 %
+    mode: quality
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.2
+    per_eta: 0.0
+  beh-reweight:                    # keep every correction, replay priority from the behavioural score
+    mode: quality
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_standardize: true
+    per_delta_init: 0.1
+    per_eps: 0.05
+    per_eta: 1.0
+    per_scale_decay: 0.01
+    per_refresh_period: 2000
+    per_is_beta: 0.5
+  oracle-reweight:                 # keep every correction, replay priority from the simulator-truth oracle
+    mode: quality
+    quality_score_mode: oracle     # needs quality_cf_diag (on campaign-wide below)
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_standardize: true
+    per_delta_init: 0.1
+    per_eps: 0.05
+    per_eta: 1.0
+    per_scale_decay: 0.01
+    per_refresh_period: 2000
+    per_is_beta: 0.5
+  perfect-filter:                  # drop exactly the careless corrections (reads the label)
+    mode: quality
+    quality_score_mode: behavioral # logged only; the filter decides
+    quality_warmup_steps: 1000
+    quality_filters: [oracle_filter]
+    per_eta: 0.0
+replicates:
+  seeds: 3
+  seed_base: 0
+budget:
+  mode: steps
+  steps_cap: 30000
+  minutes_per_cell: 240
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  converge_mode: eval
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 25
+  demo_pretrain: true              # the fixed-ensemble base of the quality arms; the 2-critic arms opt out below
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0.00015
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_inconsistent: true     # the sometimes-careless operator (patch 0018)
+  synthetic_bad_share: 0.2         # 20 % careless (was 0.4)
+  synthetic_bad_persistence: 0.7
+  synthetic_rotation_control: true
+  synthetic_orientation_monitor: true
+  synthetic_orientation_tilt_rad: 0
+  synthetic_orientation_yaw_rad: 0
+  quality_cf_diag: true            # simulator truth per step: the oracle score and the audit
+  critic_ensemble_size: 8
+  critic_subsample_size: 1
+  per_member_targets: true
+  bc_loss_weight: 0.0              # no imitation loss in any arm
+  e2hil_K: 8
+  e2hil_q_low: 0.05
+  e2hil_q_high: 0.90
+  e2hil_q_agg: min
+hiril:
+  recalib_period: 1000             # finding F2: re-calibrate tau_risk, or HiRIL stops asking
+  du_mode: dual
+method_overrides:
+  hilserl:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  e2hil:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  hiril:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+  skip_pretrain: true
+  newest: 8
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+logging:
+  wandb: "online"
+  takeover_channels: true
+  wandb_tags: [comprehensive_study, B_quality]
+analysis:
+  baseline: hilserl
+  plots: true

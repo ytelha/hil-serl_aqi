@@ -21,6 +21,20 @@ and refuses to reuse a folder with a different config or different limits.
 the inconsistent operator and the quality scores. Its stage 0 tests the operator in each
 condition, `audit` measures how well each score finds the inattentive corrections (Q1),
 and the report pairs every arm with the keep-all arm and with the baseline.
+
+`--suite study` drives the comprehensive study (docs/comprehensive_study.md): study A (number
+of critics and asking rate, consistent experts and intermediates) and study B (quality scores
+against HIL-SERL, E2HiL and HiRIL, a sometimes-careless expert), each with a smoke campaign
+first. Its stage 0 runs the tests, the operator in each condition and the tolerance sweep;
+`run --parallel 2` trains two cells side by side on one GPU; `plots` draws the study figures.
+
+    python examples/synthetic_suite.py --suite study check            # also: W&B login when a config logs online
+    python examples/synthetic_suite.py --suite study stage0
+    python examples/synthetic_suite.py --suite study run smoke --parallel 2
+    python examples/synthetic_suite.py --suite study run A_consistent B_quality --parallel 2
+    python examples/synthetic_suite.py --suite study audit             # score validity in B_quality
+    python examples/synthetic_suite.py --suite study report
+    python examples/synthetic_suite.py --suite study plots
 """
 import argparse
 import csv
@@ -73,6 +87,17 @@ SUITES = {
                "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
                "tests/test_campaign_switches.py", "tests/test_synthetic_suite.py"],
         ref_arms=("keepall", "hilserl", "drop-hind")),
+    "study": dict(
+        configs=HERE / "campaigns" / "study", root=REPO / "runs" / "study",
+        groups={"smoke": ["S0_smoke_A", "S0_smoke_B"], "a": ["A_consistent"], "b": ["B_quality"],
+                "main": ["A_consistent", "B_quality"], "audit": ["S0_smoke_B", "B_quality"]},
+        order=["S0_smoke_A", "S0_smoke_B", "A_consistent", "B_quality"],
+        tests=["tests/test_inconsistent_operator.py", "tests/test_operator_rotation.py",
+               "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
+               "tests/test_campaign_switches.py", "tests/test_campaign_hiril.py", "tests/test_campaign_e2hil.py",
+               "tests/test_update_ratio.py", "tests/test_ruler_select.py", "tests/test_synthetic_suite.py",
+               "tests/test_study_suite.py"],
+        ref_arms=("hilserl", "ens-k8", "keepall")),
 }
 SUITE = "synthetic_suite"
 
@@ -208,6 +233,8 @@ FEATURES = {   # patch: (file, text that only exists with the patch)
     "0018 inconsistent operator": ("serl_launcher/serl_launcher/aqi/operator_model.py", "class Inconsistency"),
     "0020 first-machine features": ("serl_launcher/serl_launcher/aqi/query_gate.py", "query_target_rate"),
     "0021 per-operator condition sequence": ("serl_launcher/serl_launcher/aqi/operator_model.py", "zlib.crc32"),
+    "0037 shorter ruler": ("examples/ruler_select.py", "def keep_checkpoints"),
+    "0048 HiRIL with the inconsistent operator": ("examples/train_hiril.py", '"synthetic_inconsistent"'),
 }
 
 
@@ -234,6 +261,28 @@ def git(*args):
                               timeout=20).stdout.strip()
     except Exception:
         return ""
+
+
+def wandb_logged_in(env=None, home=None):
+    """True when W&B can log without a prompt: WANDB_API_KEY is set, or `wandb login` wrote the key to ~/.netrc.
+    Campaign cells run unattended, so an 'online' learner without a key would fail or block."""
+    env = os.environ if env is None else env
+    if env.get("WANDB_API_KEY"):
+        return True
+    netrc = Path(env.get("NETRC") or Path(home or Path.home()) / ".netrc")
+    try:
+        return "api.wandb.ai" in netrc.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def configs_logging_online(names=None):
+    out = []
+    for n in names or ORDER:
+        log = load_yaml(config_path(n)).get("logging") or {}
+        if str(log.get("wandb", "off")) == "online":
+            out.append(n)
+    return out
 
 
 def cmd_check(args):
@@ -268,6 +317,12 @@ def cmd_check(args):
         problems.append(f"JAX sees no GPU: {env.get('jax_devices')}")
     if info["disk_free_gb"] < 50:
         problems.append(f"only {info['disk_free_gb']} GB free under {root}")
+    online = configs_logging_online()
+    info["wandb_online_configs"] = online
+    info["wandb_logged_in"] = wandb_logged_in()
+    if online and not info["wandb_logged_in"]:
+        problems.append(f"W&B: {', '.join(online)} log online, but no key is set: run `./.venv/bin/wandb login` once "
+                        f"(or pass --wandb offline / off to `run`)")
     info["problems"] = problems
     (root / "machine.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     print(f"\n[check] machine {info['machine_id']} · commit {info['git_commit'][:8]}"
@@ -311,7 +366,7 @@ def cmd_stage0(args):
             rc_all |= rc
         (root / "tests.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         print("[stage0] tests:", ", ".join(f"{Path(t).stem} {'ok' if rc == 0 else 'FAILED'}" for t, rc in results.items()))
-    if not args.skip_operator_test and SUITE == "inconsistent_operator":
+    if not args.skip_operator_test and SUITE in ("inconsistent_operator", "study"):
         # the inconsistent operator held in each condition: inattentive must be clearly worse
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid",
                       "--conditions", "attentive,inattentive", "--rotation", "off,on",
@@ -321,7 +376,7 @@ def cmd_stage0(args):
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid,cylinder",
                       "--episodes", str(args.episodes), "--out", str(root / "operator_test.json")],
                      log=root / "operator_test.log", env={"JAX_PLATFORMS": "cpu"})
-    if not args.skip_sweep and SUITE == "synthetic_suite":
+    if not args.skip_sweep and SUITE in ("synthetic_suite", "study"):
         rc = sh([sys.executable, "examples/oracle_insertion_test.py", "--sweep", "tilt,yaw", "--shapes", "cuboid,cylinder",
                  "--tiers", "expert,novice", "--episodes", str(args.sweep_episodes),
                  "--out", str(root / "tolerance.json")], log=root / "tolerance.log", env={"JAX_PLATFORMS": "cpu"})
@@ -426,6 +481,46 @@ def score_mismatch(root, name):
     return None
 
 
+def parallel_cmds(cmd, n, port_base=6100, mem_learner=0.6, mem_actor=0.2):
+    """One campaign as n side-by-side shards on one GPU, in three steps (as the cluster runs it):
+    roster and demonstrations once, then n processes that each train and score every n-th cell, then the
+    analysis. Each shard gets its own learner/actor ports (AQI_TRAINER_PORT p -> p, p + 1) and 1/n of the
+    GPU-memory caps, and skips the shared-GPU pre-flight check (the other shard is expected there)."""
+    prep = list(cmd) + ["--stages", "sample,demos"]
+    shards = []
+    for i in range(n):
+        c = list(cmd) + ["--stages", "train,eval", "--shard", f"{i}/{n}", "--force",
+                         "--gpu_mem_learner", f"{mem_learner / n:.2f}", "--gpu_mem_actor", f"{mem_actor / n:.2f}"]
+        shards.append((c, {"AQI_TRAINER_PORT": str(int(port_base) + 10 * i)}))
+    ana = list(cmd) + ["--stages", "analyze"]
+    return prep, shards, ana
+
+
+def run_parallel(cmd, n, name, root, port_base=6100):
+    """Run a campaign as n shards side by side (parallel_cmds); returns the first non-zero exit code."""
+    prep, shards, ana = parallel_cmds(cmd, n, port_base)
+    log = Path(root) / f"{name}.out"
+    rc = sh(prep, log=log, sim_env=False)
+    if rc != 0:
+        print(f"[run] {name}: roster / demonstrations failed (rc {rc})")
+        return rc
+    procs = []
+    for i, (c, env) in enumerate(shards):
+        lf = open(Path(root) / f"{name}.shard{i}.out", "a", encoding="utf-8")
+        p = subprocess.Popen(["bash", "-c", " ".join(_q(x) for x in c)], cwd=str(REPO), env=dict(os.environ, **env),
+                             stdout=lf, stderr=subprocess.STDOUT, text=True, errors="replace")
+        procs.append((p, lf))
+        print(f"[run] {name}: shard {i}/{n} started (pid {p.pid}, port {env['AQI_TRAINER_PORT']}, log {lf.name})")
+    rcs = []
+    for p, lf in procs:
+        rcs.append(p.wait())
+        lf.close()
+    print(f"[run] {name}: shards finished with " + ", ".join(f"rc {r}" for r in rcs))
+    rc = next((r for r in rcs if r != 0), 0)
+    rc_a = sh(ana, log=log, sim_env=False)
+    return rc or rc_a
+
+
 def cmd_run(args):
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
@@ -458,7 +553,12 @@ def cmd_run(args):
                 print(f"[run] {n}: {camp} was started with another config or other limits:\n  then {old}\n  now  {fp}\n"
                       f"Never mix them in one folder: use another --root, or move the old folder away.")
                 return 2
+        par = int(getattr(args, "parallel", 1) or 1)
         print(f"\n[run] {n}: " + " ".join(_q(c) for c in cmd))
+        if par > 1:
+            prep, shards, ana = parallel_cmds(cmd, par, getattr(args, "port_base", 6100))
+            for c, env in shards:
+                print(f"[run]   shard: AQI_TRAINER_PORT={env['AQI_TRAINER_PORT']} " + " ".join(_q(x) for x in c[-10:]))
         if args.dry:
             continue
         camp.mkdir(parents=True, exist_ok=True)
@@ -466,9 +566,12 @@ def cmd_run(args):
             fp_path.write_text(json.dumps(dict(fp, started=now(), machine=socket.gethostname()), indent=2),
                                encoding="utf-8")
         t0 = now()
-        rc = sh(cmd, log=root / f"{n}.out", sim_env=False)       # run_campaign sources sim_env.sh itself
+        if par > 1:
+            rc = run_parallel(cmd, par, n, root, getattr(args, "port_base", 6100))
+        else:
+            rc = sh(cmd, log=root / f"{n}.out", sim_env=False)   # run_campaign sources sim_env.sh itself
         with open(root / "suite_log.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"setting": n, "start": t0, "end": now(), "rc": rc,
+            f.write(json.dumps({"setting": n, "start": t0, "end": now(), "rc": rc, "parallel": par,
                                 "machine": socket.gethostname()}) + "\n")
         if rc != 0 and not args.keep_going:
             print(f"[run] {n} failed (rc {rc}); stopping. Re-run the same command to resume (finished cells are kept).")
@@ -481,14 +584,16 @@ def cmd_audit(args):
     """Score validity on the inconsistent operator: examples/inconsistent_operator_audit.py per setting."""
     root = Path(args.root)
     rc_all = 0
-    for n in resolve(args.names or GROUPS.get("q1", [])):
+    for n in resolve(args.names or GROUPS.get("audit") or GROUPS.get("q1", [])):
         camp = root / n
         if not (camp / "aqi_logs").exists():
             print(f"[audit] {n}: no aqi_logs yet under {camp}")
             rc_all |= 1
             continue
-        rc_all |= sh([sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp)],
-                     log=root / f"{n}.audit.log", sim_env=False)
+        cmd = [sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp)]
+        if SUITE == "study":            # the scores are computed in the quality arms only
+            cmd += ["--modes", "quality"]
+        rc_all |= sh(cmd, log=root / f"{n}.audit.log", sim_env=False)
     return rc_all
 
 
@@ -760,11 +865,160 @@ def cmd_report(args):
     return 0
 
 
+# ===================================================================== plots
+STUDY_SCORES = [   # (label in inconsistent_audit.json, short name) for the score-validity figure
+    ("B = z(dV)-z(t)-z(F)", "behavioural"), ("q_int (logged)", "score as logged"), ("-t_int", "length"),
+    ("d_value", "value gain"), ("-f_peak", "peak force"), ("a_hind (hindsight)", "hindsight"),
+    ("a_hat_mean", "counterfactual"), ("outcome (episode success)", "outcome"),
+    ("-jerk_mean", "smoothness (circular)")]
+
+
+def _arm_K(arm):
+    m = re.fullmatch(r"ens-k(\d+)", arm)
+    return 2 if arm == "hilserl" else (int(m.group(1)) if m else None)
+
+
+def plot_campaign(name, cells, methods, icc, audit, out, plt):
+    """The study figures of one campaign from its cell metrics (summarize), the per-arm ICC of its report and its
+    score audit. Returns the written paths. Arms are drawn in the config's order; a dot is one cell."""
+    made = []
+    by = {a: [c for c in cells if c["arm"] == a] for a in methods}
+    by = {a: cs for a, cs in by.items() if cs}
+    if not by:
+        return made
+    arms = list(by)
+
+    def dots(ax, key, scale=1.0, label=""):
+        for i, a in enumerate(arms):
+            v = [c[key] * scale for c in by[a] if c.get(key) is not None]
+            if v:
+                ax.bar(i, sum(v) / len(v), color="#9fc5e8", width=0.6, zorder=1)
+                ax.scatter([i + 0.12 * ((k % 5) - 2) / 2 for k in range(len(v))], v, s=14, color="#1f4e79", zorder=2)
+        ax.set_xticks(range(len(arms)))
+        ax.set_xticklabels(arms, rotation=35, ha="right", fontsize=9)
+        ax.set_title(label, fontsize=11)
+        ax.grid(axis="y", alpha=0.3)
+
+    fig, axs = plt.subplots(1, 4, figsize=(17, 4.2))
+    dots(axs[0], "ruler_sr", 100, "ruler success (%)")
+    dots(axs[1], "env_steps", 1e-3, "env steps when training stopped (thousands)")
+    dots(axs[2], "first_unaided_success", 1e-3, "first success without help (thousands of steps)")
+    dots(axs[3], "operator_share", 100, "operator share of the steps (%)")
+    fig.suptitle(f"{name}: every arm (bar = mean, dot = one cell)", fontsize=12)
+    fig.tight_layout()
+    p = out / f"{name}_arms.png"
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    made.append(p)
+
+    ks = sorted({_arm_K(a) for a in arms if _arm_K(a) is not None})
+    if len(ks) >= 2:
+        fig, axs = plt.subplots(1, 4, figsize=(17, 4.2))
+        for ax, (key, scale, lab) in zip(axs, (("ruler_sr", 100, "ruler success (%)"),
+                                                 ("env_steps", 1e-3, "env steps when training stopped (thousands)"),
+                                                 ("operator_share", 100, "operator share (%)"),
+                                                 ("actor_minutes", 1, "actor minutes per cell"))):
+            for a in arms:
+                k = _arm_K(a)
+                if k is None:
+                    continue
+                v = [c[key] * scale for c in by[a] if c.get(key) is not None]
+                if v:
+                    ax.scatter([k] * len(v), v, s=16, color="#1f4e79", alpha=0.6)
+                    ax.scatter([k], [sum(v) / len(v)], s=90, marker="_", color="#c00000", linewidths=2.5)
+            ax.set_xscale("log", base=2)
+            ax.set_xticks(ks)
+            ax.set_xticklabels([("2 (HIL-SERL)" if k == 2 else str(k)) for k in ks])
+            ax.set_xlabel("number of critics K")
+            ax.set_title(lab, fontsize=11)
+            ax.grid(alpha=0.3)
+        fig.suptitle(f"{name}: number of critics (red = mean)", fontsize=12)
+        fig.tight_layout()
+        p = out / f"{name}_critics.png"
+        fig.savefig(p, dpi=150)
+        plt.close(fig)
+        made.append(p)
+
+    ask = [a for a in arms if a.startswith(("asks-", "random-")) or a in ("ens-k8", "hilserl")]
+    if any(a.startswith("asks-") for a in ask):
+        fig, ax = plt.subplots(figsize=(7.5, 5))
+        for a in ask:
+            sr = [c["ruler_sr"] * 100 for c in by[a] if c.get("ruler_sr") is not None]
+            sh_ = [c["operator_share"] * 100 for c in by[a] if c.get("operator_share") is not None]
+            if not sr or not sh_:
+                continue
+            x, y = sum(sh_) / len(sh_), sum(sr) / len(sr)
+            col = "#c00000" if a.startswith("asks-") else ("#7f7f7f" if a.startswith("random-") else "#1f4e79")
+            ax.scatter([x], [y], s=70, color=col, zorder=3)
+            lab = a + (f"  ICC {icc[a]:.2f}" if icc.get(a) is not None else "")
+            ax.annotate(lab, (x, y), textcoords="offset points", xytext=(6, 4), fontsize=9)
+        ax.set_xlabel("operator share of the steps (%)  = human effort")
+        ax.set_ylabel("ruler success (%)")
+        ax.set_title(f"{name}: success against human effort (ICC = share of the spread from the operator)",
+                     fontsize=10)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        p = out / f"{name}_asking.png"
+        fig.savefig(p, dpi=150)
+        plt.close(fig)
+        made.append(p)
+
+    sc = (audit or {}).get("scores") or {}
+    have = [(k, s) for k, s in STUDY_SCORES if k in sc and (sc[k].get("auroc_within") or {}).get("all") is not None]
+    if have:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        vals = [sc[k]["auroc_within"]["all"] for k, _s in have]
+        ax.bar(range(len(have)), vals, color=["#1f4e79" if v >= 0.7 else "#9fc5e8" for v in vals])
+        ax.axhline(0.5, color="#7f7f7f", ls="--", lw=1)
+        ax.axhline(0.7, color="#c00000", ls="--", lw=1)
+        ax.text(len(have) - 0.5, 0.705, "bar 0.70", color="#c00000", ha="right", fontsize=9)
+        ax.text(len(have) - 0.5, 0.505, "chance 0.50", color="#7f7f7f", ha="right", fontsize=9)
+        ax.set_xticks(range(len(have)))
+        ax.set_xticklabels([s for _k, s in have], rotation=30, ha="right", fontsize=9)
+        ax.set_ylim(0.3, 1.0)
+        ax.set_ylabel("AUROC within run, phase and onset")
+        ax.set_title(f"{name}: does a score find the careless takeovers? "
+                     f"({audit.get('n_segments', '?')} takeovers, {audit.get('n_runs', '?')} runs)", fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        p = out / f"{name}_scores.png"
+        fig.savefig(p, dpi=150)
+        plt.close(fig)
+        made.append(p)
+    return made
+
+
+def cmd_plots(args):
+    root = Path(args.root)
+    out = root / "plots"
+    out.mkdir(parents=True, exist_ok=True)
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    made = []
+    for n in resolve(args.names or ORDER):
+        camp = root / n
+        if not (camp / "checkpoints").exists():
+            continue
+        _rows, cells, _m = summarize(n, camp)
+        methods = list(load_yaml(config_path(n)).get("methods") or [])
+        dep_p, aud_p = camp / "report" / "dependency.json", camp / "report" / "inconsistent_audit.json"
+        dep = json.loads(dep_p.read_text(encoding="utf-8")) if dep_p.exists() else {}
+        icc = {a: (m or {}).get("icc") for a, m in (dep.get("methods") or {}).items()}
+        audit = json.loads(aud_p.read_text(encoding="utf-8")) if aud_p.exists() else None
+        made += plot_campaign(n, cells, methods, icc, audit, out, plt)
+    for p in made:
+        print(f"[plots] wrote {p}")
+    if not made:
+        print(f"[plots] nothing trained yet under {root}")
+    return 0 if made else 1
+
+
 # ===================================================================== main
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--suite", default="synthetic_suite", choices=sorted(SUITES),
-                   help="which suite: synthetic_suite (default) or inconsistent_operator")
+                   help="which suite: synthetic_suite (default), inconsistent_operator or study")
     p.add_argument("--root", default=None, help="suite folder (default runs/<suite>)")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check", help="machine + repo check")
@@ -787,11 +1041,16 @@ def build_parser():
                     help="inconsistent_operator: run a setting of the original platform")
     rn.add_argument("--score_as_is", action="store_true",
                     help="inconsistent_operator: run Q2/Q3 without matching the score to the Q1 audit")
+    rn.add_argument("--parallel", type=int, default=1,
+                    help="train N cells side by side on one GPU (shards with their own ports; default 1)")
+    rn.add_argument("--port_base", type=int, default=6100, help="--parallel: first learner port (+10 per shard)")
     rn.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="further run_campaign.py flags")
     au = sub.add_parser("audit", help="inconsistent_operator: score validity of the Q1 campaigns")
     au.add_argument("names", nargs="*", help="settings (default the Q1 group)")
     rp = sub.add_parser("report", help="comparison table of the trained settings")
     rp.add_argument("names", nargs="*", help="settings or groups; default all")
+    pt = sub.add_parser("plots", help="figures per campaign -> <root>/plots/")
+    pt.add_argument("names", nargs="*", help="settings or groups; default all")
     return p
 
 
@@ -801,7 +1060,7 @@ def main(argv=None):
     if args.root is None:
         args.root = str(DEFAULT_ROOT)
     return {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run,
-            "audit": cmd_audit, "report": cmd_report}[args.cmd](args)
+            "audit": cmd_audit, "report": cmd_report, "plots": cmd_plots}[args.cmd](args)
 
 
 if __name__ == "__main__":
