@@ -1,9 +1,11 @@
 # Presenting the training machines
 
 A guide for presenting what ran where and what came out, with the slide numbers of both decks
-(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 59 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
+(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 63 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
 227 slides, 49 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
-[second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026.
+[second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026; Siemens slide numbers as of 5 November.
+
+**The colour code of the Siemens deck.** Every result slide carries a strip at the top right: the ablation ladder HIL-SERL › + ensemble › + asking › + grading › AQI, with the module tested there filled in its colour (grey, blue, petrol, orange, purple), the one it is compared with outlined, the rest grey; then the operator (consistent, sometimes careless, or operator alone) and the platform (original or new stack); and a red tag where a novice result is shown ("novice too weak → p. 26"). The result figure is framed in the colour of the tested module. Page 16 explains it.
 
 **The file to show:** [presentation_summary_both_machines.md](presentation_summary_both_machines.md), both machines in one
 file, with formulas, worked examples, the questions asked while preparing and a glossary.
@@ -26,7 +28,7 @@ out whether the main results survive with the operator who can help.
 | runs | 459, in 16 campaigns | 58, in 5 campaigns | method test; 1-cell counterfactual study; 4-cell E2HiL test (ran 5 Nov and failed technically: in all 4 runs the camera rendering stalled once the policy took over (step 201) and aborted; no result) |
 | platform | original: the operator moves the peg but cannot turn it | new stack: rotation control, orientation limit and channel, new stop rule, fixed update ratio | – |
 | answered | does the teacher matter; can many critics learn; can corrections be graded; does asking help | can the operator help at all; does a score notice a careless operator | can the counterfactual score be repaired (no) |
-| state | idle; next: novice test, then the new stack | idle; its copy was deleted after the export | idle; the rendering stall is to be diagnosed (`presentation_bundle/results/e2hil_small_claix/RESULT.md`) |
+| state | idle; next: novice test, then the new stack | wiped; the comprehensive study is set up for it ([comprehensive_study.md](../comprehensive_study.md)) | idle; the rendering stall is to be diagnosed (`presentation_bundle/results/e2hil_small_claix/RESULT.md`) |
 
 **Never compare runs across machines.** The learner makes about 0.45 updates per environment step on the first
 machine and 1 on the second, so each comparison has its reference on its own machine.
@@ -35,24 +37,30 @@ machine and 1 on the second, so each comparison has its reference on its own mac
 
 | # | beat | Siemens deck | long deck |
 |---|---|---|---|
-| 1 | how we test: synthetic operators, runs, campaigns, the ruler | 9, 13, 14 | 79–93 (programme 93) |
-| 2 | does the teacher matter? yes | 17 | 102–107 |
-| 3 | can many critics learn? first no, then yes | 18, 19 | 110, 117–122 |
-| 4 | can corrections be graded? no | 20 | 125–131; study result 168 |
-| 5 | asking for help: same success, a sixth of the help; asking more beats the operator | 21, 22 | 146–155 |
-| 6 | the turn: the operator could not turn the peg | 23 | 49–51 |
-| 7 | the sometimes-careless operator | 24 | 133–137 |
-| 8 | what we learned, what comes next | 25 | 174–176 |
+| 1 | how we test: synthetic operators, the operator model today, runs, campaigns, the ruler | 9, 10, 14, 15 | 79–93 (programme 93) |
+| – | the ablation ladder and the colour code | 16 | – |
+| 2 | does the teacher matter? yes | 18 | 102–107 |
+| 3 | can many critics learn? first no, then yes | 19, 20 | 110, 117–122 |
+| 4 | can corrections be graded? no | 21 | 125–131; study result 168 |
+| 5 | asking for help: same success, a sixth of the help; asking more beats the operator | 22, 23 | 146–155 |
+| 6 | the turn: the operator could not turn the peg | 24 | 49–51 |
+| 7 | the sometimes-careless operator | 25 | 133–137 |
+| 7b | our synthetic novice is too weak | 26 | – |
+| 8 | what we learned, what comes next | 27 | 174–176 |
 | – | where it all ran | – | 161 |
 
-Backups to have ready: Siemens 35 (the operator in asking mode), 36 (all asking variants, both references), 37 (how
-the robot decides to ask: a worked example), 38 (the asking line adapts), 40 (what ran on the second machine), 41
-(where a run's time goes, the fixed update ratio, the shorter evaluation), 42 (scores), 43 (discard or re-weight),
-44 (perfect score and novice test), 52 (score ideas), 57 (the request gate in formulas); long deck 223 (how the robot
+Backups to have ready: Siemens 37 (the operator in asking mode), 38 (all asking variants, both references), 39 (how
+the robot decides to ask: a worked example), 40 (the asking line adapts), 42 (what ran on the second machine), 43
+(where a run's time goes, the fixed update ratio, the shorter evaluation), 44 (scores), 45 (discard or re-weight),
+46 (perfect score and novice test), 54 (score ideas), 58 (one training iteration), 59 (what each critic sees, HIL-SERL
+against the ensemble), 61 (the request gate in formulas), 63 (statistics, worked examples in the notes); long deck 223 (how the robot
 decides to ask), 224 (the asking line adapts), 225 (runs on the second machine), 227 (where a cell's time goes), 168
 (counterfactual study).
 
 **The first machine's latest experiments in one guide:** [first_machine_latest_experiments_guide.md](first_machine_latest_experiments_guide.md).
+
+**If asked how the learner works or how the tests work:** [training_iteration_and_statistics.md](training_iteration_and_statistics.md).
+**All questions asked while preparing, with where they are answered:** [questions_index.md](questions_index.md).
 
 **If asked how σ_Q or the quality oracle work:** section 1–3 of
 [first_machine_asking_rate_results_and_qa_log.md](first_machine_asking_rate_results_and_qa_log.md) and section 1–2 of

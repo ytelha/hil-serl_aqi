@@ -502,7 +502,7 @@ the careless-operator test rests on experts and intermediates.
 | Can I compare the speed-up across machines? | Only as the size of what can be gained: same method, about 19 000 → 4 600 steps, but a different machine, operator and five settings. |
 | Why is 0.66 not "valid"? | The bar fixed in advance was 0.70. |
 | Why two machines, and why not the cluster? | The first ran the thesis campaigns; the second was available for a week for the new stack and the careless operator. The cluster quota is 3 GPU-hours a month; a campaign needs 80–135. |
-| What runs next? | The novice test, then the new stack on the first machine, its 27-run ladder, and the repeat at thesis scale with plain HIL-SERL, ensemble extended and asking; the 4-run E2HiL test is repeated once the rendering stall on the cluster is fixed, or run on a training machine. |
+| What runs next? | The comprehensive study on the second machine (about a week, new stack, no novice): study A, plain HIL-SERL against 4, 8 and 16 critics and asking in the 40, 55 and 70 % most uncertain steps (random control at 55 %), experts and intermediates; study B, a 20 % careless expert, the behavioural score (discard, re-weight), the simulator-truth oracle and the perfect filter against plain HIL-SERL, E2HiL and HiRIL ([comprehensive_study.md](../comprehensive_study.md)). The cluster's 4-run E2HiL test failed technically, so E2HiL runs there. On the first machine: the novice test, then the new stack. |
 
 ## 10. Glossary
 
