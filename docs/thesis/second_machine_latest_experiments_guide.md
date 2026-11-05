@@ -25,7 +25,8 @@ difference. That test was too weak to decide, and no gate cleared it.
 | 5 | discard vs re-weight, pilot and confirmation (`two_arm_*_new`) | 6 + 36 | which use of the score is better? | 93 vs 90 %, p 0.39: no difference |
 
 Steps 3–5 use the careless operator and the fixed 8-critic ensemble on the new stack, cuboid. On the cluster: the
-counterfactual-score study (1 run, abandon) and a queued E2HiL test (4 runs).
+counterfactual-score study (1 run, abandon) and an E2HiL test (4 runs, 5 Nov) that failed technically: the camera
+rendering stalled once the policy took over, so it has no result.
 
 ## Words you need
 

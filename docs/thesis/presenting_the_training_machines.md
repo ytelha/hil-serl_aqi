@@ -22,11 +22,11 @@ out whether the main results survive with the operator who can help.
 
 | | first training machine | second training machine | RWTH cluster |
 |---|---|---|---|
-| when | 4 Sep – 31 Oct | 24–29 Oct | 26 Sep, 29 Sep, queued 3 Nov |
-| runs | 459, in 16 campaigns | 58, in 5 campaigns | method test; 1-cell counterfactual study; 4-cell E2HiL test queued |
+| when | 4 Sep – 31 Oct | 24–29 Oct | 26 Sep, 29 Sep, 5 Nov |
+| runs | 459, in 16 campaigns | 58, in 5 campaigns | method test; 1-cell counterfactual study; 4-cell E2HiL test (ran 5 Nov and failed technically: in all 4 runs the camera rendering stalled once the policy took over (step 201) and aborted; no result) |
 | platform | original: the operator moves the peg but cannot turn it | new stack: rotation control, orientation limit and channel, new stop rule, fixed update ratio | – |
 | answered | does the teacher matter; can many critics learn; can corrections be graded; does asking help | can the operator help at all; does a score notice a careless operator | can the counterfactual score be repaired (no) |
-| state | idle; next: novice test, then the new stack | idle; its copy was deleted after the export | E2HiL test waiting for a GPU (estimated 8 Nov) |
+| state | idle; next: novice test, then the new stack | idle; its copy was deleted after the export | idle; the rendering stall is to be diagnosed (`presentation_bundle/results/e2hil_small_claix/RESULT.md`) |
 
 **Never compare runs across machines.** The learner makes about 0.45 updates per environment step on the first
 machine and 1 on the second, so each comparison has its reference on its own machine.
@@ -116,7 +116,7 @@ decides to ask), 224 (the asking line adapts), 225 (runs on the second machine),
 | How is the careless operator built? | A hidden state per takeover: it keeps the last state with probability 0.7, otherwise it is redrawn, careless with probability 0.4 (40 % careless, spells of about 5–6 takeovers). Careless means novice motor noise, tremor, speed and recovery, a premature push half the time, and an aim point 6 mm beside the hole. When it steps in is unchanged, and the demonstrations are always careful. |
 | What exactly is the behavioural score? | B = z(ΔV) − z(T) − z(F_peak): the critics' value at the end of the takeover minus at its start, minus its length, minus its peak force, each standardised against the run's earlier takeovers. Discard drops a takeover below the 40th percentile of the last 200 scores; re-weight replays it more often the higher max(B, 0). Formulas of all scores: inconsistent-operator log, section 3.0. |
 | Why is 0.66 not "valid"? | The bar fixed in advance was 0.70. |
-| What runs next? | The novice test, then the new stack on the first machine, its ladder, and the repeat at thesis scale; a 4-run E2HiL test is queued on the cluster. |
+| What runs next? | The novice test, then the new stack on the first machine, its ladder, and the repeat at thesis scale; the 4-run E2HiL test is repeated once the cluster's rendering stall is fixed, or on a training machine. |
 | Why does a run take 1.5 h if training is 30 min? | The ruler scores every saved checkpoint, and the early ones fail every trial, each running to the 300-step limit: about 30 000 simulated steps, three times the training. Skipping the pre-training checkpoints and scoring only the newest 8 cuts it to about 20 min without changing any score; it is implemented and goes to the first machine, to be measured there first. |
 | What is the fixed update ratio, and why? | The learner makes exactly one update per environment step. Before, the robot stepped at 10 Hz and the learner trained as fast as its GPU allowed, so learning per step depended on the machine (0.45 on the first, 2.5–2.7 on the H100) and on the method (E2HiL got about half). Fixing it makes machines and methods comparable. |
 | Does it make convergence slower? | In steps, probably not: each step is used for more learning. In clock time it depends: on the second machine it cost little (the robot waited for the learner half a minute per run); on the first machine each step takes about twice as long, so a run breaks even only if it needs about half the steps. The ladder measures it. |

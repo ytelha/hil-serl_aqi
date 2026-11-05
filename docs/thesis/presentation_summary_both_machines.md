@@ -30,11 +30,11 @@ Next: check whether the main results hold with the operator who can turn the peg
 
 | | first training machine | second training machine | RWTH cluster |
 |---|---|---|---|
-| when | 4 Sep – 31 Oct | 24–29 Oct | 26 Sep, 29 Sep, 4 runs queued |
-| runs | 459 in 16 campaigns; latest: asking rate (108), perfect grading score (90), more demonstrations (18) | 58 in 5 campaigns, 85.1 hours | method test; 1-run counterfactual study; 4-run E2HiL test queued |
+| when | 4 Sep – 31 Oct | 24–29 Oct | 26 Sep, 29 Sep, 5 Nov |
+| runs | 459 in 16 campaigns; latest: asking rate (108), perfect grading score (90), more demonstrations (18) | 58 in 5 campaigns, 85.1 hours | method test; 1-run counterfactual study; 4-run E2HiL test (ran 5 Nov and failed technically: in all 4 runs the camera rendering stalled once the policy took over (step 201) and aborted; no result) |
 | platform | original: the operator moves the peg but cannot turn it | new stack: rotation control + four other changes (section 5.2) | – |
 | learner updates per environment step | about 0.45 | exactly 1 | 2.5–2.7 (H100) |
-| latest answers | asking more buys more success; a perfect score collapsed the novices, but three things changed at once (the novice test, 24 runs, decides which) | the operator can now rescue a twisted peg; a score notices a careless operator moderately; discard against re-weight: no difference | the counterfactual score cannot be repaired |
+| latest answers | asking more buys more success; a perfect score collapsed the novices, but three things changed at once (the novice test, 24 runs, decides which) | the operator can now rescue a twisted peg; a score notices a careless operator moderately; discard against re-weight: no difference | the counterfactual score cannot be repaired; the E2HiL test has no result yet |
 
 **Never compare runs across machines.** The learning per step differs (0.45 against 1 update per step), so every
 comparison has its reference on its own machine.
@@ -52,6 +52,7 @@ comparison has its reference on its own machine.
 | teacher effect (earlier) | HIL-SERL itself | ICC 0.60 (p 0.035); 0.66 (p 0.001) in the asking-rate campaign |
 | perfect grading score, more demonstrations | **no** HIL-SERL arm | reference: ensemble extended |
 | everything on the second machine | **no** HIL-SERL arm at scale (one smoke run on the cylinder) | references: keep-all, each other; the speed-up compares ensemble extended across machines |
+| E2HiL with the careless operator (cluster, 4 runs) | **yes** by design (E2HiL against HIL-SERL, same operators) | no result yet: the runs failed technically (rendering stall), so nothing was trained |
 
 ---
 
@@ -501,7 +502,7 @@ the careless-operator test rests on experts and intermediates.
 | Can I compare the speed-up across machines? | Only as the size of what can be gained: same method, about 19 000 → 4 600 steps, but a different machine, operator and five settings. |
 | Why is 0.66 not "valid"? | The bar fixed in advance was 0.70. |
 | Why two machines, and why not the cluster? | The first ran the thesis campaigns; the second was available for a week for the new stack and the careless operator. The cluster quota is 3 GPU-hours a month; a campaign needs 80–135. |
-| What runs next? | The novice test, then the new stack on the first machine, its 27-run ladder, and the repeat at thesis scale with plain HIL-SERL, ensemble extended and asking; a 4-run E2HiL test waits on the cluster. |
+| What runs next? | The novice test, then the new stack on the first machine, its 27-run ladder, and the repeat at thesis scale with plain HIL-SERL, ensemble extended and asking; the 4-run E2HiL test is repeated once the rendering stall on the cluster is fixed, or run on a training machine. |
 
 ## 10. Glossary
 

@@ -31,6 +31,14 @@ barely differ, so a novice cell cannot test the question.
 
 Its numbers are never pooled with the comprehensive campaign: other machine, other cap, other ruler window.
 
+**Status (5 Nov 2026): failed technically, no result.** All 4 cells (jobs 5422910_0–3) ran 17–19 min and stopped the
+same way: the actor ran at about 42 steps per second for the 200 random-action steps, then, once the policy chose the
+actions on the GPU (step 201), each step took 1.6 s rising to about 19 s, and after 15–16 min MuJoCo's EGL renderer
+aborted. The learner never began training, so nothing was scored. Go-rule check 1 failed; checks 2–3 cannot be judged.
+About 1.2 GPU-h used. The same signature as the September node failure (F5), but now on every node, although the
+September method test ran past step 200 normally. Record and options:
+[presentation_bundle/results/e2hil_small_claix/RESULT.md](../presentation_bundle/results/e2hil_small_claix/RESULT.md).
+
 ## 2. Go rule (fixed before the small campaign runs)
 
 Run the comprehensive campaign on the second machine if all technical checks pass:
