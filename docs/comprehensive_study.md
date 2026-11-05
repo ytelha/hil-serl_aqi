@@ -1,7 +1,9 @@
 # The comprehensive study on the second training machine
 
 Planned 5 November 2026. Two studies on the new stack, each with a smoke campaign first, driven by
-`examples/synthetic_suite.py --suite study`. Configs in `examples/campaigns/study/`.
+`examples/synthetic_suite.py --suite study`. Configs in `examples/campaigns/study/`. The second training machine
+(RTX 5090) clones this repo from GitHub; its agent follows [comprehensive_study_agent.md](comprehensive_study_agent.md);
+the results come back as one folder, `results/study/`.
 
 **Decisions taken for it (5 Nov):**
 - **No novice.** The synthetic novice is too weak: it answers 2–9 % of the robot's ten-step requests (it would need
@@ -98,16 +100,20 @@ more slowly, because the robot waits for the learner. That is about 7 days one c
 
 ## Run it
 
+On the second training machine (Linux, RTX 5090). The repo comes from GitHub; the setup needs an NVIDIA driver with
+CUDA 12.8 support or newer (the lock's CUDA 12.9 wheels support the RTX 5090; the earlier second machine ran the same
+lock).
+
 ```bash
-git clone <bundle> hil-serl_aqi && cd hil-serl_aqi        # see handoff/HANDOFF_comprehensive_study.md
+git clone <the GitHub URL of this repo> hil-serl_aqi && cd hil-serl_aqi
 bash tools/setup_workstation.sh
-./.venv/bin/wandb login                                     # once; never paste the key anywhere else
+./.venv/bin/wandb login                                     # once, by the user; never paste the key anywhere else
 ./.venv/bin/python examples/synthetic_suite.py --suite study check
 ./.venv/bin/python examples/synthetic_suite.py --suite study stage0
 ./.venv/bin/python examples/synthetic_suite.py --suite study run smoke --parallel 2
-./.venv/bin/python examples/ruler_reselect.py --campaign runs/study/S0_smoke_A --skip_pretrain --newest 8
-./.venv/bin/python examples/ruler_reselect.py --campaign runs/study/S0_smoke_B --skip_pretrain --newest 8
+./.venv/bin/python examples/synthetic_suite.py --suite study rulercheck
 ./.venv/bin/python examples/synthetic_suite.py --suite study audit S0_smoke_B
+./.venv/bin/python examples/synthetic_suite.py --suite study report smoke
 ./.venv/bin/python examples/synthetic_suite.py --suite study run A_consistent B_quality --parallel 2
 ./.venv/bin/python examples/synthetic_suite.py --suite study audit B_quality
 ./.venv/bin/python examples/synthetic_suite.py --suite study report
@@ -120,13 +126,35 @@ bash tools/setup_workstation.sh
 |---|---|---|
 | `check` | READY (packages, JAX on the GPU, the sim renders, W&B key present, disk ≥ 50 GB) | fix what it lists |
 | `stage0` | every test passes; careless rescues clearly below careful ones; orientation limits written | fix before training |
-| smoke | all 8 cells trained and scored; HiRIL and E2HiL logged a condition per takeover; careless share between 0.1 and 0.3; the ruler re-selection changes no smoke score | read the cell's logs; a changed score means the full ruler for A and B (remove `skip_pretrain` and `newest`) |
+| smoke | all 8 cells trained and scored; HiRIL and E2HiL logged a condition per takeover; careless share between 0.1 and 0.3; `rulercheck` reports no changed score | read the cell's logs; a changed score means the full ruler for A and B (remove `skip_pretrain` and `newest`) |
 | smoke, timing | two cells side by side finished in less than twice the time of one | run A and B with `--parallel 1` |
 
 Everything resumes: re-running a `run` command skips finished cells.
 
-**Results:** `runs/study/<campaign>/report/` (operator dependency, plots, `inconsistent_audit.*` for B),
-`runs/study/report.md` and `report_cells.csv` (all campaigns, paired tables), `runs/study/plots/`:
+## The results folder
+
+Every driver command (`check`, `stage0`, `run`, `rulercheck`, `audit`, `report`, `plots`) ends by refreshing
+**`results/study/`** in the repo, and `run` also refreshes it after every finished campaign. The folder is the only
+thing to hand over for the analysis: no repo copy, no checkpoints. It is git-ignored, so pushing code never
+carries it along. To refresh it by hand: `./.venv/bin/python examples/synthetic_suite.py --suite study export`.
+
+| in `results/study/` | what |
+|---|---|
+| `README.md`, `export.json` | when, from which machine and commit, cells done per campaign, what was left out |
+| `machine.json`, `stage0/` | the machine check; tests, operator conditions, tolerance sweep, orientation limits |
+| `report.md`, `report_cells.csv`, `plots/` | all campaigns: per-arm table, paired tests, per-cell metrics, study figures |
+| `<campaign>/report/` | operator dependency (`dependency.md/json`, its plots), `inconsistent_audit.*` (B), `ruler_reselect.*` (smoke) |
+| `<campaign>/eval_runs/<cell>/` | ruler outcome (`cell.json`) and every trial (`trials.jsonl`) |
+| `<campaign>/checkpoints/<cell>/` | the training record only: `episodes.jsonl`, `convergence_evals.jsonl`, `.done`, README, manifest |
+| `<campaign>/aqi_logs/<run>/` | takeover segments with the careful/careless label, episodes, run metadata |
+| `<campaign>/logs/`, `*.out` | every log, with the progress bars compacted to their last update and long logs cut to head and tail |
+
+Left out: checkpoints, demonstrations, W&B folders and the per-step logs (`steps.jsonl`; `export --with_steps`
+adds them). The layout is the runs folder's, so `report`, `plots` and `audit` run on it directly:
+`python examples/synthetic_suite.py --suite study --root results/study report`. On the second machine's earlier
+archive the export kept 46 MB of 86 GB.
+
+**Figures** (`results/study/plots/`):
 - `<campaign>_arms.png`: every arm;
 - `A_consistent_critics.png`: success, steps, effort and minutes against K;
 - `A_consistent_asking.png`: success against human effort, with ICC;
@@ -145,6 +173,8 @@ W&B: project `hil-serl`, filter by the tag `comprehensive_study`.
   - a W&B login check;
   - `plots`;
   - the score audit restricted to the quality arms (`inconsistent_operator_audit.py --modes quality`).
+  - `rulercheck`: would the shorter ruler change a smoke score;
+  - `export`: the results folder, refreshed after every command.
 - **`tools/setup_workstation.sh`:** the training machines' environment on a fresh Linux machine.
 - **`tests/test_study_suite.py`:** the configs, every arm's flags, the design in the commands, the driver.
 

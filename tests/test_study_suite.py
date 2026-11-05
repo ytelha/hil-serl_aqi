@@ -234,6 +234,79 @@ def test_plots_on_fake_cells():
     assert all(p.stat().st_size > 1000 for p in made)
 
 
+def test_compact_log_keeps_the_last_progress_update_and_head_and_tail():
+    text = "cmd line\n" + "\r".join(f"{i}/100 [00:{i:02d}<]" for i in range(100)) + "\nend\n"
+    out = ss.compact_log(text)
+    assert out.splitlines() == ["cmd line", "99/100 [00:99<]", "end"]
+    long = "\n".join(f"line {i}" for i in range(ss.LOG_HEAD + ss.LOG_TAIL + 500))
+    lines = ss.compact_log(long).splitlines()
+    assert lines[0] == "line 0" and lines[-1] == f"line {ss.LOG_HEAD + ss.LOG_TAIL + 499}"
+    assert len(lines) == ss.LOG_HEAD + ss.LOG_TAIL + 1 and "left out by the export" in lines[ss.LOG_HEAD]
+
+
+def _fake_run_tree(root):
+    camp = root / "B_quality"
+    for rel, body in {
+            "machine.json": json.dumps({"machine_id": "box / RTX 5090"}),
+            "report.md": "# report", "plots/B_quality_arms.png": "png",
+            "stage0/tests.json": "{}",
+            "B_quality/campaign.json": "{}", "B_quality/report/dependency.json": "{}",
+            "B_quality/report/plots/sr_by_tier.png": "png",
+            "B_quality/checkpoints/keepall_exp00_s0/.done": json.dumps({"method": "keepall"}),
+            "B_quality/checkpoints/keepall_exp00_s0/episodes.jsonl": "{}\n",
+            "B_quality/checkpoints/keepall_exp00_s0/checkpoint_9000/manifest.ocdbt": "x" * 5000,
+            "B_quality/checkpoints/keepall_exp00_s0/wandb/run-1/files/output.log": "x" * 5000,
+            "B_quality/eval_runs/keepall_exp00_s0/cell.json": json.dumps({"outcomes": {"sr": 1.0}}),
+            "B_quality/eval_runs/keepall_exp00_s0/trials.jsonl": "{}\n",
+            "B_quality/aqi_logs/keepall_exp00_s0_actor/segments.jsonl": "{}\n",
+            "B_quality/aqi_logs/keepall_exp00_s0_actor/steps.jsonl": "x" * 5000,
+            "B_quality/demos/exp00_s0/demos.pkl": "x" * 5000,
+            "B_quality/logs/keepall_exp00_s0.actor.log": "start\n" + "\r".join(["1/9", "9/9 [12:34<]"]) + "\n"}.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+    (camp / "checkpoints" / "keepall_exp00_s0" / ".done").write_text(json.dumps({"method": "keepall"}))
+    return camp
+
+
+def test_export_keeps_the_layout_without_heavy_files():
+    root = Path(tempfile.mkdtemp()) / "runs" / "study"
+    _fake_run_tree(root)
+    out = root.parent.parent / "results" / "study"
+    a = type("A", (), dict(root=str(root), out=str(out), with_steps=False))()
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert ss.export_results(a) == 0
+    got = {str(p.relative_to(out)).replace("\\", "/") for p in out.rglob("*") if p.is_file()}
+    for keep in ("machine.json", "report.md", "plots/B_quality_arms.png", "stage0/tests.json",
+                 "B_quality/report/dependency.json", "B_quality/report/plots/sr_by_tier.png",
+                 "B_quality/checkpoints/keepall_exp00_s0/.done", "B_quality/checkpoints/keepall_exp00_s0/episodes.jsonl",
+                 "B_quality/eval_runs/keepall_exp00_s0/cell.json", "B_quality/eval_runs/keepall_exp00_s0/trials.jsonl",
+                 "B_quality/aqi_logs/keepall_exp00_s0_actor/segments.jsonl",
+                 "B_quality/logs/keepall_exp00_s0.actor.log", "README.md", "export.json"):
+        assert keep in got, keep
+    for drop in ("checkpoint_9000", "wandb", "steps.jsonl", "demos.pkl"):
+        assert not any(drop in g for g in got), drop
+    assert (out / "B_quality/logs/keepall_exp00_s0.actor.log").read_text().splitlines() == ["start", "9/9 [12:34<]"]
+    info = json.loads((out / "export.json").read_text())
+    assert info["skipped_items"] == 4 and info["campaigns"][0]["campaign"] == "B_quality"
+    assert info["campaigns"][0]["cells_done"] == 1 and info["campaigns"][0]["report"]
+    # the exported folder re-analyses with the same driver, and is not exported again
+    b = type("B", (), dict(root=str(out), no_export=False, dry=False))()
+    assert not ss.auto_export(b)
+    rows, cells, _m = ss.summarize("B_quality", out / "B_quality")
+    assert cells[0]["ruler_sr"] == 1.0 and cells[0]["actor_minutes"] == 12.6
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert ss.export_results(a) == 0                        # a second export copies nothing new
+    assert json.loads((out / "export.json").read_text())["files_written"] == 0
+
+
+def test_default_results_folder():
+    assert ss.default_results(ss.DEFAULT_ROOT) == ss.REPO / "results" / "study"
+    other = Path(tempfile.mkdtemp()) / "myruns"
+    assert ss.default_results(other) == other.parent / "results" / "myruns"
+    assert "results/" in (ss.REPO / ".gitignore").read_text(encoding="utf-8")     # never pushed with the code
+
+
 def test_hiril_audit_rows_are_left_out_by_mode():
     src = (REPO / "examples" / "inconsistent_operator_audit.py").read_text(encoding="utf-8")
     assert '"--modes"' in src and 'r.get("mode") in keep' in src

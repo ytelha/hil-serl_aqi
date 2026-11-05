@@ -32,9 +32,16 @@ first. Its stage 0 runs the tests, the operator in each condition and the tolera
     python examples/synthetic_suite.py --suite study stage0
     python examples/synthetic_suite.py --suite study run smoke --parallel 2
     python examples/synthetic_suite.py --suite study run A_consistent B_quality --parallel 2
+    python examples/synthetic_suite.py --suite study rulercheck        # would the shorter ruler change a smoke score?
     python examples/synthetic_suite.py --suite study audit             # score validity in B_quality
     python examples/synthetic_suite.py --suite study report
     python examples/synthetic_suite.py --suite study plots
+
+Every command except plan and export ends by refreshing results/<suite>/ (run also after each finished campaign):
+reports, plots, the machine check, stage 0 and every campaign's light files (ruler outcomes, training records,
+takeover logs, compacted logs) in the runs folder's layout, without checkpoints, demonstrations or per-step logs.
+That folder is what goes to the analysis; `export` refreshes it by hand, `--no_export` skips it, and
+`--root results/<suite> report|plots|audit` re-analyses an exported folder in place.
 """
 import argparse
 import csv
@@ -573,6 +580,8 @@ def cmd_run(args):
         with open(root / "suite_log.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps({"setting": n, "start": t0, "end": now(), "rc": rc, "parallel": par,
                                 "machine": socket.gethostname()}) + "\n")
+        if auto_export(args):
+            export_results(args, quiet=True)      # results/ follows every finished campaign
         if rc != 0 and not args.keep_going:
             print(f"[run] {n} failed (rc {rc}); stopping. Re-run the same command to resume (finished cells are kept).")
             return rc
@@ -1014,12 +1023,172 @@ def cmd_plots(args):
     return 0 if made else 1
 
 
+# ===================================================================== export to results/
+EXPORT_SKIP_DIRS = ("checkpoint_", "certified", "demos", "wandb", "__pycache__", "buffer", "_dryrun", "ocdbt.process_")
+EXPORT_SKIP_FILES = (".pkl", ".npz", ".npy", ".msgpack", ".ckpt", ".pt", ".pth", ".tgz", ".zip")
+EXPORT_MAX_BYTES = 25 * 2 ** 20          # anything bigger is listed in the README, not copied
+LOG_HEAD, LOG_TAIL = 60, 1500             # lines kept of a long log after the progress bars are compacted
+
+
+def default_results(root):
+    """results/<suite> for the default runs/<suite>, else <root>/results (an exported folder stays where it is)."""
+    root = Path(root).resolve()
+    return REPO / "results" / SUITE if root == Path(DEFAULT_ROOT).resolve() else root.parent / "results" / root.name
+
+
+def compact_log(text):
+    """A log as a reader needs it: every progress-bar line reduced to its last update (tqdm redraws with \\r), and a
+    long log cut to its head and tail, which hold the command, the settings and how it ended."""
+    lines = [ln.split("\r")[-1] for ln in text.replace("\r\n", "\n").split("\n")]
+    lines = [ln for ln in lines if ln.strip() or not lines]
+    if len(lines) > LOG_HEAD + LOG_TAIL:
+        cut = len(lines) - LOG_HEAD - LOG_TAIL
+        lines = lines[:LOG_HEAD] + [f"[... {cut} lines left out by the export ...]"] + lines[-LOG_TAIL:]
+    return "\n".join(lines) + "\n"
+
+
+def _skip_dir(name):
+    return any(name.startswith(p) for p in EXPORT_SKIP_DIRS)
+
+
+def export_tree(src, dst, with_steps=False):
+    """Mirror `src` into `dst` without the heavy files: checkpoints, demonstrations, W&B folders, per-step logs
+    (steps.jsonl, unless with_steps) and anything over EXPORT_MAX_BYTES; logs are compacted. The layout stays the
+    same, so report / plots / audit run on the exported folder. Copies only what changed. Returns
+    (files written, bytes kept, [(skipped path, bytes)])."""
+    src, dst = Path(src), Path(dst)
+    written, kept, skipped = 0, 0, []
+    for dirpath, dirnames, filenames in os.walk(src):
+        rel = Path(dirpath).relative_to(src)
+        for d in list(dirnames):
+            if _skip_dir(d):
+                dirnames.remove(d)
+                p = Path(dirpath) / d
+                size = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+                skipped.append((str(rel / d) + "/", size))
+        for fn in filenames:
+            s = Path(dirpath) / fn
+            t = dst / rel / fn
+            size = s.stat().st_size
+            heavy = fn.endswith(EXPORT_SKIP_FILES) or (fn == "steps.jsonl" and not with_steps) or size > EXPORT_MAX_BYTES
+            if heavy and not fn.endswith((".log", ".out")):
+                skipped.append((str(rel / fn), size))
+                continue
+            if t.exists() and t.stat().st_mtime >= s.stat().st_mtime:
+                kept += t.stat().st_size
+                continue
+            t.parent.mkdir(parents=True, exist_ok=True)
+            if fn.endswith((".log", ".out")):
+                # newline="" keeps tqdm's \r redraws (universal newlines would turn each into a line)
+                with open(s, encoding="utf-8", errors="replace", newline="") as f:
+                    text = f.read()
+                with open(t, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(compact_log(text))
+                os.utime(t, (s.stat().st_atime, s.stat().st_mtime))
+            else:
+                shutil.copy2(s, t)
+            written += 1
+            kept += t.stat().st_size
+    return written, kept, skipped
+
+
+def export_results(args, quiet=False):
+    """Collect what the analysis needs into one folder (default results/<suite>): the suite's reports, plots,
+    machine check and stage 0, and every campaign's reports, ruler outcomes, per-cell training records, takeover logs
+    and compacted logs. No checkpoints, demonstrations or per-step logs. Writes README.md and export.json there."""
+    root = Path(args.root)
+    out = Path(getattr(args, "out", None) or getattr(args, "results", None) or default_results(root))
+    if not root.exists():
+        if not quiet:
+            print(f"[export] nothing under {root} yet")
+        return 1
+    out.mkdir(parents=True, exist_ok=True)
+    with_steps = bool(getattr(args, "with_steps", False))
+    written, kept, skipped = export_tree(root, out, with_steps=with_steps)
+    camps = []
+    for n in ORDER:
+        camp = root / n
+        if not camp.exists():
+            continue
+        done, seen = cell_status(camp)
+        rep = camp / "report"
+        camps.append({"campaign": n, "cells_done": done, "cells_seen": seen,
+                      "report": (rep / "dependency.json").exists(), "audit": (rep / "inconsistent_audit.json").exists(),
+                      "ruler_check": (rep / "ruler_reselect.json").exists()})
+    mach = {}
+    if (root / "machine.json").exists():
+        try:
+            mach = json.loads((root / "machine.json").read_text(encoding="utf-8"))
+        except ValueError:
+            mach = {}
+    skipped_bytes = sum(b for _p, b in skipped)
+    info = {"exported": now(), "suite": SUITE, "source": str(root), "host": socket.gethostname(),
+            "machine_id": mach.get("machine_id"), "git_commit": git("rev-parse", "HEAD"),
+            "git_dirty": bool(git("status", "--porcelain")), "campaigns": camps, "files_written": written,
+            "bytes_kept": kept, "skipped_items": len(skipped), "bytes_skipped": skipped_bytes,
+            "with_steps": with_steps}
+    (out / "export.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    L = [f"# Results of the {SUITE} suite", "",
+         f"Exported {info['exported']} from `{root}` on {info['host']} ({info['machine_id'] or 'machine check not run'}), "
+         f"commit `{info['git_commit'][:8]}`{' (with local changes)' if info['git_dirty'] else ''}.", "",
+         "Everything the analysis needs, in the same layout as the runs folder: reports and plots, ruler outcomes "
+         "(`eval_runs/<cell>/cell.json`, `trials.jsonl`), training records (`checkpoints/<cell>/episodes.jsonl`, "
+         "`convergence_evals.jsonl`, `.done`), takeover logs (`aqi_logs/<run>/segments.jsonl`, `episodes.jsonl`, "
+         "`meta.json`) and compacted logs. Left out: checkpoints, demonstrations, W&B folders"
+         + ("" if with_steps else ", per-step logs (`steps.jsonl`)") + f" ({len(skipped)} items, "
+         f"{skipped_bytes / 2 ** 30:.1f} GB).", "",
+         "Re-analyse it anywhere with the same driver, e.g. "
+         f"`python examples/synthetic_suite.py --suite {SUITE} --root {out.name if out.parent.name == 'results' else out} report`.",
+         "", "| campaign | cells done | report | score audit | ruler check |", "|---|---|---|---|---|"]
+    for c in camps:
+        L.append(f"| {c['campaign']} | {c['cells_done']}/{c['cells_seen']} | {'x' if c['report'] else '-'} | "
+                 f"{'x' if c['audit'] else '-'} | {'x' if c['ruler_check'] else '-'} |")
+    (out / "README.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+    if not quiet:
+        print(f"[export] {out}: {written} files written, {kept / 2 ** 20:.1f} MB in the folder; left out "
+              f"{len(skipped)} heavy items ({skipped_bytes / 2 ** 30:.1f} GB)")
+    return 0
+
+
+def auto_export(args):
+    """Refresh the results folder after a command, unless --no_export, a dry run, or the root is itself an export
+    (re-analysing a results folder writes into it, not into a copy of it)."""
+    return not (getattr(args, "no_export", False) or getattr(args, "dry", False)
+                or (Path(args.root) / "export.json").exists())
+
+
+def cmd_export(args):
+    return export_results(args)
+
+
+def cmd_rulercheck(args):
+    """Would the shorter ruler change a score? ruler_reselect.py on campaigns scored with the full ruler (the smoke
+    campaigns), written to <campaign>/report/ruler_reselect.{txt,json}, so it reaches the export."""
+    root = Path(args.root)
+    rc_all = 0
+    for n in resolve(args.names or GROUPS.get("smoke", [])):
+        camp = root / n
+        if not (camp / "eval_runs").exists():
+            print(f"[rulercheck] {n}: nothing scored yet under {camp}")
+            rc_all |= 1
+            continue
+        (camp / "report").mkdir(parents=True, exist_ok=True)
+        (camp / "report" / "ruler_reselect.txt").unlink(missing_ok=True)
+        rc_all |= sh([sys.executable, str(HERE / "ruler_reselect.py"), "--campaign", str(camp), "--skip_pretrain",
+                      "--newest", "8", "--json", str(camp / "report" / "ruler_reselect.json")],
+                     log=camp / "report" / "ruler_reselect.txt", sim_env=False)
+    return rc_all
+
+
 # ===================================================================== main
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--suite", default="synthetic_suite", choices=sorted(SUITES),
                    help="which suite: synthetic_suite (default), inconsistent_operator or study")
     p.add_argument("--root", default=None, help="suite folder (default runs/<suite>)")
+    p.add_argument("--results", default=None,
+                   help="export folder (default results/<suite> in the repo); refreshed after every command")
+    p.add_argument("--no_export", action="store_true", help="do not refresh the results folder")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check", help="machine + repo check")
     s0 = sub.add_parser("stage0", help="tests, operator test, tolerance sweep (no training, CPU)")
@@ -1051,6 +1220,11 @@ def build_parser():
     rp.add_argument("names", nargs="*", help="settings or groups; default all")
     pt = sub.add_parser("plots", help="figures per campaign -> <root>/plots/")
     pt.add_argument("names", nargs="*", help="settings or groups; default all")
+    rk = sub.add_parser("rulercheck", help="would the shorter ruler change a score? (smoke campaigns)")
+    rk.add_argument("names", nargs="*", help="settings or groups; default the smoke group")
+    ex = sub.add_parser("export", help="collect reports, plots and light per-cell files into the results folder")
+    ex.add_argument("--out", default=None, help="target folder (default --results, else results/<suite>)")
+    ex.add_argument("--with_steps", action="store_true", help="also copy the per-step logs (steps.jsonl, large)")
     return p
 
 
@@ -1059,8 +1233,11 @@ def main(argv=None):
     configure(args.suite)
     if args.root is None:
         args.root = str(DEFAULT_ROOT)
-    return {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run,
-            "audit": cmd_audit, "report": cmd_report, "plots": cmd_plots}[args.cmd](args)
+    rc = {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run, "audit": cmd_audit,
+          "report": cmd_report, "plots": cmd_plots, "rulercheck": cmd_rulercheck, "export": cmd_export}[args.cmd](args)
+    if args.cmd in ("check", "stage0", "run", "audit", "report", "plots", "rulercheck") and auto_export(args):
+        export_results(args)
+    return rc
 
 
 if __name__ == "__main__":
