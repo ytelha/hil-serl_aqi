@@ -2,9 +2,9 @@
 
 How the learner works, with the numbers in the code, and how the numbers on the result slides are tested, with
 simple worked examples. Written on 5 November 2026 for the mid-term presentation. The slides are the backups of the
-Siemens deck (`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`): page 58 (one training iteration), 59
-(what each critic sees), 60 (the learner in formulas), 63 (the statistics); their speaker notes carry the same
-examples.
+Siemens deck (`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`): page 60 (one training iteration), 61
+(what each critic sees), 62 (the learner in formulas), 65 (the statistics, ICC and sign test); their speaker notes
+carry the same examples, and page 15 shows ICC and the sign test as a figure.
 
 **How to read it.** Open it in VS Code and press `Ctrl+Shift+V` for the rendered preview (formulas show as code, tables
 as tables), or open it on GitHub (`docs/thesis/` in `ytelha/hil-serl_aqi`). Sections 1–5 are the learner, section 6 is
@@ -207,7 +207,8 @@ a campaign. (This is ICC(1,1), the one-way model; `icc_oneway` in the code.)
 
 Read: if the teacher did not matter, a spread this large would arise by chance in about 7 of 1 000 shuffles. (There are
 only 1 680 different ways to deal 9 runs into three groups of three; exactly 12 of them reach 251.1, 12 / 1 680 =
-0.007, the same answer.) `permutation_sigma2` in the code; the slides use 10 000 shuffles.
+0.007, the same answer.) `permutation_sigma2` in the code. **Not on the slides for now** (decision of 5 November):
+the slides read the teacher effect from the ICC alone, and every p on them is a sign test.
 
 ### 6.3 Sign test: is method A better than method B?
 

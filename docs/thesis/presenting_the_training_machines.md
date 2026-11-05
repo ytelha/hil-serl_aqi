@@ -1,11 +1,11 @@
 # Presenting the training machines
 
 A guide for presenting what ran where and what came out, with the slide numbers of both decks
-(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 63 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
+(`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`, 65 slides; `AQI-HIL-SERL_Midterm_Telha.pptx`,
 227 slides, 49 hidden). Sources: [first_machine_synthesis.md](first_machine_full_history/first_machine_synthesis.md) and
 [second_machine_synthesis.md](second_machine_synthesis.md). Numbers as of 3 November 2026; Siemens slide numbers as of 5 November.
 
-**The colour code of the Siemens deck.** Every result slide carries a strip at the top right: the ablation ladder HIL-SERL › + ensemble › + asking › + grading › AQI, with the module tested there filled in its colour (grey, blue, petrol, orange, purple), the one it is compared with outlined, the rest grey; then the operator (consistent, sometimes careless, or operator alone) and the platform (original or new stack); and a red tag where a novice result is shown ("novice too weak → p. 26"). The result figure is framed in the colour of the tested module. Page 16 explains it.
+**The colour code of the Siemens deck.** Every result slide carries a strip at the top right: the ablation ladder HIL-SERL › + ensemble › + asking › + grading › AQI, with the module tested there filled in its colour (grey, blue, petrol, dark blue, deep navy), the one it is compared with outlined, the rest grey; then the operator (consistent, sometimes careless, or operator alone) and the platform (original or new stack); and a red tag where a novice result is shown ("novice too weak → p. 48"). The result figure is framed in the colour of the tested module. Page 16 explains it, with the grey "fixed" bars (operators, seeds, demos, corrections, budget, ruler) at the foot of the ladder. No permutation tests on the slides for now: p is the sign test over paired runs.
 
 **The file to show:** [presentation_summary_both_machines.md](presentation_summary_both_machines.md), both machines in one
 file, with formulas, worked examples, the questions asked while preparing and a glossary.
@@ -37,23 +37,22 @@ machine and 1 on the second, so each comparison has its reference on its own mac
 
 | # | beat | Siemens deck | long deck |
 |---|---|---|---|
-| 1 | how we test: synthetic operators, the operator model today, runs, campaigns, the ruler | 9, 10, 14, 15 | 79–93 (programme 93) |
-| – | the ablation ladder and the colour code | 16 | – |
+| 1 | how we test: synthetic operators, two kinds of operator (consistent, sometimes careless), runs, campaigns, the ruler | 9, 10, 14, 15 | 79–93 (programme 93) |
+| – | the ablation ladder, the fixed bars and the colour code | 16 | – |
 | 2 | does the teacher matter? yes | 18 | 102–107 |
 | 3 | can many critics learn? first no, then yes | 19, 20 | 110, 117–122 |
-| 4 | can corrections be graded? no | 21 | 125–131; study result 168 |
-| 5 | asking for help: same success, a sixth of the help; asking more beats the operator | 22, 23 | 146–155 |
-| 6 | the turn: the operator could not turn the peg | 24 | 49–51 |
-| 7 | the sometimes-careless operator | 25 | 133–137 |
-| 7b | our synthetic novice is too weak | 26 | – |
-| 8 | what we learned, what comes next | 27 | 174–176 |
+| 4 | asking for help: same success, a sixth of the help; asking more beats the operator | 21, 22 | 146–155 |
+| 5 | grading: the critics' own comparison fails; the quality oracle and the behavioural score are promising | 23, 24, 25 | 125–131; study result 168 |
+| 6 | what we learned, what comes next | 26 | 174–176 |
+| – | backup: the operator could not turn the peg; the sometimes-careless operator; the novice is too weak | 40, 44, 48 | 49–51, 133–137 |
 | – | where it all ran | – | 161 |
 
-Backups to have ready: Siemens 37 (the operator in asking mode), 38 (all asking variants, both references), 39 (how
-the robot decides to ask: a worked example), 40 (the asking line adapts), 42 (what ran on the second machine), 43
-(where a run's time goes, the fixed update ratio, the shorter evaluation), 44 (scores), 45 (discard or re-weight),
-46 (perfect score and novice test), 54 (score ideas), 58 (one training iteration), 59 (what each critic sees, HIL-SERL
-against the ensemble), 61 (the request gate in formulas), 63 (statistics, worked examples in the notes); long deck 223 (how the robot
+Backups to have ready: Siemens 36 (the operator in asking mode), 37 (all asking variants, both references), 38 (how
+the robot decides to ask: a worked example), 39 (the asking line adapts), 40 (an operator who can turn the peg), 42
+(what ran on the second machine), 43 (where a run's time goes, the fixed update ratio, the shorter evaluation), 44
+(the sometimes-careless operator), 45 (scores), 46 (discard or re-weight), 47 (perfect score and novice test), 48
+(the novice is too weak), 56 (score ideas), 60 (one training iteration), 61 (what each critic sees, HIL-SERL against
+the ensemble), 63 (the request gate in formulas), 65 (statistics, worked examples in the notes); long deck 223 (how the robot
 decides to ask), 224 (the asking line adapts), 225 (runs on the second machine), 227 (where a cell's time goes), 168
 (counterfactual study).
 
