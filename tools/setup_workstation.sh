@@ -103,5 +103,5 @@ PY
 say "done. Next:"
 echo "  ./.venv/bin/wandb login                                          # once"
 echo "  ./.venv/bin/python examples/synthetic_suite.py --suite study check"
-echo "  ./.venv/bin/python examples/synthetic_suite.py --suite study stage0"
+echo "  bash tools/run_study_unattended.sh                               # the whole study, in the background"
 echo "  (then docs/comprehensive_study.md and docs/comprehensive_study_agent.md; results go to results/study/)"

@@ -307,6 +307,107 @@ def test_default_results_folder():
     assert "results/" in (ss.REPO / ".gitignore").read_text(encoding="utf-8")     # never pushed with the code
 
 
+def _patch(**fns):
+    old = {k: getattr(ss, k) for k in fns}
+    for k, v in fns.items():
+        setattr(ss, k, v)
+    return old
+
+
+def test_all_runs_every_step_without_stopping_and_decides():
+    root = Path(tempfile.mkdtemp()) / "runs" / "study"
+    calls = []
+
+    def rec(name, rc=0):
+        def f(a):
+            calls.append((name, list(getattr(a, "names", []) or []), getattr(a, "parallel", None),
+                          list(getattr(a, "extra", []) or []), getattr(a, "wandb", None)))
+            if name == "rulercheck":                     # the shorter ruler changes one smoke score
+                (root / "S0_smoke_A" / "report").mkdir(parents=True, exist_ok=True)
+                (root / "S0_smoke_A" / "report" / "ruler_reselect.json").write_text(json.dumps(
+                    {"ens-k16_exp00_s0": {"old": 0.8, "new": 0.7}, "asks-70_exp00_s0": {"old": 1.0, "new": 1.0}}))
+            if name == "stage0":
+                raise SystemExit(3)                      # a crashing step: recorded, the run goes on
+            return rc
+        return f
+
+    old = _patch(cmd_check=rec("check", 1), cmd_stage0=rec("stage0"), cmd_run=rec("run"),
+                 cmd_rulercheck=rec("rulercheck"), cmd_audit=rec("audit"), cmd_report=rec("report"),
+                 cmd_plots=rec("plots"), export_results=lambda *a, **k: 0, wandb_logged_in=lambda *a, **k: False,
+                 parallel_decision=lambda r, n, req: (1, "test: not faster side by side"))
+    try:
+        a = type("A", (), dict(root=str(root), results=str(root.parent / "results"), parallel=2, port_base=6100,
+                               wandb=None, push=False, push_every_h=6.0, branch="study-results"))()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = ss.cmd_all(a)
+    finally:
+        _patch(**old)
+    assert rc == 1                                        # warnings: check problems, stage 0 crash
+    names = [c[0] for c in calls]
+    assert names == ["check", "stage0", "run", "rulercheck", "audit", "report", "run", "run", "audit", "report",
+                     "plots"]
+    smoke, mainA, mainB = calls[2], calls[6], calls[7]
+    assert smoke[1] == ["S0_smoke_A", "S0_smoke_B"] and smoke[2] == 2 and smoke[4] == "offline"
+    assert mainA[1] == ["A_consistent"] and mainB[1] == ["B_quality"] and mainA[2] == 1
+    assert mainA[3] == ["--no-eval_skip_pretrain", "--eval_newest", "0"] == mainB[3]   # full ruler after a change
+    assert calls[4][1] == ["S0_smoke_B"] and calls[8][1] == ["B_quality"]
+    st = json.loads((root / "RUN_STATUS.json").read_text())
+    assert st["state"] == "finished with warnings"
+    assert "FULL ruler" in st["decisions"]["ruler"] and "1 of 2" in st["decisions"]["ruler"]
+    assert st["decisions"]["W&B"].startswith("offline") and st["decisions"]["cells side by side"].startswith("1:")
+    assert any("stage0" in w for w in st["warnings"]) and (root / "RUN_STATUS.md").exists()
+
+
+def test_parallel_decision_rules():
+    root = Path(tempfile.mkdtemp())
+    (root / "S0_smoke_A" / "checkpoints").mkdir(parents=True)
+    rows = {"fast": [dict(arm="asks-70", finished=True, env_steps=4000, actor_minutes=4000 / (4.0 * 60)),
+                     dict(arm="random-55", finished=True, env_steps=4000, actor_minutes=4000 / (4.2 * 60)),
+                     dict(arm="ens-k16", finished=True, env_steps=4000, actor_minutes=100.0)],   # not an 8-critic arm
+            "slow": [dict(arm="asks-70", finished=True, env_steps=4000, actor_minutes=4000 / (3.0 * 60))],
+            "broken": [dict(arm="asks-70", finished=False, env_steps=0, actor_minutes=None),
+                       dict(arm="random-55", finished=False, env_steps=0, actor_minutes=None)]}
+    for case, want in (("fast", 2), ("slow", 1), ("broken", 1)):
+        old = _patch(summarize=lambda n, camp, _c=case: ([], rows[_c], None))
+        try:
+            n, why = ss.parallel_decision(root, ["S0_smoke_A"], 2)
+        finally:
+            _patch(**old)
+        assert n == want, (case, why)
+    assert ss.parallel_decision(root, ["S0_smoke_A"], 1)[0] == 1
+
+
+def test_ruler_changes_counts_only_compared_cells():
+    root = Path(tempfile.mkdtemp())
+    (root / "S0_smoke_B" / "report").mkdir(parents=True)
+    (root / "S0_smoke_B" / "report" / "ruler_reselect.json").write_text(json.dumps(
+        {"a": {"old": 1.0, "new": 1.0}, "b": {"old": None, "new": 0.5}, "c": {"old": 0.6, "new": 0.6}}))
+    assert ss.ruler_changes(root, ["S0_smoke_A", "S0_smoke_B"]) == (2, 0)
+
+
+def test_push_results_to_a_local_remote():
+    import subprocess
+    tmp = Path(tempfile.mkdtemp())
+    bare = tmp / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    res = tmp / "results" / "study"
+    res.mkdir(parents=True)
+    (res / "README.md").write_text("x")
+    assert ss.push_results(res, branch="study-results", remote_url=str(bare), log=lambda m: None) == 0
+    (res / "README.md").write_text("y")
+    assert ss.push_results(res, branch="study-results", remote_url=str(bare), log=lambda m: None) == 0
+    log = subprocess.run(["git", "--git-dir", str(bare), "log", "--oneline", "study-results"], capture_output=True,
+                         text=True).stdout.splitlines()
+    assert len(log) == 2
+    assert ss.push_results(res, remote_url=str(tmp / "nowhere.git"), log=lambda m: None) != 0   # fails, no exception
+
+
+def test_unattended_wrapper():
+    src = (REPO / "tools" / "run_study_unattended.sh").read_text(encoding="utf-8")
+    assert "nohup setsid" in src and "systemd-inhibit" in src and "--suite study all --parallel 2" in src
+    assert "--no-push" in src and "tools/setup_workstation.sh" in src
+
+
 def test_hiril_audit_rows_are_left_out_by_mode():
     src = (REPO / "examples" / "inconsistent_operator_audit.py").read_text(encoding="utf-8")
     assert '"--modes"' in src and 'r.get("mode") in keep' in src

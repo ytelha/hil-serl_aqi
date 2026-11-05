@@ -28,6 +28,8 @@ against HIL-SERL, E2HiL and HiRIL, a sometimes-careless expert), each with a smo
 first. Its stage 0 runs the tests, the operator in each condition and the tolerance sweep;
 `run --parallel 2` trains two cells side by side on one GPU; `plots` draws the study figures.
 
+    python examples/synthetic_suite.py --suite study all --push       # EVERYTHING, unattended, never stops
+                                                                     # (tools/run_study_unattended.sh runs it detached)
     python examples/synthetic_suite.py --suite study check            # also: W&B login when a config logs online
     python examples/synthetic_suite.py --suite study stage0
     python examples/synthetic_suite.py --suite study run smoke --parallel 2
@@ -55,6 +57,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
+import traceback
+import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1180,6 +1185,232 @@ def cmd_rulercheck(args):
     return rc_all
 
 
+# ===================================================================== unattended: everything in one go
+SINGLE_CELL_STEPS_PER_S = 6.2     # one 8-critic cell alone on the earlier RTX 5090 machine: 6.1-6.5 env steps/s
+PARALLEL_MIN_GAIN = 1.15          # side by side must give at least 15 % more steps/s in all than one cell alone
+K8_ARMS = ("asks-", "random-", "ens-k8", "keepall", "beh-", "oracle-", "perfect-")
+_EXPORT_LOCK = threading.Lock()
+
+
+def _ns(args, **kw):
+    """Arguments for one step of `all` (the sub-steps never export themselves; `all` does, under a lock)."""
+    base = dict(root=args.root, results=getattr(args, "results", None), no_export=True, dry=False)
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+class RunStatus:
+    """What `all` did, decided and noticed: <root>/RUN_STATUS.md and .json, rewritten after every step (and so in
+    the results folder)."""
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.started, self.state = now(), "running"
+        self.steps, self.decisions, self.warnings = [], {}, []
+
+    def write(self):
+        d = {"started": self.started, "updated": now(), "state": self.state, "host": socket.gethostname(),
+             "git_commit": git("rev-parse", "HEAD"), "steps": self.steps, "decisions": self.decisions,
+             "warnings": self.warnings}
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / "RUN_STATUS.json").write_text(json.dumps(d, indent=2), encoding="utf-8")
+        L = [f"# Unattended run of the {SUITE} suite: {self.state}", "",
+             f"Started {self.started} on {d['host']} (commit `{d['git_commit'][:8]}`), updated {d['updated']}.", "",
+             "## Steps", "", "| step | start | end | exit code | note |", "|---|---|---|---|---|"]
+        L += [f"| {s['step']} | {s['start']} | {s['end']} | {s['rc']} | {s.get('note', '')} |" for s in self.steps]
+        L += ["", "## Decisions taken without stopping", ""]
+        L += [f"- **{k}:** {v}" for k, v in self.decisions.items()] or ["- none yet"]
+        L += ["", "## Warnings", ""] + ([f"- {w}" for w in self.warnings] or ["- none"])
+        (self.root / "RUN_STATUS.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+
+
+def _step(st, name, fn, a, note=""):
+    """Run one step; record its exit code; never stop (a crash becomes exit code 99 and a warning)."""
+    t0 = now()
+    print(f"\n[all] ===== {name} ({t0}) =====", flush=True)
+    try:
+        rc = fn(a)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:                       # SystemExit included: the run goes on
+        traceback.print_exc()
+        rc = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) and exc.code else 99
+        note = (note + "; " if note else "") + f"stopped: {type(exc).__name__}: {str(exc)[:200]}"
+    rc = int(rc or 0)
+    st.steps.append({"step": name, "start": t0, "end": now(), "rc": rc, "note": note})
+    if rc:
+        st.warnings.append(f"{name}: exit code {rc}" + (f" ({note})" if note else ""))
+    st.write()
+    return rc
+
+
+def ruler_changes(root, names):
+    """(cells compared, cells whose score the shorter ruler changes) from <campaign>/report/ruler_reselect.json."""
+    n_cmp = n_chg = 0
+    for n in names:
+        p = Path(root) / n / "report" / "ruler_reselect.json"
+        if not p.exists():
+            continue
+        for _c, r in json.loads(p.read_text(encoding="utf-8")).items():
+            if r.get("old") is None or r.get("new") is None:
+                continue
+            n_cmp += 1
+            n_chg += abs(float(r["new"]) - float(r["old"])) > 1e-9
+    return n_cmp, n_chg
+
+
+def parallel_decision(root, names, requested):
+    """How many cells side by side for the main campaigns, from the smoke campaigns that ran `requested` side by side:
+    keep them if their 8-critic cells' env steps per second, times `requested`, beat one cell alone
+    (SINGLE_CELL_STEPS_PER_S) by PARALLEL_MIN_GAIN; else one at a time. Returns (n, reason)."""
+    if requested <= 1:
+        return 1, "one cell at a time was requested"
+    rates, done, seen = [], 0, 0
+    for n in names:
+        camp = Path(root) / n
+        if not (camp / "checkpoints").exists():
+            continue
+        _rows, cells, _m = summarize(n, camp)
+        for c in cells:
+            seen += 1
+            done += bool(c["finished"])
+            if c["arm"].startswith(K8_ARMS) and c.get("env_steps") and c.get("actor_minutes"):
+                rates.append(c["env_steps"] / (c["actor_minutes"] * 60.0))
+    if seen == 0 or done < max(1, (seen + 1) // 2):
+        return 1, f"only {done} of {seen} smoke cells finished side by side: one at a time is safer"
+    if not rates:
+        return requested, f"no 8-critic smoke cell had a rate; keeping {requested} side by side"
+    r = sum(rates) / len(rates)
+    total, need = r * requested, SINGLE_CELL_STEPS_PER_S * PARALLEL_MIN_GAIN
+    if total < need:
+        return 1, (f"{requested} side by side gave {r:.1f} env steps/s per cell, {total:.1f} in all, below "
+                   f"{need:.1f} (one alone about {SINGLE_CELL_STEPS_PER_S:g})")
+    return requested, (f"{requested} side by side gave {r:.1f} env steps/s per cell, {total:.1f} in all "
+                       f"(one alone about {SINGLE_CELL_STEPS_PER_S:g})")
+
+
+def push_results(results_dir, branch="study-results", remote_url=None, log=print):
+    """Commit the results folder in its own small git repository (<results>/.git, so the code checkout is untouched)
+    and force-push it to `branch` of the code repository's remote. Never prompts (GIT_TERMINAL_PROMPT=0): without
+    push credentials on the machine it logs the failure and returns non-zero."""
+    d = Path(results_dir)
+    url = remote_url or git("remote", "get-url", "origin")
+    if not url:
+        log("[push] no `origin` remote: skipped")
+        return 1
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+
+    def g(*a):
+        return subprocess.run(["git", "-C", str(d), *a], capture_output=True, text=True, env=env, timeout=900)
+
+    if not (d / ".git").exists():
+        g("init", "-q")
+        g("checkout", "-q", "-b", branch)
+    if not g("config", "user.email").stdout.strip():
+        g("config", "user.email", "aqi-study@localhost")
+        g("config", "user.name", "AQI study (unattended run)")
+    g("add", "-A")
+    g("commit", "-q", "-m", f"{SUITE} results {now()}")
+    p = g("push", "-q", "--force", url, f"HEAD:refs/heads/{branch}")
+    if p.returncode != 0:
+        log(f"[push] to {url} ({branch}) failed: {(p.stderr or p.stdout).strip()[-300:]}")
+        return p.returncode
+    log(f"[push] results -> {url} branch {branch}")
+    return 0
+
+
+def _refresh(args, st, push):
+    """Export (and push) under a lock: called after each step and by the periodic thread."""
+    with _EXPORT_LOCK:
+        try:
+            st.write()
+            export_results(_ns(args, with_steps=False), quiet=True)
+            if push:
+                out = Path(getattr(args, "results", None) or default_results(Path(args.root)))
+                if push_results(out, branch=getattr(args, "branch", "study-results"), log=lambda m: print(m, flush=True)):
+                    st.decisions["results push"] = ("failing: no push credentials on this machine? The results stay in "
+                                                    "results/ there")
+        except Exception as exc:                       # never stop the run for an export
+            print(f"[all] export/push failed: {exc}", flush=True)
+
+
+def cmd_all(args):
+    """The whole suite in one go, without stopping: check, stage 0, smoke, ruler check, smoke audit and report, then
+    the main campaigns, audit, report, plots. Every gate of the runbook becomes a decision recorded in RUN_STATUS.md;
+    failures are recorded and the run goes on. The results folder is refreshed (and pushed, with --push) after every
+    step and every --push_every_h hours."""
+    root = Path(args.root)
+    root.mkdir(parents=True, exist_ok=True)
+    st = RunStatus(root)
+    st.decisions["mode"] = "unattended: no step waits for a person; failures are recorded and the run goes on"
+    push = bool(getattr(args, "push", False))
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(max(0.1, float(getattr(args, "push_every_h", 6.0))) * 3600.0):
+            _refresh(args, st, push)
+
+    threading.Thread(target=beat, daemon=True).start()
+    smoke = GROUPS.get("smoke", [])
+    main_names = GROUPS.get("main", [n for n in ORDER if n not in smoke])
+    # 1. machine check; W&B online only with a key, else offline (kept on the machine)
+    _step(st, "check", cmd_check, _ns(args))
+    mode = getattr(args, "wandb", None) or ("online" if wandb_logged_in() else "offline")
+    st.decisions["W&B"] = mode + ("" if mode == "online" or getattr(args, "wandb", None)
+                                  else " (no key on this machine: the runs log locally only)")
+    _refresh(args, st, push)
+    # 2. stage 0
+    _step(st, "stage0", cmd_stage0, _ns(args, skip_tests=False, skip_operator_test=False, skip_sweep=False,
+                                       episodes=30, sweep_episodes=10))
+    shape = switches(load_yaml(config_path(main_names[0])))["peg_shape"] if main_names else "cuboid"
+    default_limits = read_limits(root, shape) is None
+    st.decisions["orientation limits"] = ("shape defaults (stage 0 measured none)" if default_limits
+                                          else f"stage 0: {read_limits(root, shape)}")
+    _refresh(args, st, push)
+    req = max(1, int(getattr(args, "parallel", 2)))
+    run_kw = dict(wandb=mode, dry=False, keep_going=True, default_limits=default_limits, without_active=True,
+                  allow_orig=False, score_as_is=True, port_base=int(getattr(args, "port_base", 6100)))
+    # 3. smoke, side by side as requested
+    if smoke:
+        _step(st, "smoke", cmd_run, _ns(args, names=smoke, parallel=req, extra=[], **run_kw))
+        _refresh(args, st, push)
+        _step(st, "ruler check", cmd_rulercheck, _ns(args, names=smoke))
+        audit_smoke = [n for n in GROUPS.get("audit", []) if n in smoke]
+        if audit_smoke:
+            _step(st, "smoke audit", cmd_audit, _ns(args, names=audit_smoke))
+        _step(st, "smoke report", cmd_report, _ns(args, names=smoke))
+    # 4. decisions for the main campaigns
+    n_cmp, n_chg = ruler_changes(root, smoke)
+    extra = []
+    if n_chg:
+        extra = ["--no-eval_skip_pretrain", "--eval_newest", "0"]
+        st.decisions["ruler"] = (f"FULL ruler for the main campaigns: the shorter ruler changed {n_chg} of {n_cmp} smoke "
+                                 f"scores")
+    else:
+        st.decisions["ruler"] = (f"shorter ruler as configured: it changed none of {n_cmp} smoke scores" if n_cmp else
+                                 "shorter ruler as configured: no smoke score to compare (0 of 57 changed on the "
+                                 "earlier second machine)")
+    par, why = parallel_decision(root, smoke, req)
+    st.decisions["cells side by side"] = f"{par}: {why}"
+    _refresh(args, st, push)
+    # 5. the main campaigns, one after another, each side by side as decided
+    for n in main_names:
+        _step(st, f"run {n}", cmd_run, _ns(args, names=[n], parallel=par, extra=list(extra), **run_kw),
+              note=f"{par} side by side" + ("; full ruler" if extra else ""))
+        _refresh(args, st, push)
+    # 6. analysis
+    audit_main = [n for n in GROUPS.get("audit", []) if n in main_names]
+    if audit_main:
+        _step(st, "audit", cmd_audit, _ns(args, names=audit_main))
+    _step(st, "report", cmd_report, _ns(args, names=[]))
+    _step(st, "plots", cmd_plots, _ns(args, names=[]))
+    stop.set()
+    st.state = "finished" + (" with warnings" if st.warnings else "")
+    _refresh(args, st, push)
+    print(f"\n[all] {st.state}; see {root / 'RUN_STATUS.md'} and the results folder", flush=True)
+    return 1 if st.warnings else 0
+
+
 # ===================================================================== main
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1222,6 +1453,17 @@ def build_parser():
     pt.add_argument("names", nargs="*", help="settings or groups; default all")
     rk = sub.add_parser("rulercheck", help="would the shorter ruler change a score? (smoke campaigns)")
     rk.add_argument("names", nargs="*", help="settings or groups; default the smoke group")
+    al = sub.add_parser("all", help="everything in one go, unattended: check, stage 0, smoke, the main campaigns, "
+                                    "audit, report, plots; never stops")
+    al.add_argument("--parallel", type=int, default=2, help="cells side by side in the smoke (kept for the main "
+                                                            "campaigns only if it is faster)")
+    al.add_argument("--port_base", type=int, default=6100)
+    al.add_argument("--wandb", choices=["off", "offline", "online"], default=None,
+                    help="default: online if a W&B key is set, else offline")
+    al.add_argument("--push", action="store_true",
+                    help="push the results folder to the branch --branch of the origin remote after every step")
+    al.add_argument("--branch", default="study-results")
+    al.add_argument("--push_every_h", type=float, default=6.0, help="also refresh/push every N hours")
     ex = sub.add_parser("export", help="collect reports, plots and light per-cell files into the results folder")
     ex.add_argument("--out", default=None, help="target folder (default --results, else results/<suite>)")
     ex.add_argument("--with_steps", action="store_true", help="also copy the per-step logs (steps.jsonl, large)")
@@ -1234,7 +1476,8 @@ def main(argv=None):
     if args.root is None:
         args.root = str(DEFAULT_ROOT)
     rc = {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run, "audit": cmd_audit,
-          "report": cmd_report, "plots": cmd_plots, "rulercheck": cmd_rulercheck, "export": cmd_export}[args.cmd](args)
+          "report": cmd_report, "plots": cmd_plots, "rulercheck": cmd_rulercheck, "export": cmd_export,
+          "all": cmd_all}[args.cmd](args)
     if args.cmd in ("check", "stage0", "run", "audit", "report", "plots", "rulercheck") and auto_export(args):
         export_results(args)
     return rc

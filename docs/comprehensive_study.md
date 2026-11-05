@@ -98,43 +98,58 @@ About 45–70 minutes per cell: training about 25–40 minutes, the shorter rule
 more slowly, because the robot waits for the learner. That is about 7 days one cell at a time. Two cells side by side
 (`--parallel 2`) should bring it down to 4–5 days; the smoke run measures whether two at once actually beat one.
 
-## Run it
+## Run it: one command, unattended
 
-On the second training machine (Linux, RTX 5090). The repo comes from GitHub; the setup needs an NVIDIA driver with
-CUDA 12.8 support or newer (the lock's CUDA 12.9 wheels support the RTX 5090; the earlier second machine ran the same
-lock).
+On the second training machine (Linux, RTX 5090), which nobody will look after while it runs. The repo comes from
+GitHub; the setup needs an NVIDIA driver with CUDA 12.8 support or newer (the lock's CUDA 12.9 wheels support the
+RTX 5090; the earlier second machine ran the same lock).
 
 ```bash
-git clone <the GitHub URL of this repo> hil-serl_aqi && cd hil-serl_aqi
-bash tools/setup_workstation.sh
-./.venv/bin/wandb login                                     # once, by the user; never paste the key anywhere else
-./.venv/bin/python examples/synthetic_suite.py --suite study check
-./.venv/bin/python examples/synthetic_suite.py --suite study stage0
-./.venv/bin/python examples/synthetic_suite.py --suite study run smoke --parallel 2
-./.venv/bin/python examples/synthetic_suite.py --suite study rulercheck
-./.venv/bin/python examples/synthetic_suite.py --suite study audit S0_smoke_B
-./.venv/bin/python examples/synthetic_suite.py --suite study report smoke
-./.venv/bin/python examples/synthetic_suite.py --suite study run A_consistent B_quality --parallel 2
-./.venv/bin/python examples/synthetic_suite.py --suite study audit B_quality
-./.venv/bin/python examples/synthetic_suite.py --suite study report
-./.venv/bin/python examples/synthetic_suite.py --suite study plots
+git clone https://github.com/ytelha/hil-serl_aqi.git hil-serl_aqi && cd hil-serl_aqi
+bash tools/setup_workstation.sh                   # optional here: the run does it if .venv is missing
+./.venv/bin/wandb login                           # optional, by the user: without it W&B logs offline
+bash tools/run_study_unattended.sh                # starts everything in the background and returns
 ```
 
-**Gates between the steps:**
+`run_study_unattended.sh` detaches from the terminal (`nohup setsid`), holds a sleep inhibitor where systemd allows
+it, and runs `synthetic_suite.py --suite study all`. That command never waits for a person and never stops for a
+failure:
 
-| after | go on if | otherwise |
-|---|---|---|
-| `check` | READY (packages, JAX on the GPU, the sim renders, W&B key present, disk ≥ 50 GB) | fix what it lists |
-| `stage0` | every test passes; careless rescues clearly below careful ones; orientation limits written | fix before training |
-| smoke | all 8 cells trained and scored; HiRIL and E2HiL logged a condition per takeover; careless share between 0.1 and 0.3; `rulercheck` reports no changed score | read the cell's logs; a changed score means the full ruler for A and B (remove `skip_pretrain` and `newest`) |
-| smoke, timing | two cells side by side finished in less than twice the time of one | run A and B with `--parallel 1` |
+1. machine check;
+2. stage 0: tests, the operator in each condition, the tolerance sweep;
+3. the two smoke campaigns, 2 cells side by side, full ruler;
+4. the ruler check, the smoke audit and report;
+5. `A_consistent`, then `B_quality`;
+6. the audit of `B_quality`, the report of all campaigns, the plots.
 
-Everything resumes: re-running a `run` command skips finished cells.
+**Decisions instead of gates**, all written to `results/study/RUN_STATUS.md` with the evidence:
+
+| decision | rule |
+|---|---|
+| W&B | online if a key is set on the machine (`wandb login`), else offline (the runs log locally only) |
+| orientation limits | stage 0's measurement, else the shape defaults |
+| ruler of the main campaigns | the shorter ruler as configured, unless it changed a smoke score; then the full ruler |
+| cells side by side | 2 if the smoke's 8-critic cells, side by side, ran at least 1.15 × 6.2 env steps/s in all (one alone on the earlier RTX 5090); else 1 |
+| a failing step or cell | recorded as a warning with its exit code; the run goes on with the next one |
+
+**Keep the machine on:** no suspend and no logout until it is done (lock the screen instead). Expect about 4–7 days.
+
+**Watching it from elsewhere:**
+- **W&B** (online mode only): project `hil-serl`, tag `comprehensive_study`.
+- **The results branch:** after every step and every 6 hours the results folder is pushed to the branch
+  `study-results` of the GitHub repo, if the machine can push without a prompt (for example after `gh auth login` or a
+  stored token; the user sets that up, never an agent). Without credentials the push is skipped and logged; the
+  results then stay in `results/study/` on the machine.
+  To fetch the branch: `git clone -b study-results --single-branch https://github.com/ytelha/hil-serl_aqi.git study_results`.
+
+Re-starting the same command after an interruption resumes: finished cells are skipped. The individual steps still
+exist for manual use (`check`, `stage0`, `run <names> --parallel 2`, `rulercheck`, `audit`, `report`, `plots`,
+`export`).
 
 ## The results folder
 
-Every driver command (`check`, `stage0`, `run`, `rulercheck`, `audit`, `report`, `plots`) ends by refreshing
-**`results/study/`** in the repo, and `run` also refreshes it after every finished campaign. The folder is the only
+The unattended run refreshes **`results/study/`** in the repo after every step and every 6 hours (and pushes it to
+the branch `study-results` when it can); each driver command also refreshes it, and `run` after every finished campaign. The folder is the only
 thing to hand over for the analysis: no repo copy, no checkpoints. It is git-ignored, so pushing code never
 carries it along. To refresh it by hand: `./.venv/bin/python examples/synthetic_suite.py --suite study export`.
 
@@ -174,6 +189,7 @@ W&B: project `hil-serl`, filter by the tag `comprehensive_study`.
   - `plots`;
   - the score audit restricted to the quality arms (`inconsistent_operator_audit.py --modes quality`).
   - `rulercheck`: would the shorter ruler change a smoke score;
+  - `all` and `tools/run_study_unattended.sh`: the whole study in one unattended run, gates as recorded decisions;
   - `export`: the results folder, refreshed after every command.
 - **`tools/setup_workstation.sh`:** the training machines' environment on a fresh Linux machine.
 - **`tests/test_study_suite.py`:** the configs, every arm's flags, the design in the commands, the driver.
