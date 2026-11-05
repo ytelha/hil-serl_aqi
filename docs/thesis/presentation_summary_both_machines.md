@@ -445,6 +445,7 @@ earlier takeovers.
 |---|---|---|
 | behavioural | $B = z(\Delta V) - z(T) - z(F_{peak})$, with $\Delta V = \mu_Q(s_{t_1}, a^H_{t_1}) - \mu_Q(s_{t_0}, a^R_{t_0})$, $F_{peak} = \max_t F_t$ | value gained, minus length, minus peak force: a short, value-raising, gentle correction scores high |
 | hindsight | $A_{hind} = \sum_{t=t_0}^{t_e-1} \gamma^{t-t_0} r_t + \gamma^{t_e-t_0} V(s_{t_e}) - V(s_{t_0})$, $t_e = t_0 + T + 10$, $V(s) = \mu_Q(s, a^R)$ | what the robot reached 10 steps after getting control back ($\gamma = 0.97$, $r_t$ the reward) |
+| progress | $\Delta d = d(s_{t_e}) - d(s_{t_0})$, $d$ = depth of the tool below its start pose, same window as hindsight | how much deeper the peg got by 10 steps after the hand-back; at chance here (0.50) |
 | counterfactual | $\frac1T \sum_t \big[\mu_Q(s_t, a^H_t) - \mu_Q(s_t, a^R_t)\big]$ | how much better the critics rate the operator's move than the robot's; fails because the robot is trained to maximise these same critics |
 | smoothness | $-\frac1T \sum_t \lVert a^H_t - 2a^H_{t-1} + a^H_{t-2} \rVert$ | jerky commands score low; circular, because careless is novice jitter by construction |
 
