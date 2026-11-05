@@ -82,8 +82,14 @@ to the clearance inside the corridor above the hole, the error while hovering, 1
 stagnation, force and elapsed time. "Resolved" is therefore how much the takeover reduced the real trouble.
 
 **Examples.**
-- An expert takes over with the peg 6 mm off the bore (z ≈ 1.2), centres it (z ≈ 0.1), no jam, the episode succeeds:
-  q_raw = 1.1 − 0 + 0.5 = 1.6 → high priority, weight near 1.
+- An expert takes over with the peg 6 mm off the bore (e/c = 1.2, but z is capped at 1.0), centres it (z ≈ 0.1), no
+  jam, the episode succeeds: q_raw = 0.9 − 0 + 0.5 = 1.4 → high priority, weight near 1.
+  (Corrected 5 November: an earlier version used z ≈ 1.2, which the cap makes impossible.)
+
+  The trouble signal, exactly: z = min(1, max(e/c, n_stall/12, (|F| − 20)⁺/20, t/2T)), with e the lateral error,
+  c = 5 mm, n_stall the steps without 0.3 mm of descent (e/c and n_stall only below 12 mm above the hole), F the wrist
+  force, t/T the share of the episode used; drifting beyond 12.5 mm higher up counts as (e − 12.5)/12.5, and a peg
+  below the opening but off-axis gives z = 1.
 - A novice takes over at z ≈ 0.8, ends at 0.9 with the peg jammed, the episode fails: q_raw = −0.1 − 1 − 0.5 = −1.6 →
   baseline priority, weight 0.05. But this takeover never gets graded in practice, because `outcome_filter` has already
   dropped it.

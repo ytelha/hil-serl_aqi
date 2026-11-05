@@ -251,8 +251,20 @@ $$
 $z_{task}$ = the operator's trouble signal computed on the true state (for example the sideways error relative to the
 5 mm clearance); outcome = +1 if the episode succeeded, −1 if not.
 
-- **An expert** takes over 6 mm off (trouble 1.2), centres the peg (0.1), no jam, success:
-  $q_{raw} = 1.1 - 0 + 0.5 = 1.6$, high priority, weight near 1.
+**The trouble signal**, from the operator's own monitor (`MonitoringSignal` in `serl_launcher/aqi/operator_gate.py`,
+cuboid values of the simulation), is the largest of its channels, each capped at 1:
+
+$$
+z = \min\Big(1,\ \max\big(\tfrac{e}{c},\ \tfrac{n_{stall}}{12},\ \tfrac{(|F| - 20)^{+}}{20},\ \tfrac{t}{2T}\big)\Big)
+$$
+
+$e$ = lateral error of the peg, $c$ = 5 mm clearance; $n_{stall}$ = steps without 0.3 mm of descent (12 steps = 1.2 s);
+both count only near the hole, below 12 mm. $F$ = wrist force (sensor units), $t/T$ = share of the episode used.
+Higher up, only drifting beyond 12.5 mm counts, $(e - 12.5)/12.5$; a peg below the opening but off-axis has missed the
+bore: $z = 1$. The first machine had no orientation channel. So $z \le 1$, and the resolved trouble is at most 1.
+
+- **An expert** takes over 6 mm off ($e/c = 1.2$, capped at $z = 1.0$), centres the peg ($z = 0.1$), no jam, success:
+  $q_{raw} = 0.9 - 0 + 0.5 = 1.4$, high priority, weight near 1.
 - **A novice** takes over at 0.8, ends at 0.9 with the peg jammed, failure: $q_{raw} = -0.1 - 1 - 0.5 = -1.6$, lowest
   priority, weight 0.05. In practice the outcome filter had already dropped it.
 
