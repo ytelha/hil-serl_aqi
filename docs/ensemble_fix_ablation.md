@@ -1,8 +1,9 @@
 # Which part of the ensemble fix mattered? — the ablation on the first training machine
 
 The first ensemble extension lost to plain HIL-SERL; the fixed one matched it. The fix changed four things at once, so
-nobody knows which one did the work. This campaign tests each change on its own. It runs on the **first training
-machine** (original platform, the code of the RQ3/RQ4 campaigns), so its numbers sit next to those campaigns.
+nobody knows which one did the work. This campaign tests each change on its own, on the **first training machine with
+the new stack** (the shortened operator and ruler, as in the comprehensive study) and with **experts and intermediates
+only** (the synthetic novice is too weak).
 
 - Config: `examples/campaigns/ensemble_fix_ablation.yaml` (new, nothing else changes).
 - Campaign folder: `runs/ensemble_fix_ablation`; W&B group `ensemble_fix_ablation`.
@@ -10,7 +11,7 @@ machine** (original platform, the code of the RQ3/RQ4 campaigns), so its numbers
 
 ## 1. The four changes, and what stays the same
 
-| | first version (RQ3) | fixed version (RQ4) |
+| | first version | fixed version |
 |---|---|---|
 | critics K | 10 | 8 |
 | target of a critic (M) | minimum of 2 random critics | 1 random critic (no minimum) — "de-pessimisation" |
@@ -21,7 +22,7 @@ machine** (original platform, the code of the RQ3/RQ4 campaigns), so its numbers
 
 Per-member targets and the masks were already on in the first version, so they are not part of the fix.
 
-## 2. The arms (18 runs each: 3 operators per tier × 3 tiers × 2 seeds)
+## 2. The arms (12 runs each: 3 experts + 3 intermediates × 2 seeds)
 
 | arm | mode | K | M | warm start | LR | question |
 |---|---|---|---|---|---|---|
@@ -34,34 +35,47 @@ Per-member targets and the masks were already on in the first version, so they a
 | `ens-k8` | ensemble | 8 | 2 | – | 3e-4 | fewer critics alone |
 | `hilserl-wu` | HIL-SERL | 2 | – | 5 000 | 3e-4 | warm start for plain HIL-SERL |
 
-Runs are trained arm by arm in this order, so if the campaign has to stop early, the first four arms (72 runs, about
-5 days) already answer the main question. Everything else is copied from `rq4_ensemble_convergence.yaml`: same roster
-seed, 6 demonstrations, 40 000-step cap, convergence rule (90 % of the last 20 episodes without help) and ruler. All
-arms are trained fresh here; no runs are copied from RQ3/RQ4, whose code predates patches 0001–0010.
+**The new stack** (patches 0014–0016 and 0037 of the first-machine bundle): rotation control; orientation box and twist
+channel (cuboid limits tilt 0.384, yaw 0.1396 rad from stage 0, no learning involved); the mini-eval stop rule (every
+2 000 steps, 2 passes in a row); one learner step per environment step; the shorter ruler (no pre-training
+checkpoints, newest 8, same 9 poses). 30 000-step cap, 6 demonstrations, roster seed 0.
 
-**Cost:** 144 runs. On this machine a run took about 1.5–1.7 h, one at a time on the 8 GB GPU: about **9–10 days**.
+Runs are trained arm by arm in this order, so the first four arms (48 runs) already answer the main question.
+
+**Cost:** 96 runs. On this machine with the new stack: about 30 min online training (about 9 000 steps at about 5 per
+second, the learner sets the pace), plus about 20 min warm start in the four warm-start arms, plus about 20 min for the
+shorter ruler: **50–70 min per run, about 4–5 days in total**, the first four arms about 2–2.5 days. A run that never
+converges trains to the 30 000-step cap (about 100 min plus the ruler), so a failing arm takes longer.
+
+These numbers are not comparable with the old RQ3/RQ4 campaigns (old stack, novices, 0.45 updates per step); only the
+arms of this campaign are compared with each other. Whether the first version still loses on the new stack is itself
+the first read-out.
 
 ## 3. How the result is read (fixed before any run)
 
-Outcomes per arm, from `report/dependency.md`: ruler success (mean and per tier), converged runs of 18, steps to
-converge, ICC. Paired comparisons use the same operator and seed (sign test over the non-tied pairs).
+Outcomes per arm, from `report/dependency.md`: converged runs of 12 and steps to converge (the main measures: the first
+version failed by hovering and not converging), ruler success (mean, expert, intermediate), ICC. Paired comparisons use
+the same operator and seed (sign test over the non-tied pairs; with 12 pairs, p < 0.05 needs at least 10 wins).
 
-- **A change explains the fix** if its arm beats `ens` (sign test p < 0.05 on ruler success, or clearly more converged
-  runs: at least 4 of 18 more) **and** is not significantly worse than `ens-fix`.
+- **First read-out:** does `ens` still lose to `ens-fix` and `hilserl` on the new stack (fewer converged runs, more
+  steps, lower success)? If not, the old failure was tied to the old stack, and the factor attribution below is
+  descriptive only.
+- **A change explains the fix** if its arm beats `ens` (sign test p < 0.05 on ruler success or steps to converge, or at
+  least 3 of 12 more converged runs) **and** is not significantly worse than `ens-fix`.
 - **A change helps but does not explain it** if it beats `ens` but stays significantly below `ens-fix`.
 - **No effect** if it does not beat `ens`.
-- `ens-wu-lr` against `ens-wu` gives the effect of the halved learning rate on top of the warm start.
-- `hilserl-wu` against `hilserl` gives the warm start's effect on plain HIL-SERL (success, and ICC: an earlier run on
-  this machine, `rq1_3seed_pretrain`, found that pre-training flattens the teacher effect to ICC 0.00).
+- `ens-wu-lr` against `ens-wu`: the halved learning rate on top of the warm start.
+- `hilserl-wu` against `hilserl`: the warm start on plain HIL-SERL.
 - Single changes may interact; this design does not test all combinations. If no single change explains the fix, the
   next step is leave-one-out from `ens-fix`.
-- Reference: RQ4 found the fixed version at 82 % and HIL-SERL at 84 % (16 of 18 converged each); `ens-fix` and
-  `hilserl` here should land near those. A large gap means something differs from RQ4 and must be found first.
+- Sanity check: on the second machine the fixed ensemble converged in about 9 000 steps with experts and intermediates
+  at about 93 %. `ens-fix` here should be close; a large gap means something differs and must be found first.
 
 ## 4. Steps for the Claude on the first machine
 
-Rules: do not change the config, the seeds or the reading above; never delete or modify anything under `runs/`; never
-type, paste or read credentials (the user does any `wandb login` or `sudo`); report with actual output.
+Rules: do not change the config, the seeds or the reading above (the only allowed change is the orientation limits,
+see Step 0); never delete or modify anything under `runs/`; never type, paste or read credentials (the user does any
+`wandb login` or `sudo`); report with actual output.
 
 ### Step 0 — checks (stop and report if any fails)
 
@@ -69,62 +83,71 @@ type, paste or read credentials (the user does any `wandb login` or `sudo`); rep
 cd ~/Downloads/hil-serl_aqi                     # the repo; adjust if it lives elsewhere
 git log -1 --oneline; git status --short | head -20
 pgrep -af "train_aqi_rlpd|run_campaign" || echo "nothing running"
-systemctl --user list-units --type=service --state=running | grep -i -E "campaign|aqi|rq|ens|oracle|novice" || echo "no campaign unit"
+systemctl --user list-units --type=service --state=running | grep -i -E "campaign|aqi|rq|ens|oracle|novice|suite" || echo "no campaign unit"
 nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv
-df -h . ; du -sh runs/rq4_ensemble_convergence      # per-run disk = this / 36
+df -h .
 ls examples/campaigns/ensemble_fix_ablation.yaml
+# the new stack must be installed (first-machine bundle, Part 2: 0014-0016 and 0037):
+grep -c "synthetic_rotation_control" examples/run_campaign.py      # > 0
+grep -c "utd_ratio" examples/run_campaign.py                       # > 0
+grep -c "select_newest" examples/eval_ruler.py                      # > 0
+ls examples/ruler_select.py
 ```
 
-- Nothing may be running. Free disk must be at least 144 × (RQ4 size / 36) × 1.3.
-- The code may or may not have the later first-machine bundle applied; this campaign uses only knobs that exist since
-  the RQ4 campaign (`demo_pretrain`, `learning_rate`, `critic_ensemble_size`, `critic_subsample_size`), so either works.
+- Nothing may be running. Free disk: at least 200 GB (96 runs at about 1.5 GB with 12 checkpoints).
+- If any grep prints 0 or the file is missing, the new stack is not installed: stop and tell the user.
+
+**Orientation limits:** if this machine has its own stage-0 result, use it:
+
+```bash
+python3 -c "import json; print(json.load(open('runs/synthetic_suite/stage0/limits.json'))['limits'].get('cuboid'))"
+```
+
+If it prints tilt and yaw values that differ from 0.384 / 0.1396, add `--synthetic_orientation_tilt_rad <tilt>
+--synthetic_orientation_yaw_rad <yaw>` to every command below (dry run and launch) and report the values. If the file
+does not exist, keep the config values.
 
 ```bash
 ./.venv/bin/python examples/run_campaign.py --config examples/campaigns/ensemble_fix_ablation.yaml \
-    --campaign runs/ensemble_fix_ablation --list_cells | wc -l          # must print 144
+    --campaign runs/ensemble_fix_ablation --list_cells | wc -l          # must print 96, no "nov" cells
 ./.venv/bin/python examples/run_campaign.py --config examples/campaigns/ensemble_fix_ablation.yaml \
     --campaign runs/ensemble_fix_ablation --dry_run > /tmp/ens_abl_dry.txt 2>&1; echo "exit $?"
 for a in ens ens-m1 ens-fix hilserl ens-wu ens-wu-lr ens-k8 hilserl-wu; do
   grep "DRY learner" /tmp/ens_abl_dry.txt | grep -m1 "checkpoints/${a}_exp00_s0 " \
    | grep -o -E -- "--aqi_mode [a-z]+|--(no)?demo_pretrain( |$)|--demo_pretrain_steps [0-9]+|--learning_rate [0-9.e-]+|--critic_ensemble_size [0-9]+|--critic_subsample_size [0-9]+" \
    | tr '\n' ' '; echo " <- $a"; done
+grep "DRY actor" /tmp/ens_abl_dry.txt | grep -m1 "checkpoints/ens_exp00_s0 " \
+   | grep -o -E -- "--max_steps [0-9]+|--synthetic_rotation_control|--synthetic_orientation_monitor|--synthetic_orientation_(tilt|yaw)_rad [0-9.]+|--converge_mode [a-z]+|--converge_eval_every [0-9]+|--utd_ratio [0-9]+" | tr '\n' ' '; echo
+head -30 /tmp/ens_abl_dry.txt | grep -E "orientation box|convergence"
 ```
 
-The output must be exactly this (verified on a copy of this machine's code of 31 October):
+The method lines must be exactly this (verified on a copy of this machine's code after the bundle, 2026-11-06):
 
 ```
---aqi_mode logged --nodemo_pretrain  --demo_pretrain_steps 0 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens
---aqi_mode logged --nodemo_pretrain  --demo_pretrain_steps 0 --critic_ensemble_size 10 --critic_subsample_size 1  <- ens-m1
---aqi_mode logged --demo_pretrain  --demo_pretrain_steps 5000 --learning_rate 0.00015 --critic_ensemble_size 8 --critic_subsample_size 1  <- ens-fix
---aqi_mode hilserl --nodemo_pretrain  --demo_pretrain_steps 0  <- hilserl
---aqi_mode logged --demo_pretrain  --demo_pretrain_steps 5000 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens-wu
---aqi_mode logged --demo_pretrain  --demo_pretrain_steps 5000 --learning_rate 0.00015 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens-wu-lr
---aqi_mode logged --nodemo_pretrain  --demo_pretrain_steps 0 --critic_ensemble_size 8 --critic_subsample_size 2  <- ens-k8
---aqi_mode hilserl --demo_pretrain  --demo_pretrain_steps 5000  <- hilserl-wu
+--aqi_mode logged --nodemo_pretrain --demo_pretrain_steps 0 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens
+--aqi_mode logged --nodemo_pretrain --demo_pretrain_steps 0 --critic_ensemble_size 10 --critic_subsample_size 1  <- ens-m1
+--aqi_mode logged --demo_pretrain --demo_pretrain_steps 5000 --learning_rate 0.00015 --critic_ensemble_size 8 --critic_subsample_size 1  <- ens-fix
+--aqi_mode hilserl --nodemo_pretrain --demo_pretrain_steps 0  <- hilserl
+--aqi_mode logged --demo_pretrain --demo_pretrain_steps 5000 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens-wu
+--aqi_mode logged --demo_pretrain --demo_pretrain_steps 5000 --learning_rate 0.00015 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens-wu-lr
+--aqi_mode logged --nodemo_pretrain --demo_pretrain_steps 0 --critic_ensemble_size 8 --critic_subsample_size 2  <- ens-k8
+--aqi_mode hilserl --demo_pretrain --demo_pretrain_steps 5000  <- hilserl-wu
 ```
 
-No `--learning_rate` means the built-in 3e-4. Both HIL-SERL arms get no critic flags (the runner keeps HIL-SERL at its
-2 critics).
+and the new-stack line:
 
-```bash
-./.venv/bin/python examples/run_campaign.py --config examples/campaigns/ensemble_fix_ablation.yaml \
-    --campaign runs/ensemble_fix_ablation --plan      # roster and ruler grid only, no training
-python3 - <<'EOF'
-import json
-a = json.load(open("runs/ensemble_fix_ablation/campaign.json"))["grid_sha256"]
-b = json.load(open("runs/rq4_ensemble_convergence/campaign.json"))["grid_sha256"]
-print("ruler grid identical to RQ4:", a == b)
-EOF
-diff -r runs/ensemble_fix_ablation/operators runs/rq4_ensemble_convergence/operators && echo "roster identical to RQ4"
+```
+--max_steps 30000 --synthetic_rotation_control --synthetic_orientation_monitor --synthetic_orientation_tilt_rad 0.384 --synthetic_orientation_yaw_rad 0.1396 --converge_mode eval --converge_eval_every 2000 --utd_ratio 1
 ```
 
-Both must be identical. If the operator folders differ only in files RQ4 does not have, report and continue only if
-the operator parameters match.
+plus the header lines "orientation box roll +/-0.1, pitch +/-0.1, yaw +/-0.4 rad" and "mini-eval SR >= 0.6 in 2
+evaluations in a row, every 2000 env steps". (Spacing may differ by a blank; the flags and values may not.) No
+`--learning_rate` means the built-in 3e-4; both HIL-SERL arms get no critic flags.
 
 W&B: check `./.venv/bin/wandb status`. If it is not logged in, start with `--wandb offline` instead of `online` and tell
 the user (they can sync later). Never enter a key.
 
-### Step 1 — start (in the background, OOM-protected, as RQ3/RQ4)
+### Step 1 — start (in the background, OOM-protected)
 
 ```bash
 WANDB_RUN_GROUP=ensemble_fix_ablation \
@@ -137,10 +160,10 @@ systemd-run --user --unit=ens_ablation --collect \
        >> runs/ensemble_fix_ablation.out 2>&1'
 ```
 
-Confirm after 10–20 minutes: `systemctl --user status ens_ablation`, `tail -n 40 runs/ensemble_fix_ablation.out`, the
-first learner log under `runs/ensemble_fix_ablation/logs/` shows training steps. Then report the unit name, W&B mode,
-start time and the expected end (about 9–10 days) to the user and stop. The run is resumable: if it dies, re-running
-the same command continues with the missing runs.
+Confirm after 15–30 minutes: `systemctl --user status ens_ablation`, `tail -n 40 runs/ensemble_fix_ablation.out`, the
+first learner log under `runs/ensemble_fix_ablation/logs/` shows training steps. Note the time per run once the first
+run has finished (training + ruler) and report it with the unit name, the W&B mode and the expected end. Then stop. The
+run is resumable: if it dies, re-running the same command continues with the missing runs.
 
 ### Step 2 — when it is done (or for an early look at finished arms)
 
@@ -155,12 +178,14 @@ cp runs/ensemble_fix_ablation/report/dependency.md   runs/ensemble_fix_ablation/
 cp runs/ensemble_fix_ablation/report/dependency.json runs/ensemble_fix_ablation/report/dependency_baseline_ens.json
 ```
 
-Pack the results for the user (small text files only, no checkpoints):
+(Add the orientation-limit flags here too if Step 0 used them.) Pack the results for the user (small text files only,
+no checkpoints):
 
 ```bash
 cd runs && find ensemble_fix_ablation \( -name cell.json -o -name episodes.jsonl -o -name .done -o -name campaign.json \
-  -o -path '*/report/*' -o -path '*/operators/*' \) -print0 | tar czf ~/ensemble_fix_ablation_results.tgz --null -T - \
+  -o -name learner_progress.json -o -path '*/report/*' -o -path '*/operators/*' \) -print0 \
+  | tar czf ~/ensemble_fix_ablation_results.tgz --null -T - \
   && ls -lh ~/ensemble_fix_ablation_results.tgz && tar tzf ~/ensemble_fix_ablation_results.tgz | grep -c cell.json
 ```
 
-The last number must be 144 (fewer if the campaign was stopped early: say which arms are complete).
+The last number must be 96 (fewer if the campaign was stopped early: say which arms are complete).

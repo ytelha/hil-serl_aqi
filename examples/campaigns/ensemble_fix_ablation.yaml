@@ -1,6 +1,6 @@
 # =====================================================================
 # ensemble_fix_ablation.yaml — which part of the ensemble fix mattered?
-# (first training machine, original platform; 2026-11-06)
+# (first training machine, NEW STACK, experts and intermediates; 2026-11-06)
 #
 # The first ensemble extension (RQ3 `logged`: K = 10 critics, target = min of
 # M = 2 random critics, no warm start, learning rate 3e-4) lost to plain
@@ -9,13 +9,9 @@
 #   2. ensemble size     K 10 -> 8
 #   3. warm start        5 000 learner steps on the demonstrations first
 #   4. learning rate     3e-4 -> 1.5e-4
-# Unchanged in every ensemble arm: per-member targets (each critic draws its
-# own target critics) and bootstrap masks p = 0.8 -- both were already on in
-# the first version (docs/thesis/rq4_ensemble_convergence_and_qa_log.md 2.3,
-# 2.4), so they are not part of the fix.
-#
-# This campaign tests each part on its own, on top of the first version, plus
-# the full fix and two plain HIL-SERL references:
+# Unchanged in every ensemble arm: per-member targets and bootstrap masks
+# p = 0.8 -- both were already on in the first version
+# (docs/thesis/rq4_ensemble_convergence_and_qa_log.md 2.3, 2.4).
 #
 #   arm          mode     K   M  warm start  LR       question
 #   ens          logged   10  2  -           3e-4     the first version (base)
@@ -27,29 +23,30 @@
 #   ens-k8       logged    8  2  -           3e-4     fewer critics alone
 #   hilserl-wu   hilserl   2  -  5000        3e-4     warm start for HIL-SERL
 #
-# Cells run METHOD BY METHOD in the order of `methods:` (run_campaign
-# enumerate_cells), so the most informative arms come first: if the campaign
-# must stop early, the finished arms already answer the main question
-# (base, de-pessimisation, full fix, HIL-SERL).
+# NEW STACK (the shortened operator and ruler, as on the second machine and in
+# the comprehensive study): rotation control (0014), orientation box and twist
+# channel (0016; cuboid limits tilt 0.384 / yaw 0.1396 rad from stage 0), the
+# mini-eval stop rule and one learner step per env step (0015), the shorter
+# ruler: no pre-training checkpoints, newest 8 (0037). Experts and
+# intermediates only: the synthetic novice is too weak.
 #
-# Everything else is copied from rq4_ensemble_convergence.yaml (same roster
-# seed, 3 operators per tier, 2 seeds, 6 demonstrations, 40 k-step cap,
-# convergence rule, ruler), so the numbers are comparable with RQ4. All arms are
-# trained fresh in this one campaign (same code, same machine, same weeks):
-# no cells are copied from RQ3/RQ4, whose code predates patches 0001-0010.
+# Cells run METHOD BY METHOD in the order of `methods:`, so the most
+# informative arms come first (base, de-pessimisation, full fix, HIL-SERL).
 #
-# COST: 8 arms x 18 cells = 144 cells. On this machine a cell took about
-# 1.5-1.7 h (RQ4: 36 cells in about 2.5 days), one cell at a time on the 8 GB
-# GPU -> about 9-10 days. The first four arms (72 cells) take about 5 days.
+# COST: 8 arms x 12 cells (3 experts + 3 intermediates x 2 seeds) = 96 cells.
+# First-machine estimate on this stack: about 30 min online training (about
+# 9 000 steps at about 5 per second, learner-bound with utd 1), + about 20 min
+# warm start in the four warm-start arms, + about 20 min shorter ruler, so
+# 50-70 min per cell; a cell that never converges runs to the 30 000-step cap
+# (about 100 min + ruler). About 4-5 days in total; the first four arms about
+# 2-2.5 days.
 #
-# Read-out (report/dependency.md, one row per arm), two reports:
-#   --baseline hilserl  : every arm against plain HIL-SERL
-#   --baseline ens      : every ensemble change against the first version
-# Steps to convergence and converged runs (report "convergence") matter as
-# much as ruler success: the first version's failure was hovering, i.e.
-# non-convergence (7 of 12 runs).
+# Not comparable with RQ3/RQ4 numbers (old stack, novices, 0.45 updates per
+# step); the comparison is between the arms of THIS campaign. Whether the first
+# version still loses on the new stack is itself the first read-out (ens vs
+# ens-fix vs hilserl).
 #
-# Launch (OOM-protected, as for RQ3/RQ4):
+# Launch (OOM-protected):
 #   WANDB_RUN_GROUP=ensemble_fix_ablation \
 #   systemd-run --user --unit=ens_ablation --collect \
 #     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
@@ -63,13 +60,14 @@
 task:
   exp_name: sim_peg_insertion
   peg_shape: cuboid
+  rpy_box: [0.1, 0.1, 0.4]         # orientation box (0016), as on the second machine
 
 operators:
   expert: 3
   intermediate: 3
-  novice: 3
+  novice: 0                        # the synthetic novice is too weak
   jitter: 0.15
-  sample_seed: 0                   # same roster as RQ4
+  sample_seed: 0
 
 demos:
   per_operator: 6
@@ -104,9 +102,9 @@ replicates:
 
 budget:
   mode: steps
-  steps_cap: 40000
-  minutes_per_cell: 300            # wall-clock safety cap only (anti-hang)
-  converge_success: 0.9            # convergence rule identical to RQ3/RQ4
+  steps_cap: 30000                 # the new stack stops near 9 000 steps; the cap only bounds a failing cell
+  minutes_per_cell: 240            # wall-clock safety cap only (anti-hang)
+  converge_success: 0.9
   converge_window: 20
   converge_min_steps: 3000
   converge_eval_threshold: 0.6
@@ -117,10 +115,14 @@ budget:
     - "0.000,0.000"
     - "0.008,0.000"
     - "0.016,0.000"
+  converge_mode: eval              # the autonomous mini-eval decides (0015)
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1                     # one learner step per env step (0015)
   total_hours: 0
   learner_max_steps: 1000000
-  buffer_period: 0                 # DISK: no replay dumps
-  checkpoint_keep: 25
+  buffer_period: 0
+  checkpoint_keep: 12              # the shorter ruler scores the newest 8
   demo_pretrain: false             # campaign-wide: no warm start; arms opt in
   demo_pretrain_steps: 0
   demo_pretrain_batch_size: 0      # 0 = config batch size (256)
@@ -128,7 +130,11 @@ budget:
 
 aqi:
   synthetic_intervention_mode: signal
-  per_member_targets: true         # as RQ3/RQ4 (default; inert for hilserl)
+  synthetic_rotation_control: true          # 0014
+  synthetic_orientation_monitor: true       # 0016
+  synthetic_orientation_tilt_rad: 0.384     # stage-0 limits (cuboid), no learning involved;
+  synthetic_orientation_yaw_rad: 0.1396     # use this machine's own stage-0 values if it has them
+  per_member_targets: true                  # as RQ3/RQ4 (default; inert for hilserl)
 
 eval:
   dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
@@ -138,6 +144,8 @@ eval:
   last_k: 5
   select: best_window
   window_k: 3
+  skip_pretrain: true              # shorter ruler (0037): no pre-training checkpoints ...
+  newest: 8                        # ... and only the newest 8
 
 gpu:
   jax_platform: cuda
@@ -146,6 +154,8 @@ gpu:
 
 logging:
   wandb: "off"                     # overridden to online on the CLI
+  takeover_channels: true
+  wandb_tags: [ensemble_fix_ablation]
 
 analysis:
   baseline: hilserl                # second report with --baseline ens
