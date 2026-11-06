@@ -26,9 +26,10 @@
 # NEW STACK (the shortened operator and ruler, as on the second machine and in
 # the comprehensive study): rotation control (0014), orientation box and twist
 # channel (0016; cuboid limits tilt 0.384 / yaw 0.1396 rad from stage 0), the
-# mini-eval stop rule and one learner step per env step (0015), the shorter
-# ruler: no pre-training checkpoints, newest 8 (0037). Experts and
-# intermediates only: the synthetic novice is too weak.
+# mini-eval stop rule and one learner step per env step (0015). The ruler is
+# the standard one (the shorter ruler, patch 0037, is not on this machine);
+# 12 kept checkpoints keep it short. Experts and intermediates only: the
+# synthetic novice is too weak. Needs patches 0014-0016, NOT 0037.
 #
 # Cells run METHOD BY METHOD in the order of `methods:`, so the most
 # informative arms come first (base, de-pessimisation, full fix, HIL-SERL).
@@ -36,10 +37,10 @@
 # COST: 8 arms x 12 cells (3 experts + 3 intermediates x 2 seeds) = 96 cells.
 # First-machine estimate on this stack: about 30 min online training (about
 # 9 000 steps at about 5 per second, learner-bound with utd 1), + about 20 min
-# warm start in the four warm-start arms, + about 20 min shorter ruler, so
-# 50-70 min per cell; a cell that never converges runs to the 30 000-step cap
-# (about 100 min + ruler). About 4-5 days in total; the first four arms about
-# 2-2.5 days.
+# warm start in the four warm-start arms, + about 30 min ruler (12 checkpoints),
+# so 60-80 min per cell; a cell that never converges runs to the 30 000-step cap
+# (about 100 min + ruler). About 5 days in total; the first four arms about
+# 2.5 days.
 #
 # Not comparable with RQ3/RQ4 numbers (old stack, novices, 0.45 updates per
 # step); the comparison is between the arms of THIS campaign. Whether the first
@@ -122,7 +123,7 @@ budget:
   total_hours: 0
   learner_max_steps: 1000000
   buffer_period: 0
-  checkpoint_keep: 12              # the shorter ruler scores the newest 8
+  checkpoint_keep: 12              # the ruler scores the kept checkpoints; it selects among the last 5
   demo_pretrain: false             # campaign-wide: no warm start; arms opt in
   demo_pretrain_steps: 0
   demo_pretrain_batch_size: 0      # 0 = config batch size (256)
@@ -144,8 +145,6 @@ eval:
   last_k: 5
   select: best_window
   window_k: 3
-  skip_pretrain: true              # shorter ruler (0037): no pre-training checkpoints ...
-  newest: 8                        # ... and only the newest 8
 
 gpu:
   jax_platform: cuda

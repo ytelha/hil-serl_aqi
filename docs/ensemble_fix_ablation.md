@@ -2,7 +2,7 @@
 
 The first ensemble extension lost to plain HIL-SERL; the fixed one matched it. The fix changed four things at once, so
 nobody knows which one did the work. This campaign tests each change on its own, on the **first training machine with
-the new stack** (the shortened operator and ruler, as in the comprehensive study) and with **experts and intermediates
+the new stack** (the shortened operator, as in the comprehensive study; the standard ruler) and with **experts and intermediates
 only** (the synthetic novice is too weak).
 
 - Config: `examples/campaigns/ensemble_fix_ablation.yaml` (new, nothing else changes).
@@ -35,16 +35,17 @@ Per-member targets and the masks were already on in the first version, so they a
 | `ens-k8` | ensemble | 8 | 2 | – | 3e-4 | fewer critics alone |
 | `hilserl-wu` | HIL-SERL | 2 | – | 5 000 | 3e-4 | warm start for plain HIL-SERL |
 
-**The new stack** (patches 0014–0016 and 0037 of the first-machine bundle): rotation control; orientation box and twist
-channel (cuboid limits tilt 0.384, yaw 0.1396 rad from stage 0, no learning involved); the mini-eval stop rule (every
-2 000 steps, 2 passes in a row); one learner step per environment step; the shorter ruler (no pre-training
-checkpoints, newest 8, same 9 poses). 30 000-step cap, 6 demonstrations, roster seed 0.
+**The new stack** (patches 0014–0016 of the first-machine bundle): rotation control; orientation box and twist channel
+(cuboid limits tilt 0.384, yaw 0.1396 rad from stage 0, no learning involved); the mini-eval stop rule (every 2 000
+steps, 2 passes in a row); one learner step per environment step. The ruler is the standard one (same 9 poses) on the
+12 kept checkpoints; the shorter ruler (patch 0037) is not needed and not used. 30 000-step cap, 6 demonstrations,
+roster seed 0.
 
 Runs are trained arm by arm in this order, so the first four arms (48 runs) already answer the main question.
 
 **Cost:** 96 runs. On this machine with the new stack: about 30 min online training (about 9 000 steps at about 5 per
-second, the learner sets the pace), plus about 20 min warm start in the four warm-start arms, plus about 20 min for the
-shorter ruler: **50–70 min per run, about 4–5 days in total**, the first four arms about 2–2.5 days. A run that never
+second, the learner sets the pace), plus about 20 min warm start in the four warm-start arms, plus about 30 min for the
+ruler (12 checkpoints): **60–80 min per run, about 5 days in total**, the first four arms about 2.5 days. A run that never
 converges trains to the 30 000-step cap (about 100 min plus the ruler), so a failing arm takes longer.
 
 These numbers are not comparable with the old RQ3/RQ4 campaigns (old stack, novices, 0.45 updates per step); only the
@@ -87,15 +88,22 @@ systemctl --user list-units --type=service --state=running | grep -i -E "campaig
 nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv
 df -h .
 ls examples/campaigns/ensemble_fix_ablation.yaml
-# the new stack must be installed (first-machine bundle, Part 2: 0014-0016 and 0037):
+# the new stack must be installed (patches 0014-0016); the shorter ruler (0037) is NOT needed:
 grep -c "synthetic_rotation_control" examples/run_campaign.py      # > 0
+grep -c "synthetic_orientation_monitor" examples/run_campaign.py   # > 0
+grep -c "converge_mode" examples/run_campaign.py                   # > 0
 grep -c "utd_ratio" examples/run_campaign.py                       # > 0
-grep -c "select_newest" examples/eval_ruler.py                      # > 0
-ls examples/ruler_select.py
+git status --short examples/ruler_select.py                         # see below
 ```
 
 - Nothing may be running. Free disk: at least 200 GB (96 runs at about 1.5 GB with 12 checkpoints).
-- If any grep prints 0 or the file is missing, the new stack is not installed: stop and tell the user.
+- If any grep prints 0, the new stack is not installed: stop and tell the user.
+- `select_newest` in `examples/eval_ruler.py` is NOT required (that is the shorter ruler, not used here).
+- If `examples/ruler_select.py` shows `??` (copied by hand, not from a patch), move it out of the repo:
+  `mv examples/ruler_select.py ~/ruler_select.py.handcopied`. This code does not use it, and a later `git apply` of
+  patch 0037 would fail on it. Report that you moved it.
+- This machine's code may differ from the copy the expected output below was checked on. What matters is that the
+  dry-run flags match exactly; if they do not, stop and report the difference.
 
 **Orientation limits:** if this machine has its own stage-0 result, use it:
 
@@ -121,7 +129,8 @@ grep "DRY actor" /tmp/ens_abl_dry.txt | grep -m1 "checkpoints/ens_exp00_s0 " \
 head -30 /tmp/ens_abl_dry.txt | grep -E "orientation box|convergence"
 ```
 
-The method lines must be exactly this (verified on a copy of this machine's code after the bundle, 2026-11-06):
+The method lines must be exactly this (verified on a copy of this machine's code with the bundle up to patch 0021,
+without 0037, 2026-11-06):
 
 ```
 --aqi_mode logged --nodemo_pretrain --demo_pretrain_steps 0 --critic_ensemble_size 10 --critic_subsample_size 2  <- ens
@@ -141,7 +150,8 @@ and the new-stack line:
 ```
 
 plus the header lines "orientation box roll +/-0.1, pitch +/-0.1, yaw +/-0.4 rad" and "mini-eval SR >= 0.6 in 2
-evaluations in a row, every 2000 env steps". (Spacing may differ by a blank; the flags and values may not.) No
+evaluations in a row, every 2000 env steps". The ruler commands show `--select best_window --select_window_k 3` and no
+`--select_newest`. (Spacing may differ by a blank; the flags and values may not.) No
 `--learning_rate` means the built-in 3e-4; both HIL-SERL arms get no critic flags.
 
 W&B: check `./.venv/bin/wandb status`. If it is not logged in, start with `--wandb offline` instead of `online` and tell
