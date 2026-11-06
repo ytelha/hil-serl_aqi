@@ -1,0 +1,152 @@
+# =====================================================================
+# ensemble_fix_ablation.yaml — which part of the ensemble fix mattered?
+# (first training machine, original platform; 2026-11-06)
+#
+# The first ensemble extension (RQ3 `logged`: K = 10 critics, target = min of
+# M = 2 random critics, no warm start, learning rate 3e-4) lost to plain
+# HIL-SERL. The fix (RQ4 `logged`) changed FOUR things at once:
+#   1. de-pessimisation  M 2 -> 1   (one random critic per target, no min)
+#   2. ensemble size     K 10 -> 8
+#   3. warm start        5 000 learner steps on the demonstrations first
+#   4. learning rate     3e-4 -> 1.5e-4
+# Unchanged in every ensemble arm: per-member targets (each critic draws its
+# own target critics) and bootstrap masks p = 0.8 -- both were already on in
+# the first version (docs/thesis/rq4_ensemble_convergence_and_qa_log.md 2.3,
+# 2.4), so they are not part of the fix.
+#
+# This campaign tests each part on its own, on top of the first version, plus
+# the full fix and two plain HIL-SERL references:
+#
+#   arm          mode     K   M  warm start  LR       question
+#   ens          logged   10  2  -           3e-4     the first version (base)
+#   ens-m1       logged   10  1  -           3e-4     de-pessimisation alone
+#   ens-fix      logged    8  1  5000        1.5e-4   all four (= the fixed version)
+#   hilserl      hilserl   2  -  -           3e-4     plain HIL-SERL
+#   ens-wu       logged   10  2  5000        3e-4     warm start alone
+#   ens-wu-lr    logged   10  2  5000        1.5e-4   warm start + halved LR
+#   ens-k8       logged    8  2  -           3e-4     fewer critics alone
+#   hilserl-wu   hilserl   2  -  5000        3e-4     warm start for HIL-SERL
+#
+# Cells run METHOD BY METHOD in the order of `methods:` (run_campaign
+# enumerate_cells), so the most informative arms come first: if the campaign
+# must stop early, the finished arms already answer the main question
+# (base, de-pessimisation, full fix, HIL-SERL).
+#
+# Everything else is copied from rq4_ensemble_convergence.yaml (same roster
+# seed, 3 operators per tier, 2 seeds, 6 demonstrations, 40 k-step cap,
+# convergence rule, ruler), so the numbers are comparable with RQ4. All arms are
+# trained fresh in this one campaign (same code, same machine, same weeks):
+# no cells are copied from RQ3/RQ4, whose code predates patches 0001-0010.
+#
+# COST: 8 arms x 18 cells = 144 cells. On this machine a cell took about
+# 1.5-1.7 h (RQ4: 36 cells in about 2.5 days), one cell at a time on the 8 GB
+# GPU -> about 9-10 days. The first four arms (72 cells) take about 5 days.
+#
+# Read-out (report/dependency.md, one row per arm), two reports:
+#   --baseline hilserl  : every arm against plain HIL-SERL
+#   --baseline ens      : every ensemble change against the first version
+# Steps to convergence and converged runs (report "convergence") matter as
+# much as ruler success: the first version's failure was hovering, i.e.
+# non-convergence (7 of 12 runs).
+#
+# Launch (OOM-protected, as for RQ3/RQ4):
+#   WANDB_RUN_GROUP=ensemble_fix_ablation \
+#   systemd-run --user --unit=ens_ablation --collect \
+#     -p ManagedOOMPreference=avoid -p WorkingDirectory=<repo> \
+#     -- bash -c './.venv/bin/python examples/run_campaign.py \
+#          --config examples/campaigns/ensemble_fix_ablation.yaml \
+#          --campaign runs/ensemble_fix_ablation \
+#          --converge_require_autonomous --wandb online \
+#          >> runs/ensemble_fix_ablation.out 2>&1'
+# =====================================================================
+
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+
+operators:
+  expert: 3
+  intermediate: 3
+  novice: 3
+  jitter: 0.15
+  sample_seed: 0                   # same roster as RQ4
+
+demos:
+  per_operator: 6
+  filtered: true
+  max_attempts: 300
+
+methods:                           # run order = report order
+  - ens
+  - ens-m1
+  - ens-fix
+  - hilserl
+  - ens-wu
+  - ens-wu-lr
+  - ens-k8
+  - hilserl-wu
+
+arms:
+  ens:        {mode: logged, critic_ensemble_size: 10, critic_subsample_size: 2}
+  ens-m1:     {mode: logged, critic_ensemble_size: 10, critic_subsample_size: 1}
+  ens-fix:    {mode: logged, critic_ensemble_size: 8, critic_subsample_size: 1,
+               demo_pretrain: true, demo_pretrain_steps: 5000, learning_rate: 0.00015}
+  ens-wu:     {mode: logged, critic_ensemble_size: 10, critic_subsample_size: 2,
+               demo_pretrain: true, demo_pretrain_steps: 5000}
+  ens-wu-lr:  {mode: logged, critic_ensemble_size: 10, critic_subsample_size: 2,
+               demo_pretrain: true, demo_pretrain_steps: 5000, learning_rate: 0.00015}
+  ens-k8:     {mode: logged, critic_ensemble_size: 8, critic_subsample_size: 2}
+  hilserl-wu: {mode: hilserl, demo_pretrain: true, demo_pretrain_steps: 5000}
+
+replicates:
+  seeds: 2
+  seed_base: 0
+
+budget:
+  mode: steps
+  steps_cap: 40000
+  minutes_per_cell: 300            # wall-clock safety cap only (anti-hang)
+  converge_success: 0.9            # convergence rule identical to RQ3/RQ4
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0                 # DISK: no replay dumps
+  checkpoint_keep: 25
+  demo_pretrain: false             # campaign-wide: no warm start; arms opt in
+  demo_pretrain_steps: 0
+  demo_pretrain_batch_size: 0      # 0 = config batch size (256)
+  learning_rate: 0                 # 0 = built-in 3e-4; arms override
+
+aqi:
+  synthetic_intervention_mode: signal
+  per_member_targets: true         # as RQ3/RQ4 (default; inert for hilserl)
+
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+
+logging:
+  wandb: "off"                     # overridden to online on the CLI
+
+analysis:
+  baseline: hilserl                # second report with --baseline ens
+  plots: true
