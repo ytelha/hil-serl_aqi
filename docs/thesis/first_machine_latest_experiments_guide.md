@@ -13,6 +13,8 @@ most uncertain steps beats the operator's own judgement (87 against 74 %) with l
 *perfect* score from the simulator then collapsed the novices, but that campaign also switched on a filter that threw away
 almost every novice correction, and an imitation loss. Which of the three did it is what the novice test decides.
 
+> **Update 2026-11-14: the novice test ran** (first machine, 4–5 Nov). The imitation loss collapses the novice (13 % alone, 8 % with the score and no filters); the score used only as replay priority does no harm (67.9 against 65.4 %). So the claim is withdrawn: grading did not amplify dependence, imitating novice corrections did. See [first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md).
+
 ## What ran
 
 | when | experiment (config) | runs | question | answer |
@@ -20,7 +22,7 @@ almost every novice correction, and an imitation loss. Which of the three did it
 | to 21 Oct | how often to ask (`active_ratematch`) | 108 | does asking more buy more success, and does it beat the operator deciding? | yes, and yes at the high rate (p 0.021); vs plain HIL-SERL +8, not significant |
 | to 29 Oct | perfect grading score (`aqi_oracle_quality`) | 90 | does grading corrections with a perfect score help weak operators? | novices collapse, but three things changed at once |
 | to 31 Oct | more demonstrations (`quality_starvation_probe`) | 18 | do 20 demonstrations instead of 6 rescue the novice? | no |
-| next | novice test (`quality_novice_ablation`) | 24 | which of score, filter and imitation collapses the novice? | ready, not run |
+| 4–5 Nov | novice test (`quality_novice_ablation`) | 24 + 12 copied | which of score, filter and imitation collapses the novice? | the imitation loss |
 
 All on the original platform (the operator moves the peg but cannot turn it), cuboid peg, the fixed 8-critic ensemble,
 3 operators per tier × 2 seeds, the same 9 operators in all four.
@@ -168,7 +170,9 @@ these arms. **Every earlier grading campaign had both switched off**; this one w
 
 **Why that matters for novices.** In the asking-rate campaign (same operators, same platform), 97 % of a novice's
 takeovers fall in failed episodes, against 67 % of an expert's. So the filter leaves a novice run with about **7**
-takeovers in its demonstration half, an expert run with about **200**.
+takeovers in its demonstration half, an expert run with about **200**. Counted later in the perfect-score runs' own
+logs (14 Nov): 47 % of an expert's takeovers lay in failed episodes there, and the filter left about 114 per expert
+run, 126 per intermediate run and 7 per novice run.
 
 **Results** (from the machine's log; its raw data has not come back):
 

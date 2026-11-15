@@ -44,8 +44,11 @@ Campaign IDs are the thesis's (`tab:programme`); the logs use older names (`rq2_
   4. **Asking works.** The uncertainty gate matches the operator's own monitor at one sixth of the help (71 vs 78 %,
      p 0.58; 9 vs 54 % help) and, asking in the 55 % most uncertain steps, beats it (87 vs 74 %, p 0.021). Against plain
      HIL-SERL it gains 8 points, not significant (p 0.18).
-- **What is not settled:** the oracle campaign's "even a perfect score amplifies dependence" (its arms also changed
-  hard filters and imitation; the novice test decides); whether the gate's timing beats random requests (+5 to +15
+- **Settled on 14 Nov:** the oracle campaign's "even a perfect score amplifies dependence" is withdrawn: the novice
+  test (4–5 Nov) shows that the imitation loss collapses the novice, not the score
+  ([../first_machine_novice_test_and_ladder.md](../first_machine_novice_test_and_ladder.md)). The ladder (5–6 Nov)
+  shows that rotation control and one update per step remove the slow start.
+- **What is not settled:** whether the gate's timing beats random requests (+5 to +15
   points, never significant).
 - **What the second machine changed:** this machine's operator could rarely rescue a twisted cuboid (7–13 %). The paired
   comparisons stay fair, but the slow start and possibly part of the dependency come from it. The next job here is to

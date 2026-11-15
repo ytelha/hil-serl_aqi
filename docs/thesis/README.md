@@ -4,6 +4,15 @@ Everything you need to **run the study, analyse it, and write it up**, in one pl
 If you feel lost, read this page top to bottom; it links to the exact doc, command,
 and output for each piece.
 
+> **Where the data is:** every dataset received for the thesis is stored in `results/` at the repo root
+> (git-ignored; back it up). **[data_inventory.md](data_inventory.md)** maps each dataset to its source, its folder,
+> the slide or claim it supports, and the script that computed the numbers.
+
+> **Latest runs (Nov 2026), both machines in one file:** **[latest_runs_both_machines.md](latest_runs_both_machines.md)**.
+> It covers the first machine's ensemble-fix ablation ([details](ensemble_fix_ablation_results.md)) and the second
+> machine's comprehensive study ([details](comprehensive_study_results.md)): what they show together, what it means
+> for the thesis story, and one plan for going further.
+
 ## The training machines — start here
 
 | where it ran | read first | details |
@@ -12,7 +21,9 @@ and output for each piece.
 | first training machine, full history (4 Sep – 31 Oct 2026, 459 cells) | [first_machine_full_history/](first_machine_full_history/) | the synthesis of every campaign and the explained logs of the September campaigns |
 | **second training machine** (24–29 Oct 2026, 58 cells, new stack: rotation control, inconsistent operator) | **[second_machine_latest_experiments_guide.md](second_machine_latest_experiments_guide.md)**, then [second_machine_synthesis.md](second_machine_synthesis.md) | [new_stack_operator_results_and_qa_log.md](new_stack_operator_results_and_qa_log.md), [inconsistent_operator_results_and_qa_log.md](inconsistent_operator_results_and_qa_log.md) |
 | **RWTH cluster** (method test 26 Sep; counterfactual study C9, 29 Sep; small E2HiL campaign 5 Nov: failed technically, rendering stall, no result) | [../counterfactual_score_study.md](../counterfactual_score_study.md) §5, [../e2hil_inconsistent_operator.md](../e2hil_inconsistent_operator.md) | `cluster/claix/README.md`, `handoff/FINDINGS_cluster_method_test.md` |
-| **next: the comprehensive study** (second machine, from 5 Nov 2026: number of critics, asking rate, quality scores against HIL-SERL / E2HiL / HiRIL with a 20 % careless expert, no novice) | **[../comprehensive_study.md](../comprehensive_study.md)** | configs `examples/campaigns/study/`, driver `synthetic_suite.py --suite study`, setup `tools/setup_workstation.sh` |
+| **the comprehensive study — results** (second machine, 5–9 Nov 2026, 168 runs: number of critics, asking rate, quality scores against HIL-SERL / E2HiL / HiRIL with a 20 % careless expert, no novice) | **[comprehensive_study_results.md](comprehensive_study_results.md)** (everything at the ceiling; asking not replicated; behavioural score valid at 0.76; HiRIL requests too short to answer; what to do next) | plan [../comprehensive_study.md](../comprehensive_study.md); data `presentation_bundle/results/study/`; configs `examples/campaigns/study/` |
+| **first machine, novice test and ladder — results** (1–6 Nov 2026, found in the full run folder on 14 Nov) | **[first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md)** (the imitation loss, not the score, collapses the novice; rotation control and one update per step remove the slow start) | raw runs `results/first_machine/campaigns/`; what was kept and why: its `README.md` |
+| **finalising the experiments — the short plan** (15 Nov 2026: what the runs already answer about asking and grading; one 84-run 2 × 2 campaign with AQI, a perfect filter and random requests; novice v2; harder task only if a pilot needs it) | **[final_experiments_plan.md](final_experiments_plan.md)** | about a week from go to results |
 | presenting both machines | **[presenting_the_training_machines.md](presenting_the_training_machines.md)** | slide map, key numbers, likely questions |
 | **both machines in one file, to show** | **[presentation_summary_both_machines.md](presentation_summary_both_machines.md)** | mechanisms with formulas and worked examples, results, what is against HIL-SERL, the weak novice, questions and glossary |
 
@@ -71,8 +82,9 @@ Pseudocode for the algorithms chapter: **[../../tex/aqi_hil_serl_algorithms.tex]
 > operator-dependence on top of σ_Q timing? Its arms raised the ICC (0.18 → 0.93) and
 > collapsed the novice tier (65 % → 9–36 %). The log calls this a *paradigm* problem; that
 > does **not** follow yet: the quality arms changed three things at once (the oracle score,
-> the hard `outcome_filter`, a BC loss of 0.1). The novice test (`../novice_ablation.md`,
-> 24 cells, not run) separates them.
+> the hard `outcome_filter`, a BC loss of 0.1). The novice test (`../novice_ablation.md`)
+> ran on 4–5 Nov and separates them: the imitation loss is the cause
+> ([first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md)).
 
 ## Start here (the shortest path to a result)
 

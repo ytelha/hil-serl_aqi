@@ -28,8 +28,11 @@ report or raw data of them has come back (section 10).
 - **That filter alone removes almost all novice corrections.** On the asking-rate campaign (same operators, same
   platform), 97 % of a novice's takeovers under its own monitor fall in failed episodes, against 67 % for experts
   (measured here). With the filter, a novice run keeps about 7 takeovers in its demonstration half; an expert run about 200.
-- **The novice test (24 cells, ready, not run) separates the three.** Until it reads out, the thesis does not say "even a
-  perfect score amplifies dependence".
+  **Counted in this campaign's own logs (14 Nov):** in the perfect-score arm 47 % of an expert's takeovers, 62 % of
+  an intermediate's and 97 % of a novice's lay in failed episodes; the filter left about 114, 126 and 7 per run.
+- **The novice test separates the three.** It ran on 4–5 Nov: the imitation loss is the cause, not the score
+  (see [first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md)). The thesis does not say
+  "even a perfect score amplifies dependence".
 
 ## 1. How a quality score enters training
 

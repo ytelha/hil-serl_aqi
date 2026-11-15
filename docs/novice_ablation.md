@@ -1,5 +1,11 @@
 # Novice test: which part of the quality arms collapses the novice?
 
+> **Result (ran 4–5 Nov 2026 on the first machine; read 14 Nov).** Reading `bc`: the imitation loss causes the
+> collapse. Imitation only 13.0 %, score + imitation without filters 8.0 % (both 0 / 6 pairs, p 0.031), score as
+> replay priority only 67.9 %, filters only 80.0 % (5 runs), ensemble extended 65.4 %, the original quality-oracle
+> arm 31.5 %. Details and caveats: [thesis/first_machine_novice_test_and_ladder.md](thesis/first_machine_novice_test_and_ladder.md);
+> raw runs: `results/first_machine/campaigns/quality_novice_ablation/`.
+
 **The question.** The first training machine's oracle campaign
 ([aqi_oracle_quality_results_and_qa_log.md](thesis/aqi_oracle_quality_results_and_qa_log.md))
 found this on the old stack:

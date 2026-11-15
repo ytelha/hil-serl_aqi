@@ -112,6 +112,26 @@ The workflow for every change:
 
 ## The thesis defence
 
+> **Update 2026-11-10.** The story below is from September.
+> - **Results now in one line each** (details in [part 07](07_whats_new_since_september.md) §2 and §4, the scores in
+>   [part 06](06_quality_scores.md)):
+>   - **The teacher matters:** on the old stack, with novices and policy-oracle demonstrations. With experts and
+>     intermediates on the new stack there is no teacher effect.
+>   - **Ensembles learn as well as HIL-SERL, and faster:** any number of critics. On the new stack none of the four
+>     changes of the fix is needed.
+>   - **Asking:** asking more often beat the operator's own judgement and HIL-SERL within one campaign on the old
+>     stack. On the new stack it gives the same success with more help, and random timing does as well.
+>   - **Grading:** watching the takeover detects careless corrections (behavioural score 0.76, valid); the critics'
+>     comparison fails. No training gain is visible yet, because the task is at the ceiling.
+> - **The thesis results chapter** has two halves: the old stack and the new stack. Plus an honest discussion of why
+>   the new stack made the task easy, and what a harder task with a speed-and-effort measure would add.
+> - **The hardware stages are now two:** simulation, then the real UR5 cell. There is no SO-101 stage.
+> - **Add to the discussion:**
+>   - run-to-run noise on the old stack (F3: the same setup scored 95 / 91 / 75 %);
+>   - the too-weak synthetic novice;
+>   - the ceiling;
+>   - baselines that must be able to get help (HiRIL).
+
 ### The story (a suggested chapter arc)
 
 1. **Problem.** In human-in-the-loop RL, the trained policy depends on who
@@ -134,8 +154,7 @@ The workflow for every change:
    - normalisation fade-out (F6);
    - updates per env step (F3);
    - the roster bug (F1) and how it was found.
-7. **Conclusion and next steps:** the hardware stages (SO-101 human study,
-   UR5e).
+7. **Conclusion and next steps:** better results in simulation first, then the real UR5 cell with human operators.
 
 **Negative results, explained, are results.** An examiner learns more from
 "the counterfactual advantage is non-positive almost by construction,
@@ -171,8 +190,17 @@ thesis.
 | What is timing leakage, and how did you control it? | `quality_signal_audit.md`; F4, F7; time-stratified and ground-truth labels |
 | Is the comparison fair across methods? | frozen ruler, same demos and operators (the F1 fix, patch 0009 recipe), updates per env step (F3) |
 | Why is plain HIL-SERL so strong here, and what's left to improve? | RQ4 results; the novice tier; human effort as a second axis |
-| Would this transfer to a real robot and real people? | limits of the sim and the synthetic operator; the SO-101/UR5e stages |
-| What would you do with six more months? | the experiment plans in `handoff/`, ordered by priority |
+| Would this transfer to a real robot and real people? | limits of the sim and the synthetic operator; the real UR5 stage |
+| What would you do with six more months? | the experiment plans in `handoff/`, ordered by priority; the comprehensive study and the ensemble-fix ablation (part 07) |
+| Which quality score works, and why does the critics' comparison fail? | part 06 §5–6 and §9 |
+| Isn't takeover length trivial? | part 06 §5.2 and §7: partly built into the operator model; without length, 0.63 |
+| Why does the same method score 95 % in one campaign and 75 % in another? | part 07 §3 (F3, late collapses, budget); deck backup "the same setup in three campaigns" |
+| Why leave the novice out, and isn't that cherry-picking? | part 07 §3: the model's novice is too weak (2–9 % of requests answered). The decision was taken after the runs, and the comprehensive study then ran without novices from the start |
+| Why did the asking result not replicate on the new stack? | part 07 §2.4 and §6. The task is at the ceiling, and the operator already helps efficiently (38 % share). On the old stack it couldn't turn the peg, and the references were weak in that campaign |
+| Which part of the ensemble fix mattered? | `thesis/ensemble_fix_ablation_results.md`: on the new stack none is needed. The warm start speeds up ensembles. Why the old stack needed them is open (not compute) |
+| Everything reaches 95 % — so what does the thesis show? | part 07 §3, lesson 4. The methods now differ in learning speed and human effort; the next step is a harder task and a measure at fixed budgets |
+| Why did HiRIL lose? | `thesis/comprehensive_study_results.md` §5.3. Its requests last 2.7 steps and only 7.5 % were answered. Not a fair test yet |
+| Where does this number come from? | `thesis/data_inventory.md` → `results/analysis/` → the run folder in `results/` |
 
 ### Practise like this
 

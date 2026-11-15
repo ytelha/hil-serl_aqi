@@ -5,6 +5,11 @@ what was measured on the **second training machine** without or before the quali
 question: the operator alone in the simulator, the orientation tolerance, the smoke test,
 how fast training runs on the new stack, and the engineering record.
 
+> **Update 2026-11-14: the ladder ran on the first machine** (5–6 Nov, HIL-SERL, 3 runs per setting). Where this log
+> says "the ladder decides": rotation control cut the first unaided success from 18 275 to 7 118 steps, one update
+> per step cut it further to 4 464; the box and the stopping rule did not speed learning; the channel is unclear.
+> See [first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md).
+
 - Machine: `LSPEM499`, one RTX 5090 (32 GB, driver 610.88), 24 CPU threads, Linux under WSL2, repo at commit `d191f9d`
   (patches 0001–0019), Python 3.12.3, JAX 0.11.0, MuJoCo 3.10.0: the first machine's exact
   package lock.

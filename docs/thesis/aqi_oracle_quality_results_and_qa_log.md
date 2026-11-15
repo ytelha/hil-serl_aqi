@@ -14,6 +14,8 @@ truth oracle** score — reduce operator-dependence on top of *when to ask*?
 > filters (`outcome_filter` drops every takeover from a failed episode, whatever the oracle says) and a BC loss of 0.1.
 > So "a perfect score amplifies dependence" is not yet established. See [../novice_ablation.md](../novice_ablation.md)
 > for the test that separates them.
+>
+> **Update 2026-11-14: the novice test ran** (first machine, 4–5 Nov). The imitation loss collapses the novice (13 % alone, 8 % with the score and no filters); the score used only as replay priority does no harm (67.9 against 65.4 %). So the claim is withdrawn: grading did not amplify dependence, imitating novice corrections did. See [first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md).
 
 ---
 

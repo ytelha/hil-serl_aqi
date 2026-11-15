@@ -28,7 +28,7 @@ the text). On GitHub (`ytelha/hil-serl_aqi`) they render directly. The links bel
 |---|---|---|
 | Can the .md files be summarised into one file for the presentation, both machines? | Yes, with the parts you chose: the story, asking, grading, new stack, careless operator, closing questions, glossary | [presentation_summary_both_machines.md](presentation_summary_both_machines.md) |
 | Symbols, worked examples, why decisions were made, which arms are compared with HIL-SERL | Explained in each section; the glossary at the end | [summary §10](presentation_summary_both_machines.md#10-glossary) |
-| Is the novice too weak? | Yes: it answers 2–9 of 100 requests, and 97 % of its takeovers fall in failed episodes; the next study leaves it out | [summary §7](presentation_summary_both_machines.md#7-the-synthetic-novice-is-too-weak); Siemens deck backup page 48 |
+| Is the novice too weak? | Yes: it answers 2–9 of 100 requests, and 97 % of its takeovers fall in failed episodes; the next study leaves it out | [summary §7](presentation_summary_both_machines.md#7-the-synthetic-novice-is-too-weak); Siemens deck backup page 52 |
 
 ## The cluster
 
@@ -50,11 +50,11 @@ the text). On GitHub (`ytelha/hil-serl_aqi`) they render directly. The links bel
 
 | question | short answer | where |
 |---|---|---|
-| How does one training iteration work? | The actor observes, acts (or the operator takes over), steps and stores; the learner samples 128 + 128 and makes 2 updates per learner step | [training_iteration_and_statistics.md §2–4](training_iteration_and_statistics.md#2-one-environment-step-on-the-actor); Siemens deck page 60 |
+| How does one training iteration work? | The actor observes, acts (or the operator takes over), steps and stores; the learner samples 128 + 128 and makes 2 updates per learner step | [training_iteration_and_statistics.md §2–4](training_iteration_and_statistics.md#2-one-environment-step-on-the-actor); Siemens deck page 64 |
 | How is the data stored and sampled; what are the buffers? | Online buffer (everything) and intervention buffer (demonstrations + takeovers; in the grading arms only kept takeovers, with a priority); uniform sampling, half from each | [§3](training_iteration_and_statistics.md#3-the-buffers-where-a-transition-goes) |
-| How are both networks updated? | Critics towards y = r + 0.97 · Q̄(s′, a′); actor towards the critics' mean minus α · log π; temperature tuned; target critics follow at 0.5 % | [§4](training_iteration_and_statistics.md#4-one-learner-step); Siemens deck page 62 |
-| How much data does each ensemble critic see compared with plain HIL-SERL? | 410 against 512 transitions per environment step (its own 80 %), plus about 2 M in the warm start; 3.7 M + 2 M against 4.6 M after 9 000 steps | [§5](training_iteration_and_statistics.md#5-the-pace-and-how-much-data-each-critic-sees); Siemens deck page 61 |
-| Simple worked examples of the statistical tests | ICC 0.77, sign test p = 0.021, AUROC 0.67, standard error (the permutation test is in the doc but off the slides for now) | [§6](training_iteration_and_statistics.md#6-the-statistical-tests-with-worked-examples); Siemens page 15 and the notes of page 65 |
+| How are both networks updated? | Critics towards y = r + 0.97 · Q̄(s′, a′); actor towards the critics' mean minus α · log π; temperature tuned; target critics follow at 0.5 % | [§4](training_iteration_and_statistics.md#4-one-learner-step); Siemens deck page 66 |
+| How much data does each ensemble critic see compared with plain HIL-SERL? | 410 against 512 transitions per environment step (its own 80 %), plus about 2 M in the warm start; 3.7 M + 2 M against 4.6 M after 9 000 steps | [§5](training_iteration_and_statistics.md#5-the-pace-and-how-much-data-each-critic-sees); Siemens deck page 65 |
+| Simple worked examples of the statistical tests | ICC 0.77, sign test p = 0.021, AUROC 0.67, standard error (the permutation test is in the doc but off the slides for now) | [§6](training_iteration_and_statistics.md#6-the-statistical-tests-with-worked-examples); Siemens page 16 and the notes of page 69 |
 
 ## Earlier questions (already in the summary)
 

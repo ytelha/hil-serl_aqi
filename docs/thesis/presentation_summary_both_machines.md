@@ -469,7 +469,7 @@ real people, and it may change in the future.
 |---|---|
 | asking | answers 2–9 of 100 ten-step requests: its attention needs until step 14, the request ends at 10. Takeovers per run fall from 206 to 85; its share of the steps from 47 to 13 % |
 | the old platform | rescues a twisted peg in 7 % of the tries (experts 13 %) |
-| the perfect-score campaign | 97 % of its takeovers fall in failed episodes (experts 67 %), so the outcome filter left about 7 novice takeovers per run, against about 200 for an expert |
+| the perfect-score campaign | 97 % of its takeovers fall in failed episodes (experts 47 % in that campaign's own logs), so the outcome filter left about 7 novice takeovers per run, against about 110 for an expert |
 | the careless operator | careless execution uses novice values, so a careless novice barely changes (episode success 23 against 24 %); scores cannot test novices (AUROC 0.52) |
 
 **Consequences:** part of the vanished teacher effect under asking is that novice corrections drop out of the data;

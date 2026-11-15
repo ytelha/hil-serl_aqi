@@ -2,9 +2,9 @@
 
 How the learner works, with the numbers in the code, and how the numbers on the result slides are tested, with
 simple worked examples. Written on 5 November 2026 for the mid-term presentation. The slides are the backups of the
-Siemens deck (`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`): page 60 (one training iteration), 61
-(what each critic sees), 62 (the learner in formulas), 65 (the statistics, ICC and sign test); their speaker notes
-carry the same examples, and page 15 shows ICC and the sign test as a figure.
+Siemens deck (`presentation_bundle/output/AQI-HIL-SERL_Siemens_short.pptx`): page 64 (one training iteration), 63
+(what each critic sees), 64 (the learner in formulas), 67 (the statistics, ICC and sign test); their speaker notes
+carry the same examples, and page 16 shows ICC and the sign test as a figure.
 
 **How to read it.** Open it in VS Code and press `Ctrl+Shift+V` for the rendered preview (formulas show as code, tables
 as tables), or open it on GitHub (`docs/thesis/` in `ytelha/hil-serl_aqi`). Sections 1–5 are the learner, section 6 is

@@ -140,6 +140,12 @@ HIL-SERL splits training into two processes, usually on one GPU:
 - The learner never touches the environment. It trains as fast as the GPU
   allows. That's why updates per env step differ by method and GPU
   (finding F3).
+- **Update 2026-11-10:** the new stack can lock the two processes together.
+  - With `--utd_ratio 1` the learner makes exactly one update per environment step, and the actor waits for it
+    (`serl_launcher/utils/update_ratio.py`, through `learner_progress.json`); the env then runs without real-time
+    pacing.
+  - With it, the first and the second machine give the same results, which they didn't before
+    ([part 07](07_whats_new_since_september.md) §3).
 - They talk over TCP ports (`make_trainer_config`, per-job ports on the
   cluster via `AQI_TRAINER_PORT`). When the learner publishes new
   parameters, the actor's callback swaps them into its (immutable) agent:
@@ -198,3 +204,15 @@ The campaign folder layout (`runs/<name>/`: `operators/`, `demos/`,
 `README.md` and `manifest.json` saying what produced it. Learn to read
 them; that's how you trace any number in the thesis back to its run
 ([`architecture.md`](../architecture.md) §4).
+
+**Update 2026-11-10: where the results of *this* thesis are kept.** The campaigns ran on other machines; what came
+back is stored in `results/` at the repo root. It is git-ignored, so back it up yourself.
+- `_received/`: the originals, with checksums;
+- `first_machine/`, `second_machine/`, `cluster/`: the data, in the same campaign layout;
+- `analysis/`: the scripts behind the deck and the reports.
+
+[`thesis/data_inventory.md`](../thesis/data_inventory.md) maps every dataset to its folder, the slide or claim it
+supports, and the script that computed the number.
+
+**Exercise:** pick one number from the deck, find it in the inventory, open the script's output in
+`results/analysis/outputs/`, and follow it back to the run folder.

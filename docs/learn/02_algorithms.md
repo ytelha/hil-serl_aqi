@@ -143,6 +143,20 @@ Three choices decide whether σ_Q stays meaningful:
   contact" action.
 - On the cluster, σ_Q shrank ~90× in 3000 steps (finding F6).
 
+**Update 2026-11-10 (new stack, both machines; [part 07](07_whats_new_since_september.md) §2.4):**
+- **Experts and intermediates only,** and the old-stack loss above was smaller than it looks: 79 vs 92 %, 3 wins and 3
+  losses, p = 1.0. Its clearest symptom was slower convergence.
+- **The ensemble-fix ablation (96 runs):** the first version (K = 10, M = 2, no warm start) no longer fails on the new
+  stack: 95 vs 93.5 % for HIL-SERL. None of the four changes is needed.
+  - The warm start is the one change that makes ensembles faster (first unaided success earlier in all 12 pairs);
+    it slows plain HIL-SERL down.
+  - M = 1 (de-pessimisation) adds nothing; alone it slows the early phase. The fastest ensemble was K = 10, M = 2
+    with the warm start ([`thesis/ensemble_fix_ablation_results.md`](../thesis/ensemble_fix_ablation_results.md)).
+- **The comprehensive study:** K = 4, 8 and 16 all match HIL-SERL. Ensembles converge sooner and need slightly less
+  help.
+- **What removed the old problem is still open:** the operator, the update ratio, the stop rule or the budget. Not
+  compute: both K = 10 and HIL-SERL got 0.45 updates per step on the old stack.
+
 **Check yourself:** what is the shape of `forward_critic`'s output, and
 what does `.std(axis=0)` of it give you?
 
@@ -193,6 +207,19 @@ hysteresis and cool-down; hard force limits always request.
 The active plan (`handoff/EXPERIMENT_PLAN_active_learning.md`) is how to
 test it properly.
 
+**Update 2026-11-10: what the asking campaigns found** (uncertainty term only; experts and intermediates):
+- **The gate now uses a running quantile** (`query_target_rate`): the robot asks in the r % most uncertain of the last
+  2 000 steps. That sets the request rate directly.
+- **First machine, old stack:**
+  - asking about 1 step in 10 gave 75 % against 91 % for the operator deciding;
+  - asking in the 55 % most uncertain steps gave 94 %, against 75 % for the fixed ensemble and 81 % for HIL-SERL,
+    with the same help.
+- **Second machine, new stack:** asking in 40 / 55 / 70 % of the steps gave the same success as the operator deciding,
+  with more help (45–56 vs 38 %); random requests did as well.
+- So the old-stack gain did not replicate.
+- Details: [part 07](07_whats_new_since_september.md) §2,
+  [`thesis/latest_runs_both_machines.md`](../thesis/latest_runs_both_machines.md).
+
 **Check yourself:** why does a Welford (all-time) z-score of a signal that
 shrinks 90× end up near a constant?
 
@@ -205,15 +232,19 @@ shrinks 90× end up near a constant?
 
 The scores (`quality_score_mode`):
 
-| score | formula (short) | status in your results |
+| score | formula (short) | status in your results (updated 2026-11-08; experts and intermediates) |
 |---|---|---|
-| `counterfactual` | Â = mean Q(s, a_H) − mean Q(s, a_robot) | anti-predictive (AUROC 0.175, RQ4 §11); study pending |
-| `behavioral` | z(ΔV) − z(t_int) − z(F_peak) | predicts outcome (0.78) but t_int may be timing |
-| `hindsight` | n-step advantage on visited states over [onset, handback + K] | ≈ takeover length before any reward (F4) |
-| `progress` | change of insertion depth in the same window | to be tested (C7b) |
-| `outcome` | ±1 by episode success (a control) | to be tested |
-| `uniform` | 0 (no information: a control) | to be tested (Q2/Q3a) |
-| consistency | c = 1/(1 + (σβ/σ_ref)²): BC weight only | ran on the cluster; to be tested |
+| `counterfactual` | Â = mean Q(s, a_H) − mean Q(s, a_robot) | inverted against success (AUROC 0.15); at chance against the careless label (0.47–0.48); better-grounded versions also fail (cluster study); in the ablation inverted only when the critics are optimistic |
+| `behavioral` | z(ΔV) − z(t_int) − z(F_peak) | best online score against the careless label: 0.70 within a run (40 % careless), **0.76, valid** (20 % careless expert, comprehensive study); no training gain at the ceiling |
+| `hindsight` | n-step advantage on visited states over [onset, handback + K] | 0.65 within a run (40 % careless), 0.74 (20 % careless expert); early in training ≈ takeover length (F4) |
+| `progress` | change of insertion depth in the same window | 0.51: chance |
+| `outcome` | ±1 by episode success (a control) | 0.63 pooled, 0.56 within a run |
+| `oracle` | simulator truth: trouble removed − jam + ½ outcome (a ceiling) | first machine: 85.8 → 94.1 % (operator decides), but filters and imitation changed with it; for novices the imitation loss, not the score, caused the collapse (novice test) |
+| `uniform` | 0 (no information: a control) | not run on its own |
+| consistency | c = 1/(1 + (σβ/σ_ref)²): BC weight only | ran on the cluster (see `handoff/FINDINGS_cluster_method_test.md`) |
+
+**All of these in depth, with worked examples: [part 06](06_quality_scores.md).** The discard filters (drop the
+lowest-scored 40 % after a warm-up) and how the careless operator tests a score are there too.
 
 **Code:**
 - `aqi/quality.py`: `QualityScorer`, `SEGMENT_FILTERS`,
@@ -311,6 +342,18 @@ Read [`methods.md`](../methods.md) §1 and
 **Your results:** finding F1 was a real bug here. The jitter looped over a
 Python `set`, so every process drew a different operator. Fixed in patch
 0007.
+
+**New since October** (details in [part 07](07_whats_new_since_september.md) §1):
+- **rotation control:** the operator also turns the peg. Twisted-cuboid rescue rose from 10–13 % to 100 %.
+- **twist channel** in the monitor.
+- **sometimes-careless operator:** a hidden careful / careless state per takeover, the ground truth of part 06.
+- **OR arm, held requests and smooth hand-over** for the asking modes.
+- **The synthetic novice turned out too weak:**
+  - it answers 2–9 of 100 ten-step requests;
+  - 97 % of its takeovers lie in failed episodes;
+  - its careless state hardly differs from its normal one.
+
+  So results are now reported for experts and intermediates.
 
 ## 9. Measuring operator dependency (the statistics)
 

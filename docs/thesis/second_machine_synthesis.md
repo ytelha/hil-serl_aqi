@@ -45,7 +45,9 @@ with the machine's own reports. Checked again on 2026-11-03 against the document
 In all 58 cells and 85.1 hours: 57 on the cuboid and 1 smoke cell on the cylinder. All on the **new stack**: rotation control, orientation box, orientation channel,
 mini-eval convergence, fixed update ratio. The inconsistent operator is on in the last four.
 
-**Not run:** the ladder (`L0`–`L5`, `X_*`) that would attribute the stack's effect; the six-arm Q2 and Q3
+**Not run here:** the ladder (`L0`–`L5`, `X_*`) that would attribute the stack's effect (it ran on the first
+machine on 5–6 Nov: rotation control first, one update per step second; see
+[first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md)); the six-arm Q2 and Q3
 at scale; anything on the original platform (it failed the stage-0 rule); plain HIL-SERL on the cuboid.
 
 ## 2. How the run went: gates and decisions

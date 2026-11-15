@@ -746,7 +746,8 @@ This campaign also shows how much a filter on episode outcome would hit novices.
 
 `aqi_oracle_quality` on the first machine (old stack, consistent operator) concluded that even a perfect
 score amplifies operator dependence, because its novice falls from 65 to 32 %. The two results differ, and
-**the first machine's conclusion is not yet established**, because its quality arms changed three things
+**the first machine's conclusion did not hold** (the novice test of 4–5 Nov traced the collapse to the
+imitation loss: [first_machine_novice_test_and_ladder.md](first_machine_novice_test_and_ladder.md)), because its quality arms changed three things
 at once: the oracle score, the default hard filters (`outcome_filter` drops every takeover from a failed
 episode, whatever the oracle says) and a BC loss of 0.1. See [docs/novice_ablation.md](../novice_ablation.md).
 
