@@ -75,6 +75,19 @@ from serl_launcher.data.data_store import (
 from serl_launcher.aqi import AQIRuntime, MODES
 
 from experiments.mappings import CONFIG_MAPPING
+from ckpt_retention import prune_checkpoints
+
+
+def _save_run_checkpoint(state, step, overwrite=False):
+    """A periodic or final checkpoint of the run. With --checkpoint_keep_every the newest --checkpoint_keep plus every
+    --checkpoint_keep_every-th step (up to --checkpoint_keep_until) are kept (flax's own `keep` is set out of reach and
+    ckpt_retention prunes); otherwise flax's `keep` applies exactly as before."""
+    path = os.path.abspath(FLAGS.checkpoint_path)
+    every = int(FLAGS.checkpoint_keep_every or 0)
+    checkpoints.save_checkpoint(path, state, step=step, keep=(10 ** 9 if every > 0 else FLAGS.checkpoint_keep),
+                                overwrite=overwrite)
+    if every > 0:
+        prune_checkpoints(path, int(FLAGS.checkpoint_keep), every, int(FLAGS.checkpoint_keep_until or 0))
 
 FLAGS = flags.FLAGS
 
@@ -112,6 +125,15 @@ flags.DEFINE_integer("checkpoint_keep", 100,
                      "The default 100 keeps every 1000-step snapshot of a 50k "
                      "run (~10GB/cell); best_window eval only needs enough for "
                      "a stable window, so a smaller value saves disk.")
+flags.DEFINE_integer("checkpoint_keep_every", 0,
+                     "Also keep every checkpoint whose learner step is a multiple "
+                     "of this, up to --checkpoint_keep_until, besides the newest "
+                     "--checkpoint_keep (early checkpoints for success-at-a-budget "
+                     "curves; examples/ckpt_retention.py). 0 = off: flax's "
+                     "'keep' alone, as before.")
+flags.DEFINE_integer("checkpoint_keep_until", 0,
+                     "--checkpoint_keep_every: the last learner step it protects "
+                     "(0 = no limit).")
 flags.DEFINE_integer(
     "demo_pretrain_steps", 0,
     "LEARNER only: number of demo-only gradient steps to run before waiting "
@@ -1599,12 +1621,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
                 and config.checkpoint_period
                 and step % config.checkpoint_period == 0
             ):
-                checkpoints.save_checkpoint(
-                    os.path.abspath(FLAGS.checkpoint_path),
-                    agent.state,
-                    step=step,
-                    keep=FLAGS.checkpoint_keep,
-                )
+                _save_run_checkpoint(agent.state, step)
 
             step += 1
 
@@ -1614,13 +1631,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
             print_yellow("stopped during demo pretraining; checkpointing final state.")
             if FLAGS.checkpoint_path:
                 agent = jax.block_until_ready(agent)
-                checkpoints.save_checkpoint(
-                    os.path.abspath(FLAGS.checkpoint_path),
-                    agent.state,
-                    step=max(step, 0),
-                    keep=FLAGS.checkpoint_keep,
-                    overwrite=True,
-                )
+                _save_run_checkpoint(agent.state, max(step, 0), overwrite=True)
             return
 
     # The server is now accepting connections -- THIS is the moment to launch the
@@ -1748,9 +1759,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
             and config.checkpoint_period
             and step % config.checkpoint_period == 0
         ):
-            checkpoints.save_checkpoint(
-                os.path.abspath(FLAGS.checkpoint_path), agent.state, step=step, keep=FLAGS.checkpoint_keep
-            )
+            _save_run_checkpoint(agent.state, step)
 
         # graceful stop (STOP file / SIGINT / SIGTERM): write a final checkpoint
         # at the current step and exit cleanly. overwrite=True in case this exact
@@ -1759,10 +1768,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
             print_green(f"\ngraceful stop at step {step} -> writing final checkpoint")
             if FLAGS.checkpoint_path:
                 agent = jax.block_until_ready(agent)
-                checkpoints.save_checkpoint(
-                    os.path.abspath(FLAGS.checkpoint_path), agent.state,
-                    step=step, keep=FLAGS.checkpoint_keep, overwrite=True,
-                )
+                _save_run_checkpoint(agent.state, step, overwrite=True)
             if stop_file and os.path.exists(stop_file):
                 os.remove(stop_file)   # so the next run doesn't stop immediately
             print_green(f"final checkpoint saved at step {step}; learner exiting.")

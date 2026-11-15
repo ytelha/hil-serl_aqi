@@ -65,6 +65,27 @@ def mat_from_euler_xyz(e):
     return rz @ ry @ rx
 
 
+def safe_quat(quat, fallback):
+    """`quat` normalised if it is a finite, non-zero quaternion; else `fallback` (normalised the same way, or the
+    identity if that is invalid too). Returns (quat, used_fallback). Guards the env's desired orientation: a single
+    non-finite step used to leave a zero quaternion that crashed the next step ("Found zero norm quaternions")."""
+    for i, q in enumerate((quat, fallback)):
+        q = np.asarray(q, dtype=np.float64).reshape(-1)
+        if q.shape == (4,) and np.all(np.isfinite(q)):
+            n = float(np.linalg.norm(q))
+            if n > 1e-8:
+                return q / n, i > 0
+    return np.array([0.0, 0.0, 0.0, 1.0]), True
+
+
+def safe_action(action):
+    """`action` as float64 with non-finite entries set to 0 (no motion); returns (action, had_nonfinite)."""
+    a = np.asarray(action, dtype=np.float64)
+    if np.all(np.isfinite(a)):
+        return a, False
+    return np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0), True
+
+
 def rpy_deviation(quat, home_quat):
     """World-frame roll/pitch/yaw (rad) of `quat` relative to `home_quat`."""
     return euler_xyz(quat_to_mat(quat) @ quat_to_mat(home_quat).T)

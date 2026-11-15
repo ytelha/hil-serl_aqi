@@ -39,6 +39,13 @@ first. Its stage 0 runs the tests, the operator in each condition and the tolera
     python examples/synthetic_suite.py --suite study report
     python examples/synthetic_suite.py --suite study plots
 
+`--suite final` drives the final study (docs/final_study.md): asking x grading on the same operators and seeds
+(the ensemble, asking, grading, both = AQI), the perfect filter, random requests and HIL-SERL; every operator is
+careless in 40 % of its takeovers; experts, intermediates and a stronger novice (skill 0.3); held requests. Two main
+campaigns: F1_hard (3 demonstrations) first, then F2_standard (6). Unattended, results only in results/final/:
+
+    bash tools/run_final_unattended.sh          # everything, in the background; never pushes anything
+
 Every command except plan and export ends by refreshing results/<suite>/ (run also after each finished campaign):
 reports, plots, the machine check, stage 0 and every campaign's light files (ruler outcomes, training records,
 takeover logs, compacted logs) in the runs folder's layout, without checkpoints, demonstrations or per-step logs.
@@ -110,6 +117,17 @@ SUITES = {
                "tests/test_update_ratio.py", "tests/test_ruler_select.py", "tests/test_synthetic_suite.py",
                "tests/test_study_suite.py"],
         ref_arms=("hilserl", "ens-k8", "keepall")),
+    "final": dict(
+        configs=HERE / "campaigns" / "final", root=REPO / "runs" / "final",
+        groups={"smoke": ["F0_smoke"], "hard": ["F1_hard"], "standard": ["F2_standard"],
+                "main": ["F1_hard", "F2_standard"], "audit": ["F0_smoke", "F1_hard", "F2_standard"]},
+        order=["F0_smoke", "F1_hard", "F2_standard"],
+        tests=["tests/test_final_suite.py", "tests/test_inconsistent_operator.py", "tests/test_operator_rotation.py",
+               "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
+               "tests/test_campaign_switches.py", "tests/test_update_ratio.py", "tests/test_ruler_select.py",
+               "tests/test_synthetic_suite.py"],
+        ref_arms=("hilserl", "keepall"), ruler_check=False, gb_per_cell=1.6,
+        operator_tiers="expert,intermediate,s=0.3"),
 }
 SUITE = "synthetic_suite"
 
@@ -301,8 +319,10 @@ def planned_cells(name):
 
 
 def disk_needed_gb(names=None):
-    """Free disk the study needs for its runs folder: planned cells x GB_PER_CELL + a margin."""
-    return round(sum(planned_cells(n) for n in (names or ORDER)) * GB_PER_CELL + DISK_MARGIN_GB, 1)
+    """Free disk the study needs for its runs folder: planned cells x GB per cell (the suite's own, else GB_PER_CELL)
+    + a margin."""
+    per = float(SUITES[SUITE].get("gb_per_cell", GB_PER_CELL))
+    return round(sum(planned_cells(n) for n in (names or ORDER)) * per + DISK_MARGIN_GB, 1)
 
 
 def configs_logging_online(names=None):
@@ -344,7 +364,7 @@ def cmd_check(args):
         problems.append(f"the sim env does not render: {env.get('sim_render')}")
     if not any("gpu" in str(d).lower() or "cuda" in str(d).lower() for d in (env.get("jax_devices") or [])):
         problems.append(f"JAX sees no GPU: {env.get('jax_devices')}")
-    need = disk_needed_gb() if SUITE == "study" else 50
+    need = disk_needed_gb() if SUITE in ("study", "final") else 50
     info["disk_needed_gb"] = need
     if info["disk_free_gb"] < need:
         problems.append(f"only {info['disk_free_gb']} GB free under {root}; the planned cells need about {need:g} GB "
@@ -398,17 +418,19 @@ def cmd_stage0(args):
             rc_all |= rc
         (root / "tests.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         print("[stage0] tests:", ", ".join(f"{Path(t).stem} {'ok' if rc == 0 else 'FAILED'}" for t, rc in results.items()))
-    if not args.skip_operator_test and SUITE in ("inconsistent_operator", "study"):
+    if not args.skip_operator_test and SUITE in ("inconsistent_operator", "study", "final"):
         # the inconsistent operator held in each condition: inattentive must be clearly worse
+        tiers = SUITES[SUITE].get("operator_tiers")
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid",
                       "--conditions", "attentive,inattentive", "--rotation", "off,on",
+                      *(["--tiers", tiers] if tiers else []),
                       "--episodes", str(args.episodes), "--out", str(root / "operator_conditions.json")],
                      log=root / "operator_conditions.log", env={"JAX_PLATFORMS": "cpu"})
     elif not args.skip_operator_test:
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid,cylinder",
                       "--episodes", str(args.episodes), "--out", str(root / "operator_test.json")],
                      log=root / "operator_test.log", env={"JAX_PLATFORMS": "cpu"})
-    if not args.skip_sweep and SUITE in ("synthetic_suite", "study"):
+    if not args.skip_sweep and SUITE in ("synthetic_suite", "study", "final"):
         rc = sh([sys.executable, "examples/oracle_insertion_test.py", "--sweep", "tilt,yaw", "--shapes", "cuboid,cylinder",
                  "--tiers", "expert,novice", "--episodes", str(args.sweep_episodes),
                  "--out", str(root / "tolerance.json")], log=root / "tolerance.log", env={"JAX_PLATFORMS": "cpu"})
@@ -625,9 +647,13 @@ def cmd_audit(args):
             rc_all |= 1
             continue
         cmd = [sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp)]
-        if SUITE == "study":            # the scores are computed in the quality arms only
+        if SUITE in ("study", "final"):  # the scores are computed in the quality arms only
             cmd += ["--modes", "quality"]
         rc_all |= sh(cmd, log=root / f"{n}.audit.log", sim_env=False)
+        if SUITE == "final":            # and again where the robot asks: it picks the onset, so no timing confound
+            rc_all |= sh([sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp),
+                          "--modes", "aqi", "--out", str(camp / "report" / "audit_robot_asks")],
+                         log=root / f"{n}.audit_robot_asks.log", sim_env=False)
     return rc_all
 
 
@@ -1208,7 +1234,7 @@ def cmd_rulercheck(args):
 # ===================================================================== unattended: everything in one go
 SINGLE_CELL_STEPS_PER_S = 6.2     # one 8-critic cell alone on the earlier RTX 5090 machine: 6.1-6.5 env steps/s
 PARALLEL_MIN_GAIN = 1.15          # side by side must give at least 15 % more steps/s in all than one cell alone
-K8_ARMS = ("asks-", "random-", "ens-k8", "keepall", "beh-", "oracle-", "perfect-")
+K8_ARMS = ("asks-", "random-", "ens-k8", "keepall", "beh-", "oracle-", "perfect-", "aqi-")
 _EXPORT_LOCK = threading.Lock()
 
 
@@ -1339,6 +1365,32 @@ def push_results(results_dir, branch="study-results", remote_url=None, log=print
     return 0
 
 
+def crashed_cells(camp):
+    """Cells of a campaign whose actor crashed (.crashed) and that have not finished since (.done)."""
+    ck = Path(camp) / "checkpoints"
+    if not ck.exists():
+        return []
+    return sorted(d.name for d in ck.iterdir() if (d / ".crashed").exists() and not (d / ".done").exists())
+
+
+def disk_decision(root, name, st):
+    """Extra run_campaign flags for one campaign's disk: the configs keep the newest checkpoints plus every 2 000-th
+    learner step (budget curves); if the free disk is below what that campaign needs, it keeps only the newest
+    (budget curves then come from the mini-evaluations). Decided per campaign, recorded; never stops."""
+    if "checkpoint_keep_every" not in ((load_yaml(config_path(name)).get("budget") or {})):
+        return []
+    free = round(shutil.disk_usage(root).free / 2 ** 30, 1)
+    need = disk_needed_gb([name])
+    key = f"disk {name}"
+    if free >= need:
+        st.decisions[key] = f"{free} GB free, about {need:g} GB needed: the early checkpoints stay"
+        return []
+    st.decisions[key] = (f"only {free} GB free, about {need:g} GB needed: newest checkpoints only "
+                         f"(--checkpoint_keep_every 0)")
+    st.warnings.append(st.decisions[key])
+    return ["--checkpoint_keep_every", "0"]
+
+
 def _refresh(args, st, push):
     """Export (and push) under a lock: called after each step and by the periodic thread."""
     with _EXPORT_LOCK:
@@ -1394,7 +1446,8 @@ def cmd_all(args):
     if smoke:
         _step(st, "smoke", cmd_run, _ns(args, names=smoke, parallel=req, extra=[], **run_kw))
         _refresh(args, st, push)
-        _step(st, "ruler check", cmd_rulercheck, _ns(args, names=smoke))
+        if SUITES[SUITE].get("ruler_check", True):
+            _step(st, "ruler check", cmd_rulercheck, _ns(args, names=smoke))
         audit_smoke = [n for n in GROUPS.get("audit", []) if n in smoke]
         if audit_smoke:
             _step(st, "smoke audit", cmd_audit, _ns(args, names=audit_smoke))
@@ -1402,7 +1455,10 @@ def cmd_all(args):
     # 4. decisions for the main campaigns
     n_cmp, n_chg = ruler_changes(root, smoke)
     extra = []
-    if n_chg:
+    if not SUITES[SUITE].get("ruler_check", True):
+        n_cmp = n_chg = 0
+        st.decisions["ruler"] = "as configured (this suite scores every kept checkpoint; no shorter-ruler check)"
+    elif n_chg:
         extra = ["--no-eval_skip_pretrain", "--eval_newest", "0"]
         st.decisions["ruler"] = (f"FULL ruler for the main campaigns: the shorter ruler changed {n_chg} of {n_cmp} smoke "
                                  f"scores")
@@ -1415,9 +1471,19 @@ def cmd_all(args):
     _refresh(args, st, push)
     # 5. the main campaigns, one after another, each side by side as decided
     for n in main_names:
-        _step(st, f"run {n}", cmd_run, _ns(args, names=[n], parallel=par, extra=list(extra), **run_kw),
-              note=f"{par} side by side" + ("; full ruler" if extra else ""))
+        extra_n = list(extra) + disk_decision(root, n, st)
+        _step(st, f"run {n}", cmd_run, _ns(args, names=[n], parallel=par, extra=extra_n, **run_kw),
+              note=f"{par} side by side" + ("; full ruler" if "--eval_newest" in extra else "")
+              + ("; newest checkpoints only (disk)" if "--checkpoint_keep_every" in extra_n else ""))
         _refresh(args, st, push)
+        crashed = crashed_cells(root / n)
+        if crashed:                     # once: run_campaign retrains exactly the cells without .done
+            st.decisions[f"retry {n}"] = f"{len(crashed)} crashed cell(s) retrained once: {', '.join(crashed)}"
+            _step(st, f"retry {n}", cmd_run, _ns(args, names=[n], parallel=par, extra=extra_n, **run_kw))
+            left = crashed_cells(root / n)
+            if left:
+                st.warnings.append(f"{n}: still crashed after one retry, counted as failed: {', '.join(left)}")
+            _refresh(args, st, push)
     # 6. analysis
     audit_main = [n for n in GROUPS.get("audit", []) if n in main_names]
     if audit_main:
@@ -1435,7 +1501,7 @@ def cmd_all(args):
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--suite", default="synthetic_suite", choices=sorted(SUITES),
-                   help="which suite: synthetic_suite (default), inconsistent_operator or study")
+                   help="which suite: synthetic_suite (default), inconsistent_operator, study or final")
     p.add_argument("--root", default=None, help="suite folder (default runs/<suite>)")
     p.add_argument("--results", default=None,
                    help="export folder (default results/<suite> in the repo); refreshed after every command")

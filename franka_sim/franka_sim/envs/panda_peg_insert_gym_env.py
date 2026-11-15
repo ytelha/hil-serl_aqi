@@ -36,7 +36,7 @@ from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
 from franka_sim.controllers import opspace
-from franka_sim.envs.orientation_box import clip_to_rpy_box, parse_rpy_box
+from franka_sim.envs.orientation_box import clip_to_rpy_box, parse_rpy_box, safe_action, safe_quat
 
 _HERE = Path(__file__).parent
 # Arena XMLs keyed by peg_shape. "hex" is the exact reference task; "cylinder"
@@ -103,6 +103,7 @@ class PandaPegInsertGymEnv(gym.Env):
         self._action_scale = np.asarray(action_scale, dtype=np.float64)
         self._rpy_box = parse_rpy_box(rpy_box)
         self.rpy_clip_steps = 0        # steps of this episode the box clipped
+        self.guard_steps = 0           # steps of this episode a non-finite action or orientation was caught
         self.max_episode_length = max_episode_length
         self.randomize_reset = randomize_reset
         self.random_xy_range = random_xy_range
@@ -269,13 +270,16 @@ class PandaPegInsertGymEnv(gym.Env):
 
         self.curr_path_length = 0
         self.rpy_clip_steps = 0
+        self.guard_steps = 0
         self.success = False
         self._next_step_wall = None
         obs = self._get_obs()
         return obs, {"succeed": False}
 
     def step(self, action: np.ndarray) -> Tuple[Dict[str, Any], int, bool, bool, Dict[str, Any]]:
-        action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
+        action, bad_action = safe_action(action)     # a non-finite action becomes "no motion"
+        action = np.clip(action, -1.0, 1.0)
+        prev_quat, bad_prev = safe_quat(self._des_quat, self._reset_quat)
 
         # position delta (world frame)
         self._des_pos = self._des_pos + action[:3] * self._action_scale[0]
@@ -284,11 +288,13 @@ class PandaPegInsertGymEnv(gym.Env):
         )
         # orientation delta (world frame, applied on the left)
         drot = Rotation.from_rotvec(action[3:6] * self._action_scale[1])
-        self._des_quat = (drot * Rotation.from_quat(self._des_quat)).as_quat()
+        new_quat = (drot * Rotation.from_quat(prev_quat)).as_quat()
         if self._rpy_box is not None:
-            self._des_quat, clipped = clip_to_rpy_box(
-                self._des_quat, self._reset_quat, self._rpy_box)
+            new_quat, clipped = clip_to_rpy_box(new_quat, self._reset_quat, self._rpy_box)
             self.rpy_clip_steps += int(clipped)
+        # never store an invalid orientation: it crashed the next step ("Found zero norm quaternions")
+        self._des_quat, bad_new = safe_quat(new_quat, prev_quat)
+        self.guard_steps += int(bad_action or bad_prev or bad_new)
 
         # action[6] (gripper) is ignored: the peg is pregrasped/welded.
         self._run_controller(settle_steps=self._n_substeps)
@@ -299,6 +305,8 @@ class PandaPegInsertGymEnv(gym.Env):
         self.success = succeed
         done = bool(succeed) or self.curr_path_length >= self.max_episode_length
         info = {"succeed": bool(succeed)}
+        if self.guard_steps:                       # only when the guard caught something this episode
+            info["guard_steps"] = int(self.guard_steps)
 
         # real-time pacing: hold each control step to ~control_dt of wall time
         # so a human teleoperator experiences the episode at real-world speed.

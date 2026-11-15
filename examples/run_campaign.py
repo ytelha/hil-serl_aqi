@@ -230,6 +230,8 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     setk("max_hours", bud.get("total_hours"))
     setk("buffer_period", bud.get("buffer_period"))
     setk("checkpoint_keep", bud.get("checkpoint_keep"))
+    setk("checkpoint_keep_every", bud.get("checkpoint_keep_every"))
+    setk("checkpoint_keep_until", bud.get("checkpoint_keep_until"))
 
     ev = cfg.get("eval") or {}
     if ev.get("dx_mm") is not None and "eval_dx_mm" not in explicit:
@@ -1388,12 +1390,16 @@ def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
                        args.demo_pretrain_batch_size))
     lr = float(_arm_val(args, method, "learning_rate",
                         getattr(args, "learning_rate", 0) or 0))
+    keep_every = int(getattr(args, "checkpoint_keep_every", 0) or 0)
     return ["train_aqi_rlpd.py", "--exp_name", args.exp_name, "--learner",
             "--demo_path", str(demo_path), "--checkpoint_path", str(ckpt),
             "--resume", "scratch", "--aqi_mode", _arm_mode(args, method),
             "--peg_shape", args.peg_shape, "--seed", str(seed),
             "--max_steps", str(args.learner_max_steps),
             "--checkpoint_keep", str(getattr(args, "checkpoint_keep", 25)),
+            ] + (["--checkpoint_keep_every", str(keep_every),
+                  "--checkpoint_keep_until", str(int(getattr(args, "checkpoint_keep_until", 0) or 0))]
+                 if keep_every > 0 else []) + [
         ("--demo_pretrain" if dp else "--nodemo_pretrain"),
         "--demo_pretrain_steps", str(dps),
         "--demo_pretrain_batch_size", str(dpb),
@@ -1464,6 +1470,22 @@ def _ready_timeout(args, arm):
     return timeout
 
 
+def actor_crashed(actor_log: Path, actor_rc, timed_out: bool) -> bool:
+    """Did the actor die of an error rather than finish? A Python traceback in its log, or a non-zero exit that is not
+    the time-cap termination. (A crash can also hang until the time cap: the novice test's zero-norm-quaternion actor
+    was terminated after 4 h, so the log is read either way.)"""
+    try:
+        with open(actor_log, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 400_000))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        tail = ""
+    if "Traceback (most recent call last)" in tail:
+        return True
+    return actor_rc not in (0, None) and not timed_out
+
+
 def train_cell(args, campaign: Path, cell: Cell):
     ckpt = campaign / "checkpoints" / cell.id
     done = ckpt / ".done"
@@ -1478,6 +1500,7 @@ def train_cell(args, campaign: Path, cell: Cell):
     theta_json = campaign / "operators" / f"{cell.operator}.json"
     ckpt.mkdir(parents=True, exist_ok=True)
     (ckpt / "STOP").unlink(missing_ok=True)   # clear any stale sentinel
+    (ckpt / ".crashed").unlink(missing_ok=True)   # a retry starts clean (--resume scratch)
 
     lcmd = _learner_cmd(args, ckpt, demo_path, cell.method, cell.seed,
                         f"{cell.id}_learner")
@@ -1528,12 +1551,14 @@ def train_cell(args, campaign: Path, cell: Cell):
                          else (args.minutes_per_cell * 60.0 + 300.0
                                if getattr(args, "minutes_per_cell", 0)
                                and args.minutes_per_cell > 0 else None))
+        timed_out = False
         try:
             arc = ap.wait(timeout=actor_timeout)
         except subprocess.TimeoutExpired:
             _yellow(f"[train] {cell.id}: actor exceeded its time budget + grace "
                     f"-> terminating.")
             arc = _terminate(ap)
+            timed_out = True
         af.close()
         if arc != 0:
             _yellow(f"[train] {cell.id}: actor exited rc={arc} "
@@ -1562,6 +1587,14 @@ def train_cell(args, campaign: Path, cell: Cell):
             conv = json.load(open(cj))
         except (ValueError, OSError):
             conv = None
+    if conv is None and actor_crashed(alog, arc, timed_out):
+        # not a finished run: no .done, so a re-run of the campaign retrains it from scratch, and eval skips it
+        (ckpt / ".crashed").write_text(json.dumps({
+            "cell": cell.id, "actor_rc": arc, "learner_rc": lrc, "timed_out": timed_out,
+            "log": str(alog), "when": datetime.datetime.now().isoformat(timespec="seconds")}, indent=2))
+        _red(f"[train] {cell.id}: the actor crashed (rc={arc}, see {alog.name}); marked .crashed, not .done -- "
+             f"re-run the campaign to retrain it.")
+        return False
     done.write_text(json.dumps({
         "cell": cell.id, "method": cell.method, "operator": cell.operator,
         "tier": cell.tier, "seed": cell.seed,
@@ -1700,6 +1733,9 @@ def eval_cell(args, campaign: Path, cell: Cell):
         _green(f"[eval] {cell.id} already evaluated -- skip")
         return True
     ckpt = campaign / "checkpoints" / cell.id
+    if (ckpt / ".crashed").exists() and not (ckpt / ".done").exists():
+        _red(f"[eval] {cell.id}: the run crashed (.crashed) -- not scored")
+        return False
     if not _has_checkpoint(ckpt) and not args.dry_run:
         _red(f"[eval] {cell.id}: no checkpoint to evaluate -- skip")
         return False
@@ -2715,6 +2751,14 @@ def build_arg_parser():
                    help="how many periodic checkpoints each cell retains "
                         "(orbax 'keep'); smaller saves disk. best_window eval "
                         "still has plenty to select from.")
+    p.add_argument("--checkpoint_keep_every", type=int, default=0,
+                   help="also keep every checkpoint at a multiple of this "
+                        "learner step (up to --checkpoint_keep_until), for "
+                        "success-at-a-budget curves; 0 = off (YAML "
+                        "budget.checkpoint_keep_every). AQI pipeline only.")
+    p.add_argument("--checkpoint_keep_until", type=int, default=0,
+                   help="--checkpoint_keep_every: last protected learner step "
+                        "(0 = no limit; YAML budget.checkpoint_keep_until).")
     p.add_argument("--demo_pretrain", action=argparse.BooleanOptionalAction,
                    default=False,
                    help="enable/disable learner demo-only warm start before "
