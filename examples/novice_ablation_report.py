@@ -40,24 +40,54 @@ def _jsonl(path):
     return out
 
 
+QUALITY_MODES = ("quality", "aqi")   # AQIConfig.quality_on: only these modes apply the filters
+
+
+def filters_applied(run, arm):
+    """Did this run really drop the takeovers its filters flagged? Only the quality modes do. The other modes
+    (logged, active, ...) send every takeover step to replay at once (train_aqi_rlpd.py) and only log the
+    filters' verdict. Read from the run's meta.json; without one, from the arm table (unknown arms: yes)."""
+    meta = os.path.join(run, "meta.json")
+    if os.path.exists(meta):
+        try:
+            mode = json.load(open(meta, encoding="utf-8")).get("mode")
+        except ValueError:
+            mode = None
+        if mode:
+            return mode in QUALITY_MODES
+    filters = {a[0]: a[3] for a in ARMS}.get(arm)
+    return filters != "-"
+
+
 def count_dropped(log_root):
-    """{(arm, tier prefix): counters} from aqi_logs/<arm>_<op>_s<seed>_actor/segments.jsonl."""
+    """{(arm, tier prefix): counters} from aqi_logs/<arm>_<op>_s<seed>_actor/segments.jsonl. A takeover the filters
+    flagged counts as dropped only where the filters were applied; elsewhere it counts as would_drop."""
     t = collections.defaultdict(collections.Counter)
     for run in sorted(glob.glob(os.path.join(log_root, "*_actor"))):
         m = CELL.match(os.path.basename(run)[:-len("_actor")])
         if not m:
             continue
+        applied = filters_applied(run, m.group(1))
         c = t[(m.group(1), m.group(2)[:3])]
+        c["runs_filters_applied" if applied else "runs_filters_logged"] += 1
         for s in _jsonl(os.path.join(run, "segments.jsonl")):
             c["takeovers"] += 1
             c["steps"] += int(s.get("length", 0))
             c["in_failed_episode"] += not s.get("episode_success", False)
             c["q_positive"] += float(s.get("q_int_mean", 0) or 0) > 0
             if s.get("excluded"):
-                c["dropped"] += 1
-                c["steps_dropped"] += int(s.get("length", 0))
+                key = "dropped" if applied else "would_drop"
+                c[key] += 1
+                c["steps_" + key] += int(s.get("length", 0))
                 c["why_" + str(s.get("exclusion_reason") or "unknown")] += 1
     return t
+
+
+def _dropped_cell(dropped, would, n):
+    """'75 %' where the filters ran; '0 % (would 97 %)' where they were only logged."""
+    if would and not dropped:
+        return f"0 % (would {100 * would / n:.0f} %)"
+    return f"{100 * dropped / n:.0f} %"
 
 
 def render_count(t):
@@ -66,8 +96,12 @@ def render_count(t):
     for (arm, tier), c in sorted(t.items()):
         n, st = max(c["takeovers"], 1), max(c["steps"], 1)
         why = ", ".join(f"{k[4:]} {v}" for k, v in sorted(c.items()) if k.startswith("why_")) or "-"
-        L.append(f"| {arm} | {tier} | {c['takeovers']} | {100 * c['dropped'] / n:.0f} % | {100 * c['steps_dropped'] / st:.0f} % | "
+        L.append(f"| {arm} | {tier} | {c['takeovers']} | {_dropped_cell(c['dropped'], c['would_drop'], n)} | "
+                 f"{_dropped_cell(c['steps_dropped'], c['steps_would_drop'], st)} | "
                  f"{100 * c['in_failed_episode'] / n:.0f} % | {100 * c['q_positive'] / n:.0f} % | {why} |")
+    if any(c["would_drop"] for c in t.values()):
+        L += ["", "*would*: the filters flagged these takeovers, but this arm's mode does not apply them; every takeover "
+                  "went to replay. Only the quality modes drop takeovers."]
     return "\n".join(L)
 
 
@@ -163,6 +197,8 @@ def analyse(campaign):
             "converged": sum(x["converged"] for x in c.values()),
             "dropped": d["dropped"] / d["takeovers"] if d["takeovers"] else None,
             "steps_dropped": d["steps_dropped"] / d["steps"] if d["steps"] else None,
+            # flagged by the filters but kept, because this arm's mode does not apply them (e.g. logged)
+            "would_drop": d["would_drop"] / d["takeovers"] if d["takeovers"] else None,
             "vs_logged": paired(c, cells.get("logged", {})), "vs_quality": paired(c, cells.get("quality-oracle", {}))}
     res["verdict"], res["reading"] = reading({a: v["sr"] for a, v in res["arms"].items()})
     return res
@@ -173,12 +209,20 @@ def render(res, campaign):
          "| arm | what it is | score | hard filters | BC | cells | ruler SR | last ckpt SR | converged | takeovers dropped "
          "| operator steps dropped | vs ensemble extended | vs quality-oracle |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    would_any = False
     for arm, what, score, filters, bc in ARMS:
         v = res["arms"][arm]
+        dropped = _pct(v["dropped"])
+        if v.get("would_drop") and not v["dropped"]:
+            dropped, would_any = f"0.0 % (would {_pct(v['would_drop'])})", True
         L.append(f"| {arm} | {what} | {score} | {filters} | {bc} | {v['cells']} | {_pct(v['sr'])} | {_pct(v['last_sr'])} | "
-                 f"{v['converged']} | {_pct(v['dropped'])} | {_pct(v['steps_dropped'])} | {_pair(v['vs_logged'])} | "
+                 f"{v['converged']} | {dropped} | {_pct(v['steps_dropped'])} | {_pair(v['vs_logged'])} | "
                  f"{_pair(v['vs_quality'])} |")
-    L += ["", "Paired: mean difference in points (wins/losses/ties, exact sign test) per operator and seed.", "",
+    L += ["", "Paired: mean difference in points (wins/losses/ties, exact sign test) per operator and seed.", ""]
+    if would_any:
+        L += ["*would*: the filters flagged these takeovers, but this arm's mode does not apply them; every takeover "
+              "went to replay.", ""]
+    L += [
           f"**Reading (`{res['verdict']}`):** {res['reading']}", "",
           "Six cells per arm show direction, not significance."]
     return "\n".join(L) + "\n"

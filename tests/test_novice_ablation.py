@@ -203,7 +203,10 @@ def _fake_campaign(root, sr_by_arm):
                 (c / "checkpoints" / cid).mkdir(parents=True)
                 (c / "checkpoints" / cid / ".done").write_text(json.dumps({"converged": s == 0}))
                 (c / "aqi_logs" / f"{cid}_actor").mkdir(parents=True)
-                drop = arm in ("quality-oracle", "filter-only")
+                # as on the real runs: the logged arm's filters flag takeovers in the log but drop nothing
+                (c / "aqi_logs" / f"{cid}_actor" / "meta.json").write_text(json.dumps(
+                    {"mode": "logged" if arm == "logged" else "quality"}))
+                drop = arm in ("quality-oracle", "filter-only", "logged")
                 (c / "aqi_logs" / f"{cid}_actor" / "segments.jsonl").write_text("\n".join(json.dumps(
                     {"length": 10, "episode_success": i == 0, "excluded": bool(drop and i > 0),
                      "exclusion_reason": "outcome_filter" if drop and i > 0 else "", "q_int_mean": 0.0}) for i in range(4)))
@@ -222,10 +225,29 @@ def test_report_on_a_fake_campaign():
     assert v["cells"] == 6 and v["converged"] == 3 and abs(v["dropped"] - 0.75) < 1e-9 and abs(v["last_sr"] - 0.4) < 1e-9
     assert v["vs_logged"]["pairs"] == 6 and v["vs_logged"]["losses"] == 6 and abs(v["vs_logged"]["mean"] + 0.35) < 1e-9
     assert res["arms"]["logged"]["vs_logged"]["ties"] == 6
+    # the logged arm keeps every takeover: flagged ones count as would_drop, not dropped
+    lg = res["arms"]["logged"]
+    assert lg["dropped"] == 0.0 and abs(lg["would_drop"] - 0.75) < 1e-9 and lg["steps_dropped"] == 0.0
+    assert abs(v["would_drop"]) < 1e-9
+    assert "| logged | ensemble extended |" in text and "0.0 % (would 75.0 %)" in text and "*would*:" in text
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         assert nar.main(["--count", str(c / "aqi_logs")]) == 0
     assert "| filter-only | nov | 24 | 75 % | 75 % | 75 % | 0 % | outcome_filter 18 |" in out.getvalue()
+    assert "| logged | nov | 24 | 0 % (would 75 %) | 0 % (would 75 %) |" in out.getvalue()
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_filters_applied_reads_the_mode_and_falls_back_to_the_arm_table():
+    tmp = Path(tempfile.mkdtemp(prefix="novice_mode_"))
+    run = tmp / "x_actor"
+    run.mkdir()
+    assert nar.filters_applied(str(run), "logged") is False          # no meta.json: arm table, filters "-"
+    assert nar.filters_applied(str(run), "filter-only") is True
+    assert nar.filters_applied(str(run), "some-new-arm") is True     # unknown arm: as before
+    for mode, applied in (("logged", False), ("active", False), ("hilserl", False), ("quality", True), ("aqi", True)):
+        (run / "meta.json").write_text(json.dumps({"mode": mode}))
+        assert nar.filters_applied(str(run), "filter-only") is applied, mode
     shutil.rmtree(tmp, ignore_errors=True)
 
 
