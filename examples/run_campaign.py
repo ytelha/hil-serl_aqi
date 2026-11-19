@@ -170,6 +170,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
         v = task["rpy_box"]
         args.sim_rpy_box = (",".join(str(x) for x in v)
                             if isinstance(v, (list, tuple)) else str(v))
+    # task difficulty knobs (extension study): unset = the env's own defaults
+    for key, dest in SIM_TASK_KNOBS:
+        if task.get(key) is not None and dest not in explicit:
+            setattr(args, dest, float(task[key]))
 
     ops = cfg.get("operators") or {}
     tier_keys = [k for k in ops if k not in ("jitter", "sample_seed",
@@ -326,7 +330,8 @@ def apply_config(args, cfg: dict, explicit) -> dict:
                       ("query_cooldown_steps", int),
                       ("query_min_on_steps", int),
                       ("quality_cf_diag", bool),
-                      ("quality_drop_fraction", float)):
+                      ("quality_drop_fraction", float),
+                      ("quality_gamma", float)):
         if aqi.get(key) is not None and key not in explicit:
             setattr(args, key, cast(aqi[key]))
     if (aqi.get("synthetic_inconsistent") is not None
@@ -471,6 +476,14 @@ def _task_dict(args):
          if args.exp_name == "sim_peg_insertion" else None}
     if _rpy_box(args):              # sim orientation box: part of the task
         d["rpy_box"] = _rpy_box(args)
+    knobs = _sim_task(args)
+    if knobs:                       # task difficulty knobs: part of the task
+        sl = knobs.get("success_lateral", 0.012)
+        xy = knobs.get("random_xy", 0.015)
+        rz = knobs.get("random_rz", RESET_YAW_RANGE)
+        d["reward"] = f"sim ground truth (lateral < {sl * 1000:g} mm and depth > 50 mm)"
+        d["train_reset"] = f"randomized +/-{xy * 1000:g} mm xy, +/-{rz:g} rad yaw"
+        d["task_knobs"] = knobs
     return d
 
 
@@ -991,6 +1004,8 @@ _AQI_FLAG_SPEC = (
     ("per_member_targets", "bool"),
     ("e2hil_K", "val"), ("e2hil_q_low", "val"), ("e2hil_q_high", "val"),
     ("e2hil_q_agg", "val"),
+    # appended last: emitted only when set, so older commands stay identical
+    ("quality_gamma", "val"),
 )
 
 
@@ -1130,6 +1145,7 @@ ARM_KEYS = {
     "quality_consistency_weight": _to_bool, "quality_consistency_k": int,
     "quality_consistency_sigma_ref": float,
     "quality_cf_diag": _to_bool, "quality_drop_fraction": float,
+    "quality_gamma": float,
     "per_standardize": _to_bool, "per_delta_init": float, "per_eta": float,
     "per_eps": float, "quality_warmup_steps": int, "per_scale_decay": float,
     "per_refresh_period": int, "per_is_beta": float,
@@ -1291,7 +1307,49 @@ def _sim_env(args):
     $SIM_RPY_BOX is always set, empty when the box is off, so a value
     exported in the user's shell cannot leak into a campaign."""
     box = _rpy_box(args)
-    return {"SIM_RPY_BOX": ",".join(f"{v:g}" for v in box) if box else ""}
+    env = {"SIM_RPY_BOX": ",".join(f"{v:g}" for v in box) if box else ""}
+    # task difficulty knobs, likewise always set (empty = the env's default);
+    # read by SimPegEnv (franka_sim/envs/task_knobs.py) in every process
+    knobs = _sim_task(args)
+    for key, dest in SIM_TASK_KNOBS:
+        env[SIM_TASK_ENV[key]] = f"{knobs[key]:g}" if key in knobs else ""
+    return env
+
+
+# task difficulty knobs: (YAML task key, argparse dest); env vars per key
+SIM_TASK_KNOBS = (("success_lateral", "sim_success_lateral"),
+                  ("random_xy", "sim_random_xy"),
+                  ("random_rz", "sim_random_rz"))
+SIM_TASK_ENV = {"success_lateral": "SIM_SUCCESS_LATERAL",
+                "random_xy": "SIM_RANDOM_XY", "random_rz": "SIM_RANDOM_RZ"}
+
+
+def _tier_scale_map(text):
+    """'novice=0.15,intermediate=0.5' -> {'novice': 0.15, 'intermediate': 0.5}
+    (CLI form of operators.tier_s_exec / tier_s_mon)."""
+    out = {}
+    for part in str(text).split(","):
+        if not part.strip():
+            continue
+        if "=" not in part:
+            raise argparse.ArgumentTypeError(f"{part!r}: expected tier=value")
+        k, v = part.split("=", 1)
+        x = float(v)
+        if not 0.0 <= x <= 1.0:
+            raise argparse.ArgumentTypeError(f"{part!r}: skill must be in [0, 1]")
+        out[k.strip()] = x
+    return out
+
+
+def _sim_task(args):
+    """The task difficulty knobs that are set ({yaml key: value}); empty for
+    every campaign that does not use them."""
+    out = {}
+    for key, dest in SIM_TASK_KNOBS:
+        v = getattr(args, dest, None)
+        if v is not None:
+            out[key] = float(v)
+    return out
 
 
 def _platform_switches(args):
@@ -2377,6 +2435,8 @@ def write_manifest(args, campaign: Path, roster, grid, seeds):
             "yaw_rad": float(args.synthetic_orientation_yaw_rad) or "shape default"}
     if _rpy_box(args):
         manifest["sim_rpy_box"] = _rpy_box(args)        # absent = unbounded orientation
+    if _sim_task(args):
+        manifest["sim_task_knobs"] = _sim_task(args)    # absent = the env's defaults
     if getattr(args, "synthetic_inconsistent", False):
         manifest["synthetic_inconsistent"] = {           # absent = consistent operator
             "bad_share": float(args.synthetic_bad_share),
@@ -2459,6 +2519,9 @@ def print_plan(args, roster, cells, seeds, grid):
         r, pt, y = _rpy_box(args)
         print(f"  env          : orientation box roll +/-{r:g}, pitch +/-{pt:g}, "
               f"yaw +/-{y:g} rad (every process: demos, training, ruler)")
+    if _sim_task(args):
+        print("  task knobs   : " + ", ".join(f"{k}={v:g}" for k, v in _sim_task(args).items())
+              + " (every process: demos, training, ruler)")
     if str(getattr(args, "converge_mode", "rolling")) != "rolling":
         print(f"  convergence  : mini-eval SR >= {args.converge_eval_threshold} in "
               f"{args.converge_eval_consecutive} evaluations in a row, every "
@@ -2621,6 +2684,11 @@ def build_arg_parser():
                    help="discard filters (quality_filters score_filter / "
                         "random_filter): share of takeovers dropped from the "
                         "intervention buffer (quality/aqi; default 0.4). Per arm.")
+    p.add_argument("--quality_gamma", type=float, default=None,
+                   help="steepness of the score -> imitation weight map "
+                        "w = clip(sigmoid(gamma * score)) (quality/aqi; default "
+                        "2.0); 0 = every kept takeover weighs the same (uniform "
+                        "imitation, e.g. with a discard filter). Per arm.")
     p.add_argument("--quality_cf_diag", default=None,
                    action=argparse.BooleanOptionalAction,
                    help="log diagnostics of the counterfactual score and the "
@@ -2676,6 +2744,25 @@ def build_arg_parser():
                         "original task). Set for every process of the campaign "
                         "(demos, training, ruler) via $SIM_RPY_BOX. YAML: "
                         "task.rpy_box.")
+    p.add_argument("--sim_success_lateral", type=float, default=None,
+                   help="task knob: lateral success tolerance (m; env default "
+                        "0.012). Every process via $SIM_SUCCESS_LATERAL. YAML: "
+                        "task.success_lateral.")
+    p.add_argument("--sim_random_xy", type=float, default=None,
+                   help="task knob: training start-position range +/- (m; env "
+                        "default 0.015). Every process via $SIM_RANDOM_XY. YAML: "
+                        "task.random_xy.")
+    p.add_argument("--sim_random_rz", type=float, default=None,
+                   help="task knob: training start-yaw range +/- (rad; env "
+                        "default 0.08). Every process via $SIM_RANDOM_RZ. YAML: "
+                        "task.random_rz.")
+    p.add_argument("--tier_s_exec", type=_tier_scale_map, default=None,
+                   help="per-tier execution skill, e.g. 'novice=0.15' "
+                        "(0 = novice anchor, 1 = expert). Overrides YAML "
+                        "operators.tier_s_exec.")
+    p.add_argument("--tier_s_mon", type=_tier_scale_map, default=None,
+                   help="per-tier monitoring skill, e.g. 'novice=0.15'. "
+                        "Overrides YAML operators.tier_s_mon.")
     p.add_argument("--synthetic_orientation_monitor", action="store_true",
                    default=False,
                    help="the synthetic operator's monitor also watches the tool "
@@ -2950,7 +3037,8 @@ def _validate_rpy_box(args):
     if len(box) != 3 or min(box) <= 0.0 or max(box) >= 1.5:
         raise SystemExit(f"[config] --sim_rpy_box {args.sim_rpy_box!r}: three "
                          f"half-widths in (0, 1.5) rad expected (roll, pitch, yaw).")
-    yaws = [RESET_YAW_RANGE] + [abs(y) for y in _parse_floats(args.eval_yaw)]
+    reset_yaw = _sim_task(args).get("random_rz", RESET_YAW_RANGE)
+    yaws = [reset_yaw] + [abs(y) for y in _parse_floats(args.eval_yaw)]
     for pose in str(args.converge_eval_poses or "").split(";"):
         parts = [x for x in pose.split(",") if x.strip()]
         if len(parts) == 2:

@@ -1,5 +1,5 @@
 # =====================================================================
-# final/F3_careful_hard.yaml -- careful-operator control of F1_hard (docs/final_careful_control.md)
+# final/F3_careful_hard.yaml -- phase 0 of the extension study: careful-operator control of F1_hard (docs/extension_study.md)
 #
 # The final study ran every arm with a sometimes-careless operator (careless in 40 % of its takeovers) and had no arm
 # with a careful operator, so it cannot say what the carelessness cost in the first place, i.e. how much any grading
@@ -11,12 +11,12 @@
 # 1 arm x (2 experts + 2 intermediates + 2 novices at s = 0.3) x 2 seeds = 12 cells.
 #
 # The arm keeps the name `keepall`: its training commands are F1_hard's keepall commands without the three
-# careless-operator flags (tests/test_final_careful.py checks this). The campaign folder tells the two apart.
+# careless-operator flags (tests/test_final_twins.py checks this). The campaign folder tells the two apart.
 # Operators, demonstrations and the ruler are copied from runs/final/F1_hard/ before the first run and checked by hash
-# (tools/run_final_careful_unattended.sh), so both campaigns train from byte-identical demonstrations.
+# (tools/run_final_twins_unattended.sh), so both campaigns train from byte-identical demonstrations.
 #
-# Run (unattended, both careful campaigns, results only in results/final_careful/):
-#   bash tools/run_final_careful_unattended.sh
+# Run (unattended, phases 0-2, results of this phase in results/final_twins/):
+#   bash tools/run_extension_unattended.sh
 # Never run it in a folder of another campaign, and never mix its cells with another machine's.
 # =====================================================================
 task:

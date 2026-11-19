@@ -81,8 +81,9 @@ class TrainConfig(DefaultTrainingConfig):
         )
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
-        success_lateral = float(
-            os.environ.get("SIM_SUCCESS_LATERAL", self.success_lateral))
+        # empty = the default (run_campaign.py always sets the variable)
+        _sl = str(os.environ.get("SIM_SUCCESS_LATERAL", "") or "").strip()
+        success_lateral = float(_sl) if _sl else self.success_lateral
         sim_base = SimPegEnv(
             fake_env=fake_env,
             save_video=save_video,

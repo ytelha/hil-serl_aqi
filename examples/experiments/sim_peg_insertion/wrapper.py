@@ -29,6 +29,12 @@ class SimPegEnv(PandaPegInsertGymEnv):
     def __init__(self, fake_env: bool = False, save_video: bool = False, **kwargs):
         self.fake_env = fake_env
         self.save_video = save_video
+        # task difficulty knobs ($SIM_SUCCESS_LATERAL / $SIM_RANDOM_XY /
+        # $SIM_RANDOM_RZ, set by run_campaign.py for every process); an explicit
+        # keyword wins, unset = the env's defaults (franka_sim/envs/task_knobs.py)
+        from franka_sim.envs.task_knobs import task_overrides_from_env
+        for _k, _v in task_overrides_from_env().items():
+            kwargs.setdefault(_k, _v)
         super().__init__(**kwargs)
         # Pace interactive/actor rollouts to real time so a human teleoperator
         # has the full episode duration to react; the headless learner

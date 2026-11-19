@@ -128,6 +128,20 @@ SUITES = {
                "tests/test_synthetic_suite.py"],
         ref_arms=("hilserl", "keepall"), ruler_check=False, gb_per_cell=1.6,
         operator_tiers="expert,intermediate,s=0.3"),
+    # phase 2 of the extension study (docs/extension_study.md): operator screen of four candidate tasks, learning
+    # pilots of the passing ones, the task decision, a smoke test of the new arms on the chosen task
+    "extension": dict(
+        configs=HERE / "campaigns" / "extension", root=REPO / "runs" / "extension",
+        groups={"pilot": ["P1_hex", "P2_tight", "P3_wide", "P4_hexwide"],
+                "smoke": ["S1_hex", "S2_tight", "S3_wide", "S4_hexwide"],
+                "audit": ["S1_hex", "S2_tight", "S3_wide", "S4_hexwide"]},
+        order=["P1_hex", "P2_tight", "P3_wide", "P4_hexwide", "S1_hex", "S2_tight", "S3_wide", "S4_hexwide"],
+        tests=["tests/test_extension_suite.py", "tests/test_final_twins.py", "tests/test_final_suite.py",
+               "tests/test_inconsistent_operator.py", "tests/test_operator_rotation.py",
+               "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
+               "tests/test_campaign_switches.py", "tests/test_update_ratio.py", "tests/test_ruler_select.py",
+               "tests/test_synthetic_suite.py"],
+        ref_arms=("hilserl", "keepall"), ruler_check=False, gb_per_cell=1.6, sweep_shapes="cuboid,hex"),
 }
 SUITE = "synthetic_suite"
 
@@ -364,7 +378,11 @@ def cmd_check(args):
         problems.append(f"the sim env does not render: {env.get('sim_render')}")
     if not any("gpu" in str(d).lower() or "cuda" in str(d).lower() for d in (env.get("jax_devices") or [])):
         problems.append(f"JAX sees no GPU: {env.get('jax_devices')}")
-    need = disk_needed_gb() if SUITE in ("study", "final") else 50
+    if SUITE == "extension":        # one campaign at a time: scored checkpoints are pruned after each campaign
+        per = float(SUITES[SUITE].get("gb_per_cell", GB_PER_CELL))
+        need = round(max(planned_cells(n) for n in ORDER) * per + DISK_MARGIN_GB, 1)
+    else:
+        need = disk_needed_gb() if SUITE in ("study", "final") else 50
     info["disk_needed_gb"] = need
     if info["disk_free_gb"] < need:
         problems.append(f"only {info['disk_free_gb']} GB free under {root}; the planned cells need about {need:g} GB "
@@ -426,12 +444,13 @@ def cmd_stage0(args):
                       *(["--tiers", tiers] if tiers else []),
                       "--episodes", str(args.episodes), "--out", str(root / "operator_conditions.json")],
                      log=root / "operator_conditions.log", env={"JAX_PLATFORMS": "cpu"})
-    elif not args.skip_operator_test:
+    elif not args.skip_operator_test and SUITE != "extension":     # the extension suite screens operators itself
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid,cylinder",
                       "--episodes", str(args.episodes), "--out", str(root / "operator_test.json")],
                      log=root / "operator_test.log", env={"JAX_PLATFORMS": "cpu"})
-    if not args.skip_sweep and SUITE in ("synthetic_suite", "study", "final"):
-        rc = sh([sys.executable, "examples/oracle_insertion_test.py", "--sweep", "tilt,yaw", "--shapes", "cuboid,cylinder",
+    if not args.skip_sweep and SUITE in ("synthetic_suite", "study", "final", "extension"):
+        shapes = SUITES[SUITE].get("sweep_shapes", "cuboid,cylinder")
+        rc = sh([sys.executable, "examples/oracle_insertion_test.py", "--sweep", "tilt,yaw", "--shapes", shapes,
                  "--tiers", "expert,novice", "--episodes", str(args.sweep_episodes),
                  "--out", str(root / "tolerance.json")], log=root / "tolerance.log", env={"JAX_PLATFORMS": "cpu"})
         rc_all |= rc
@@ -647,10 +666,10 @@ def cmd_audit(args):
             rc_all |= 1
             continue
         cmd = [sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp)]
-        if SUITE in ("study", "final"):  # the scores are computed in the quality arms only
+        if SUITE in ("study", "final", "extension"):  # the scores are computed in the quality arms only
             cmd += ["--modes", "quality"]
         rc_all |= sh(cmd, log=root / f"{n}.audit.log", sim_env=False)
-        if SUITE == "final":            # and again where the robot asks: it picks the onset, so no timing confound
+        if SUITE in ("final", "extension"):  # and again where the robot asks: it picks the onset, no timing confound
             rc_all |= sh([sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp),
                           "--modes", "aqi", "--out", str(camp / "report" / "audit_robot_asks")],
                          log=root / f"{n}.audit_robot_asks.log", sim_env=False)
@@ -1411,6 +1430,8 @@ def cmd_all(args):
     the main campaigns, audit, report, plots. Every gate of the runbook becomes a decision recorded in RUN_STATUS.md;
     failures are recorded and the run goes on. The results folder is refreshed (and pushed, with --push) after every
     step and every --push_every_h hours."""
+    if SUITE == "extension":            # its own flow: screen, pilots, decision, smoke (never pushes)
+        return cmd_extension_all(args)
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
     st = RunStatus(root)
@@ -1497,6 +1518,426 @@ def cmd_all(args):
     return 1 if st.warnings else 0
 
 
+# ===================================================================== extension study (phase 2)
+# docs/extension_study.md. The rules below are fixed before any extension run; `screen` and `decide` apply them to
+# the measurements and write the decisions (<root>/screen/screen_decision.json, <root>/decision.json) that the
+# pilots, the smoke test and the main study read. `prune` frees the disk of scored runs in the new roots only.
+EXT_CANDIDATES = ["hex", "tight", "wide", "hexwide"]
+EXT_PILOT = {c: f"P{i + 1}_{c}" for i, c in enumerate(EXT_CANDIDATES)}
+EXT_SMOKE = {c: f"S{i + 1}_{c}" for i, c in enumerate(EXT_CANDIDATES)}
+SCREEN_TIERS = ["expert", "intermediate", "s=0.3", "s=0.15", "s=0"]
+NOVICE_SKILLS = (0.3, 0.15, 0.0)          # candidate novice skills; on a tie the earlier one wins
+SCREEN_EPISODES = 30
+SCREEN_RULE = {"expert_solo_min": 0.90,           # the careful expert does the task alone ...
+               "expert_rescue_min": 0.80,         # ... and rescues a failing policy: corrections can help
+               "careless_expert_solo_max": 0.60,  # a careless correction is clearly worse
+               "novice_solo_lo": 0.40, "novice_solo_hi": 0.70,  # the operators differ: a novice skill in this band
+               "novice_target": 0.55}             # closest to this if several skills are in the band
+PILOT_RULE = {"budget_env_steps": 8000,           # keepall with the careful intermediate after 8 000 env steps ...
+              "lo": 0.30, "hi": 0.70,             # ... in this band: learnable but not at the ceiling ...
+              "final_min": 0.80,                  # ... and >= 80 % evaluation success by the cap
+              "fallback_final_min": 0.50, "fallback_cap": 40000,  # none: hardest one still >= 50 %, cap 40 000
+              "budget_target": 0.50,              # budget B: where keepall-intermediate is closest to 50 %
+              "budgets": list(range(2000, 20001, 2000))}
+PRUNE_ROOTS = ("final_twins", "extension")       # runs/<name>: the only default roots whose checkpoints are pruned
+PRUNE_MARKER = ".prune_scored_ok"                 # any other root needs this file to allow pruning
+
+
+def _skill_label(s):
+    return f"s={float(s):g}"
+
+
+def ext_task_env(name):
+    """(environment, peg shape) of the operator screen for one candidate: the pilot config's task knobs, exactly as
+    run_campaign.py sets them for every process of a campaign."""
+    task = load_yaml(config_path(name)).get("task") or {}
+    shape = str(task.get("peg_shape", "cuboid"))
+    # no orientation box, like the final study's operator test (stage 0), whatever the shell exports
+    env = {"JAX_PLATFORMS": "cpu", "SIM_SYN_PEG_SHAPE": shape, "SIM_RPY_BOX": ""}
+    for key, var in (("success_lateral", "SIM_SUCCESS_LATERAL"), ("random_xy", "SIM_RANDOM_XY"),
+                     ("random_rz", "SIM_RANDOM_RZ")):
+        env[var] = f"{float(task[key]):g}" if task.get(key) is not None else ""
+    return env, shape
+
+
+def _screen_rate(rows, tier, scenario, condition):
+    for r in rows:
+        if (r.get("tier") == tier and r.get("scenario") == scenario and r.get("condition") == condition
+                and r.get("rotation", "on") == "on"):
+            return float(r["success"])
+    return None
+
+
+def screen_verdict(rows, rule=None):
+    """The screen rule for one candidate's operator-test rows (rotation control on, as in training)."""
+    rule = rule or SCREEN_RULE
+    es = _screen_rate(rows, "expert", "solo", "attentive")
+    er = _screen_rate(rows, "expert", "rescue", "attentive")
+    ec = _screen_rate(rows, "expert", "solo", "inattentive")
+    nov = {s: _screen_rate(rows, _skill_label(s), "solo", "attentive") for s in NOVICE_SKILLS}
+    reasons = []
+    if es is None or es < rule["expert_solo_min"]:
+        reasons.append(f"careful expert alone {es} < {rule['expert_solo_min']}")
+    if er is None or er < rule["expert_rescue_min"]:
+        reasons.append(f"careful expert rescue {er} < {rule['expert_rescue_min']}")
+    if ec is None or ec > rule["careless_expert_solo_max"]:
+        reasons.append(f"careless expert alone {ec} > {rule['careless_expert_solo_max']}")
+    band = [s for s in NOVICE_SKILLS
+            if nov[s] is not None and rule["novice_solo_lo"] <= nov[s] <= rule["novice_solo_hi"]]
+    # distance rounded so that equal distances (rates are k / episodes) tie exactly; the earlier skill wins a tie
+    skill = (min(band, key=lambda s: (round(abs(nov[s] - rule["novice_target"]), 9), NOVICE_SKILLS.index(s)))
+             if band else None)
+    if skill is None:
+        reasons.append(f"no novice skill {list(NOVICE_SKILLS)} succeeds alone in "
+                       f"{rule['novice_solo_lo']:g}-{rule['novice_solo_hi']:g}")
+    return {"passes": not reasons, "novice_skill": skill, "expert_solo": es, "expert_rescue": er,
+            "careless_expert_solo": ec, "novice_solo": {_skill_label(s): v for s, v in nov.items()},
+            "reasons": reasons}
+
+
+def cmd_screen(args):
+    """Operator screen of the candidate tasks (CPU only): examples/oracle_insertion_test.py per candidate with its
+    task knobs, then the rule. Resumable: a candidate with a result file is not re-run."""
+    root = Path(args.root) / "screen"
+    root.mkdir(parents=True, exist_ok=True)
+    rc_all, verdicts = 0, {}
+    for c in EXT_CANDIDATES:
+        out = root / f"{c}.json"
+        env, shape = ext_task_env(EXT_PILOT[c])
+        if not out.exists():
+            rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", shape,
+                          "--tiers", ",".join(SCREEN_TIERS), "--rotation", "on", "--scenarios", "solo,rescue",
+                          "--conditions", "attentive,inattentive",
+                          "--episodes", str(int(getattr(args, "episodes", SCREEN_EPISODES) or SCREEN_EPISODES)),
+                          "--out", str(out)], log=root / f"{c}.log", env=env)
+        try:
+            rows = json.loads(out.read_text(encoding="utf-8")).get("rows", []) if out.exists() else []
+        except ValueError:
+            rows = []
+        v = screen_verdict(rows)
+        if not rows:
+            v["reasons"].insert(0, "the operator test produced no result (see the log)")
+        v.update(pilot=EXT_PILOT[c], smoke=EXT_SMOKE[c], peg_shape=shape,
+                 knobs={k: val for k, val in env.items()
+                        if k in ("SIM_SUCCESS_LATERAL", "SIM_RANDOM_XY", "SIM_RANDOM_RZ")})
+        verdicts[c] = v
+    dec = {"created": now(), "rule": SCREEN_RULE, "tiers": SCREEN_TIERS, "candidates": verdicts,
+           "passing": [c for c in EXT_CANDIDATES if verdicts[c]["passes"]]}
+    (root / "screen_decision.json").write_text(json.dumps(dec, indent=2), encoding="utf-8")
+    L = ["# Operator screen (extension study, phase 2)", "",
+         f"{now()}. Rotation control on, {getattr(args, 'episodes', SCREEN_EPISODES)} episodes per row. Rule: "
+         + ", ".join(f"{k} {v}" for k, v in SCREEN_RULE.items()) + ".", "",
+         "| candidate | careful expert alone | rescue | careless expert alone | novice alone (s=0.3 / 0.15 / 0) "
+         "| novice skill | passes | why not |", "|---|---|---|---|---|---|---|---|"]
+    for c, v in verdicts.items():
+        ns = " / ".join(_fmt(v["novice_solo"][_skill_label(s)]) for s in NOVICE_SKILLS)
+        L.append(f"| {c} | {_fmt(v['expert_solo'])} | {_fmt(v['expert_rescue'])} | {_fmt(v['careless_expert_solo'])} "
+                 f"| {ns} | {_fmt(v['novice_skill'])} | {'yes' if v['passes'] else 'no'} | {'; '.join(v['reasons'])} |")
+    L += ["", f"Passing: {', '.join(dec['passing']) or 'none'}."]
+    (root / "SCREEN.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+    print("[screen] passing:", ", ".join(dec["passing"]) or "none")
+    return rc_all
+
+
+def _pretrain_steps(man):
+    """Warm-start updates of a run (subtracted to get environment steps), from its manifest."""
+    if not man:
+        return 0
+    ov = (man.get("arm") or {}).get("overrides") or {}
+    if ov.get("demo_pretrain"):
+        return int(ov.get("demo_pretrain_steps", 5000))
+    rep = " ".join(str(x) for x in (man.get("reproduce") or []))
+    if re.search(r"--demo_pretrain(\s|$)", rep):
+        m = re.search(r"--demo_pretrain_steps (\d+)", rep)
+        return int(m.group(1)) if m else 5000
+    return 0
+
+
+def cell_curve(camp, cid):
+    """([(environment step, ruler success)] per scored checkpoint, evaluation success = best window) of one cell,
+    or None while it has no ruler result."""
+    camp = Path(camp)
+    cj = camp / "eval_runs" / cid / "cell.json"
+    if not cj.exists():
+        return None
+    try:
+        d = json.loads(cj.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    cps = sorted(d.get("sr_per_checkpoint") or [], key=lambda x: x["step"])
+    if not cps:
+        return None
+    man = {}
+    for p in (camp / "checkpoints" / cid / "manifest.json", camp / "eval_runs" / cid / "manifest.json"):
+        if p.exists():
+            try:
+                man = json.loads(p.read_text(encoding="utf-8"))
+                break
+            except ValueError:
+                pass
+    pre = _pretrain_steps(man)
+    final = d.get("best_window_sr")
+    if final is None:
+        final = (d.get("outcomes") or {}).get("sr", 0.0)
+    return [(int(c["step"]) - pre, float(c["sr"])) for c in cps], float(final)
+
+
+def budget_success(curve, env_step):
+    """Ruler success of the newest checkpoint at or before env_step (0 before the first); a stopped run keeps its
+    last score."""
+    best = 0.0
+    for s, v in curve:
+        if s <= env_step:
+            best = v
+    return best
+
+
+def pilot_cells(camp, arm="keepall"):
+    """{'intermediate': [(curve, final)], 'novice': [...]} of one arm of a pilot."""
+    out = {"intermediate": [], "novice": []}
+    ev = Path(camp) / "eval_runs"
+    if not ev.exists():
+        return out
+    for d in sorted(ev.iterdir()):
+        m = re.match(rf"{re.escape(arm)}_(int|nov)\d+_s\d+$", d.name)
+        if not m:
+            continue
+        cc = cell_curve(camp, d.name)
+        if cc:
+            out["intermediate" if m.group(1) == "int" else "novice"].append(cc)
+    return out
+
+
+def pilot_verdicts(root, rule=None):
+    """The pilot rule per candidate whose pilot has scored keepall cells."""
+    rule = rule or PILOT_RULE
+    b0, res = rule["budget_env_steps"], {}
+    for c in EXT_CANDIDATES:
+        camp = Path(root) / EXT_PILOT[c]
+        if not (camp / "eval_runs").exists():
+            continue
+        cells = pilot_cells(camp)
+        ints, novs = cells["intermediate"], cells["novice"]
+        if not ints:
+            res[c] = {"ran": True, "qualifies": False, "reasons": ["no scored keepall cell of the intermediate"]}
+            continue
+        a = sum(budget_success(cv, b0) for cv, _ in ints) / len(ints)
+        f = sum(fin for _, fin in ints) / len(ints)
+        an = sum(budget_success(cv, b0) for cv, _ in novs) / len(novs) if novs else None
+        q = rule["lo"] <= a <= rule["hi"] and f >= rule["final_min"]
+        res[c] = {"ran": True, "intermediate_at_budget": round(a, 4), "intermediate_final": round(f, 4),
+                  "novice_at_budget": None if an is None else round(an, 4),
+                  "gap": None if an is None else round(a - an, 4), "qualifies": q,
+                  "n_intermediate": len(ints), "n_novice": len(novs)}
+    return res
+
+
+def choose_task(verdicts, rule=None):
+    """(candidate or None, how, cap or None) by the pilot rule."""
+    rule = rule or PILOT_RULE
+    qual = [c for c in EXT_CANDIDATES if verdicts.get(c, {}).get("qualifies")]
+    if qual:
+        best = max(qual, key=lambda c: (verdicts[c]["gap"] if verdicts[c]["gap"] is not None else -9.0,
+                                        -verdicts[c]["intermediate_at_budget"], -EXT_CANDIDATES.index(c)))
+        return best, "qualifies (largest intermediate - novice gap)", None
+    fb = [c for c in EXT_CANDIDATES if verdicts.get(c, {}).get("ran")
+          and (verdicts[c].get("intermediate_final") or 0.0) >= rule["fallback_final_min"]]
+    if fb:
+        best = min(fb, key=lambda c: (verdicts[c]["intermediate_at_budget"], EXT_CANDIDATES.index(c)))
+        return best, "fallback (none qualifies: the hardest one still learnable)", rule["fallback_cap"]
+    return None, "no candidate is learnable: the main study stays on the standard task", None
+
+
+def choose_budget(camp, rule=None):
+    """(B, keepall-intermediate success at B): the budget closest to the target, the earlier one on a tie."""
+    rule = rule or PILOT_RULE
+    ints = pilot_cells(camp)["intermediate"]
+    if not ints:
+        return None, None
+    best = None
+    for b in rule["budgets"]:
+        m = sum(budget_success(cv, b) for cv, _ in ints) / len(ints)
+        if best is None or round(abs(m - rule["budget_target"]), 9) < round(abs(best[1] - rule["budget_target"]), 9):
+            best = (b, m)
+    return best[0], round(best[1], 4)
+
+
+def cmd_decide(args):
+    """The main-study task from the pilots (rule fixed in PILOT_RULE): <root>/decision.json and DECISION.md."""
+    root = Path(args.root)
+    sd = root / "screen" / "screen_decision.json"
+    screen = json.loads(sd.read_text(encoding="utf-8")) if sd.exists() else {"candidates": {}, "passing": []}
+    ver = pilot_verdicts(root)
+    chosen, how, cap = choose_task(ver)
+    b, at_b = choose_budget(root / EXT_PILOT[chosen]) if chosen else (None, None)
+    dec = {"created": now(), "rule": PILOT_RULE, "screen_passing": screen.get("passing", []), "pilots": ver,
+           "chosen": chosen, "how": how, "pilot": EXT_PILOT.get(chosen), "smoke": EXT_SMOKE.get(chosen),
+           "novice_skill": ((screen.get("candidates") or {}).get(chosen) or {}).get("novice_skill") if chosen else None,
+           "task": ((screen.get("candidates") or {}).get(chosen) or {}).get("knobs") if chosen else None,
+           "peg_shape": ((screen.get("candidates") or {}).get(chosen) or {}).get("peg_shape") if chosen else None,
+           "budget_B_env_steps": b, "keepall_intermediate_at_B": at_b, "steps_cap": cap or 30000}
+    (root / "decision.json").write_text(json.dumps(dec, indent=2), encoding="utf-8")
+    L = ["# Decision: the task of the main study (extension study, phase 2)", "",
+         f"{now()}. Rule: " + ", ".join(f"{k} {v}" for k, v in PILOT_RULE.items() if k != "budgets") + ".", "",
+         "| candidate | keepall intermediate at 8 000 env steps | final | novice at 8 000 | gap | qualifies |",
+         "|---|---|---|---|---|---|"]
+    for c, v in ver.items():
+        L.append(f"| {c} | {_fmt(v.get('intermediate_at_budget'))} | {_fmt(v.get('intermediate_final'))} | "
+                 f"{_fmt(v.get('novice_at_budget'))} | {_fmt(v.get('gap'))} | {'yes' if v.get('qualifies') else 'no'} |")
+    L += ["", f"**Chosen:** {chosen or 'none'} ({how}); novice skill {_fmt(dec['novice_skill'])}; budget B = "
+              f"{_fmt(b)} environment steps (keepall intermediate {_fmt(at_b)} there); step cap {dec['steps_cap']}."]
+    (root / "DECISION.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+    print(f"[decide] chosen: {chosen or 'none'} ({how}); B = {b}; novice skill {dec['novice_skill']}")
+    return 0
+
+
+def prunable_root(root):
+    r = Path(root).resolve()
+    return ((r.parent == (REPO / "runs").resolve() and r.name in PRUNE_ROOTS)
+            or (r / PRUNE_MARKER).exists())
+
+
+def prune_campaign(camp, log=print):
+    """Free the disk of scored cells: delete the checkpoint_<step> folders that the ruler result no longer needs,
+    keeping each cell's best window, its last scored and its newest checkpoint. Cells without .done or without a
+    ruler result, and every other file or folder, stay. Returns (cells pruned, folders deleted, bytes freed)."""
+    camp = Path(camp)
+    ck = camp / "checkpoints"
+    n_cells = n_dirs = freed = 0
+    if not ck.exists():
+        return 0, 0, 0
+    for cell in sorted(d for d in ck.iterdir() if d.is_dir()):
+        cj = camp / "eval_runs" / cell.name / "cell.json"
+        if not (cell / ".done").exists() or not cj.exists():
+            continue
+        try:
+            d = json.loads(cj.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        steps = []
+        for sub in cell.iterdir():
+            m = re.fullmatch(r"checkpoint_(\d+)", sub.name)
+            if m and sub.is_dir():
+                steps.append(int(m.group(1)))
+        if not steps:
+            continue
+        keep = {int(s) for s in (d.get("best_window_steps") or [])} | {max(steps)}
+        if d.get("checkpoint_step") is not None:
+            keep.add(int(d["checkpoint_step"]))
+        gone = 0
+        for s in steps:
+            if s in keep:
+                continue
+            p = cell / f"checkpoint_{s}"
+            freed += sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+            shutil.rmtree(p, ignore_errors=True)
+            gone += 1
+        if gone:
+            n_cells += 1
+            n_dirs += gone
+    if log and n_dirs:
+        log(f"[prune] {camp.name}: {n_dirs} checkpoint folders of {n_cells} scored cells deleted, "
+            f"{freed / 2 ** 30:.1f} GB freed (best window, last and newest kept)")
+    return n_cells, n_dirs, freed
+
+
+def cmd_prune(args):
+    root = Path(args.root)
+    if not prunable_root(root):
+        print(f"[prune] refusing: {root} is not one of runs/{{{','.join(PRUNE_ROOTS)}}} and has no {PRUNE_MARKER}")
+        return 2
+    for n in resolve(args.names or ORDER):
+        if (root / n).exists():
+            prune_campaign(root / n)
+    return 0
+
+
+def cmd_extension_all(args):
+    """Phase 2 in one go, unattended: check, stage 0 (tests, cuboid + hex orientation limits), the operator screen,
+    the learning pilots of the passing candidates (each with its screened novice skill), the decision, the smoke test
+    on the chosen task, audit, report, plots. Steps already done (stage-0 limits, screen) are not repeated. Never
+    stops, never pushes; scored checkpoints are pruned after each campaign."""
+    root = Path(args.root)
+    root.mkdir(parents=True, exist_ok=True)
+    st = RunStatus(root)
+    st.decisions["mode"] = "unattended: no step waits for a person; failures are recorded and the run goes on"
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(max(0.1, float(getattr(args, "push_every_h", 6.0))) * 3600.0):
+            _refresh(args, st, False)
+
+    threading.Thread(target=beat, daemon=True).start()
+    _step(st, "check", cmd_check, _ns(args))
+    mode = getattr(args, "wandb", None) or ("online" if wandb_logged_in() else "offline")
+    st.decisions["W&B"] = mode
+    lim = root / "stage0" / "limits.json"
+    have = set((json.loads(lim.read_text(encoding="utf-8")).get("limits") or {}) if lim.exists() else {})
+    if {"cuboid", "hex"} <= have:
+        st.decisions["stage 0"] = "orientation limits for cuboid and hex measured before; not repeated"
+    else:
+        _step(st, "stage0", cmd_stage0, _ns(args, skip_tests=False, skip_operator_test=True, skip_sweep=False,
+                                           episodes=30, sweep_episodes=10))
+    sd = root / "screen" / "screen_decision.json"
+    if sd.exists() and all((root / "screen" / f"{c}.json").exists() for c in EXT_CANDIDATES):
+        st.decisions["screen"] = "done before; not repeated"
+    else:
+        _step(st, "screen", cmd_screen, _ns(args, episodes=SCREEN_EPISODES))
+    screen = json.loads(sd.read_text(encoding="utf-8")) if sd.exists() else {"passing": [], "candidates": {}}
+    passing = list(screen.get("passing") or [])
+    st.decisions["screen result"] = (", ".join(f"{c} (novice s = {screen['candidates'][c]['novice_skill']:g})"
+                                               for c in passing) or "no candidate passes")
+    _refresh(args, st, False)
+    run_kw = dict(wandb=mode, dry=False, keep_going=True, without_active=True, allow_orig=False, score_as_is=True,
+                  port_base=int(getattr(args, "port_base", 6100)))
+    par = max(1, int(getattr(args, "parallel", 2) or 2))
+
+    def campaign(name, extra, note):
+        shape = switches(load_yaml(config_path(name)))["peg_shape"]
+        dl = read_limits(root, shape) is None
+        if dl:
+            st.decisions[f"limits {name}"] = f"no stage-0 limits for {shape}: shape defaults"
+        extra = list(extra) + disk_decision(root, name, st)
+        _step(st, f"run {name}", cmd_run, _ns(args, names=[name], parallel=par, extra=extra, default_limits=dl,
+                                              **run_kw), note=note)
+        crashed = crashed_cells(root / name)
+        if crashed:
+            st.decisions[f"retry {name}"] = f"{len(crashed)} crashed cell(s) retrained once: {', '.join(crashed)}"
+            _step(st, f"retry {name}", cmd_run, _ns(args, names=[name], parallel=par, extra=extra,
+                                                    default_limits=dl, **run_kw))
+            left = crashed_cells(root / name)
+            if left:
+                st.warnings.append(f"{name}: still crashed after one retry, counted as failed: {', '.join(left)}")
+        if prunable_root(root):
+            _n, _d, freed = prune_campaign(root / name)
+            if _d:
+                st.decisions[f"prune {name}"] = f"{_d} scored checkpoints deleted, {freed / 2 ** 30:.1f} GB freed"
+        _refresh(args, st, False)
+
+    for c in passing:
+        s = float(screen["candidates"][c]["novice_skill"])
+        campaign(EXT_PILOT[c], ["--tier_s_exec", f"novice={s:g}", "--tier_s_mon", f"novice={s:g}"],
+                 f"pilot, novice skill {s:g}")
+    _step(st, "decide", cmd_decide, _ns(args))
+    dp = root / "decision.json"
+    dec = json.loads(dp.read_text(encoding="utf-8")) if dp.exists() else {}
+    st.decisions["task of the main study"] = (f"{dec.get('chosen')} ({dec.get('how')}); novice skill "
+                                              f"{dec.get('novice_skill')}; budget B {dec.get('budget_B_env_steps')} "
+                                              f"env steps; cap {dec.get('steps_cap')}" if dec.get("chosen")
+                                              else str(dec.get("how", "no decision")))
+    if dec.get("chosen"):
+        smoke = EXT_SMOKE[dec["chosen"]]
+        campaign(smoke, [], "smoke test of the new arms on the chosen task")
+        _step(st, "audit", cmd_audit, _ns(args, names=[smoke]))
+    _step(st, "report", cmd_report, _ns(args, names=[]))
+    _step(st, "plots", cmd_plots, _ns(args, names=[]))
+    stop.set()
+    st.state = "finished" + (" with warnings" if st.warnings else "")
+    _refresh(args, st, False)
+    print(f"\n[all] {st.state}; see {root / 'RUN_STATUS.md'}, {root / 'DECISION.md'} and the results folder", flush=True)
+    return 1 if st.warnings else 0
+
+
 # ===================================================================== main
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1550,6 +1991,12 @@ def build_parser():
                     help="push the results folder to the branch --branch of the origin remote after every step")
     al.add_argument("--branch", default="study-results")
     al.add_argument("--push_every_h", type=float, default=6.0, help="also refresh/push every N hours")
+    sc = sub.add_parser("screen", help="extension: operator screen of the candidate tasks and the screen rule (CPU)")
+    sc.add_argument("--episodes", type=int, default=SCREEN_EPISODES)
+    sub.add_parser("decide", help="extension: the main-study task from the pilots (rule fixed in PILOT_RULE)")
+    pr = sub.add_parser("prune", help="delete checkpoints that scored runs no longer need (runs/final_twins, "
+                                      "runs/extension, or a root with .prune_scored_ok)")
+    pr.add_argument("names", nargs="*", help="settings or groups; default all")
     ex = sub.add_parser("export", help="collect reports, plots and light per-cell files into the results folder")
     ex.add_argument("--out", default=None, help="target folder (default --results, else results/<suite>)")
     ex.add_argument("--with_steps", action="store_true", help="also copy the per-step logs (steps.jsonl, large)")
@@ -1563,8 +2010,9 @@ def main(argv=None):
         args.root = str(DEFAULT_ROOT)
     rc = {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run, "audit": cmd_audit,
           "report": cmd_report, "plots": cmd_plots, "rulercheck": cmd_rulercheck, "export": cmd_export,
-          "all": cmd_all}[args.cmd](args)
-    if args.cmd in ("check", "stage0", "run", "audit", "report", "plots", "rulercheck") and auto_export(args):
+          "all": cmd_all, "screen": cmd_screen, "decide": cmd_decide, "prune": cmd_prune}[args.cmd](args)
+    if args.cmd in ("check", "stage0", "run", "audit", "report", "plots", "rulercheck", "screen",
+                    "decide") and auto_export(args):
         export_results(args)
     return rc
 

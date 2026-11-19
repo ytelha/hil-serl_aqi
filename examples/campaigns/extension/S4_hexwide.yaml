@@ -1,0 +1,182 @@
+# =====================================================================
+# extension/S4_hexwide.yaml -- phase 2 of the extension study, smoke test (docs/extension_study.md)
+#
+# Candidate task "hexwide": the hex peg from the wider start range.
+#
+# Smoke test: every arm type of the main study that the final study did not run, once, with one sometimes-careless
+# intermediate (40 %), seed 0, a short cap (8 000 steps): the code paths, not the results.
+# Platform, ensemble, budget, checkpoints and ruler rules as in the final study (F2_standard); the ruler grid is the
+# candidate's own (wider for a wider start range). Run by the extension suite only:
+#   python examples/synthetic_suite.py --suite extension all      (tools/run_extension_unattended.sh)
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: hex
+  rpy_box: [0.1, 0.1, 0.4]         # orientation box, as in every new-stack run
+  random_xy: 0.025
+  random_rz: 0.2
+operators:
+  intermediate: 1
+  jitter: 0.15
+  sample_seed: 0
+demos:
+  per_operator: 6                  # standard: 6 demonstrations, as in every earlier campaign (F1_hard: 3)
+  filtered: true
+  max_attempts: 300
+methods:
+  - bc-discard
+  - bc-reweight
+  - bc-outcome
+  - bc-perfect
+  - asks-15-bc
+  - aqi
+  - asks-30
+  - e2hil
+arms:
+  bc-discard:                    # imitate; the behavioural score drops the lowest 40 %
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-reweight:                   # imitate all; weight = sigmoid(2 x behavioural score)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-outcome:                    # imitate; drop takeovers of failed episodes (label-free)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [outcome_filter]
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-perfect:                    # imitate; drop exactly the careless ones (reads the label)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [oracle_filter]
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  asks-15-bc:                    # the robot asks 15 %; imitate every correction
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.15
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  aqi:                           # asks 15 % + imitate, the score drops the lowest 40 %
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.15
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  asks-30:                       # the robot asks 30 %; every correction kept
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.30
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+replicates:
+  seeds: 1
+  seed_base: 0
+budget:
+  mode: steps
+  steps_cap: 8000                  # smoke: the code paths only
+  minutes_per_cell: 240            # wall-clock safety cap only (anti-hang)
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.024,0.000"
+    - "-0.012,0.000"
+    - "0.000,0.000"
+    - "0.012,0.000"
+    - "0.024,0.000"
+  converge_mode: eval              # the autonomous mini-eval decides (2 passes in a row at 0.6)
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1                     # one learner step per env step
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 8               # the newest 8 ...
+  checkpoint_keep_every: 2000      # ... plus every 2 000-th learner step ...
+  checkpoint_keep_until: 17000     # ... up to 17 000 (env 12 000 for the warm-started arms): budget curves
+  demo_pretrain: true              # the ensemble's warm start; plain HIL-SERL opts out below
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # 0 = the built-in 3e-4 (the ablation's ens-wu)
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_inconsistent: true     # the sometimes-careless operator: careful or careless per takeover (hidden label)
+  synthetic_bad_share: 0.4         # careless in 40 % of takeovers ...
+  synthetic_bad_persistence: 0.7   # ... in spells of a few takeovers
+  synthetic_rotation_control: true
+  synthetic_orientation_monitor: true
+  synthetic_orientation_tilt_rad: 0
+  synthetic_orientation_yaw_rad: 0
+  trigger_terms: [uncertainty]     # the asking gate: the critics' disagreement alone
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true            # per-step simulator truth in the logs (analysis only)
+  critic_ensemble_size: 10
+  critic_subsample_size: 2
+  per_member_targets: true
+  bc_loss_weight: 0.0              # no imitation loss in any arm
+  e2hil_K: 8                       # E2HiL as in the comprehensive study
+  e2hil_q_low: 0.05
+  e2hil_q_high: 0.90
+  e2hil_q_agg: min
+method_overrides:
+  hilserl:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  e2hil:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+eval:
+  dx_mm: [-24, -18, -12, -6, 0, 6, 12, 18, 24]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+  skip_pretrain: true              # warm-start checkpoints are not scored ...
+  newest: 0                        # ... every other kept checkpoint is (budget curves)
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+logging:
+  wandb: "online"                  # the driver falls back to offline when no key is set
+  takeover_channels: true
+  wandb_tags: [extension, smoke, S4_hexwide]
+analysis:
+  baseline: hilserl
+  plots: true

@@ -177,15 +177,17 @@ def test_orientation_monitor_reaches_the_actor_only():
 
 
 def test_orientation_box_reaches_every_process_through_the_environment():
+    # the extension study's task knobs travel the same way, always set, empty when off
+    knobs_off = {"SIM_SUCCESS_LATERAL": "", "SIM_RANDOM_XY": "", "SIM_RANDOM_RZ": ""}
     args = _parse("rq1_baseline.yaml")
     assert rc._rpy_box(args) is None
-    assert rc._sim_env(args) == {"SIM_RPY_BOX": ""}      # set even when off
+    assert rc._sim_env(args) == {"SIM_RPY_BOX": "", **knobs_off}      # set even when off
     args = _parse("rq1_baseline.yaml", yaml_text="task:\n  peg_shape: cuboid\n"
                                                  "  rpy_box: [0.1, 0.1, 0.4]\n")
-    assert rc._sim_env(args) == {"SIM_RPY_BOX": "0.1,0.1,0.4"}
+    assert rc._sim_env(args) == {"SIM_RPY_BOX": "0.1,0.1,0.4", **knobs_off}
     args = _parse("rq1_baseline.yaml", extra=["--sim_rpy_box", "0.05,0.05,0.2"],
                   yaml_text="task:\n  rpy_box: [0.1, 0.1, 0.4]\n")
-    assert rc._sim_env(args) == {"SIM_RPY_BOX": "0.05,0.05,0.2"}   # CLI wins
+    assert rc._sim_env(args) == {"SIM_RPY_BOX": "0.05,0.05,0.2", **knobs_off}   # CLI wins
     # the commands do not change: the box travels in the environment of the
     # demo, learner, actor and ruler processes
     lcmd, acmd = _cmds(args, args.methods.split(",")[0])

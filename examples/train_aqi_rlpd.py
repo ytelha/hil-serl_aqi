@@ -419,6 +419,11 @@ flags.DEFINE_float("quality_drop_fraction", None,
                    "Discard filters (quality_filters score_filter / random_filter): "
                    "share of the takeovers dropped from the intervention buffer "
                    "(quality/aqi; default 0.4).")
+flags.DEFINE_float("quality_gamma", None,
+                   "Steepness of the segment score -> imitation weight map "
+                   "w = clip(sigmoid(gamma * q_seg), w_min, w_max) (quality/aqi; "
+                   "default 2.0). 0 = every kept takeover gets the same weight "
+                   "(uniform imitation, e.g. next to a discard filter).")
 flags.DEFINE_float("per_eta", -1.0,
                    "PER weight on max(q_int,0) in the priority (quality/aqi; "
                    "<0 = experiment default).")
@@ -1842,7 +1847,7 @@ def main(_):
     for _key in ("quality_post_release_steps", "quality_hindsight_discount",
                  "quality_consistency_weight", "quality_consistency_k",
                  "quality_consistency_sigma_ref", "quality_cf_diag",
-                 "quality_drop_fraction"):
+                 "quality_drop_fraction", "quality_gamma"):
         if FLAGS[_key].present:
             overrides[_key] = getattr(FLAGS, _key)
     # the hindsight advantage must discount like the critic it reads
@@ -1894,7 +1899,8 @@ def main(_):
                    "per_scale_decay", "per_refresh_period", "per_is_beta",
                    "quality_score_mode", "quality_behavioral_terms",
                    "quality_consistency_weight", "quality_consistency_k",
-                   "quality_consistency_sigma_ref", "quality_drop_fraction"):
+                   "quality_consistency_sigma_ref", "quality_drop_fraction",
+                   "quality_gamma"):
             return aqi_cfg.quality_on
         if key in ("quality_post_release_steps", "quality_hindsight_discount",
                    "quality_cf_diag"):
