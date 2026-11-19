@@ -1,0 +1,114 @@
+# =====================================================================
+# final/F3_careful_hard.yaml -- careful-operator control of F1_hard (docs/final_careful_control.md)
+#
+# The final study ran every arm with a sometimes-careless operator (careless in 40 % of its takeovers) and had no arm
+# with a careful operator, so it cannot say what the carelessness cost in the first place, i.e. how much any grading
+# could recover at most. This campaign is F1_hard's `keepall` arm with the SAME operators, seeds,
+# demonstrations, ruler, budget and platform, and one difference: the operator is never careless
+# (synthetic_inconsistent: false). Paired with F1_hard's keepall cells by operator and seed:
+#   careful keepall (here) - careless keepall (F1_hard)  = what the carelessness cost
+#   careful keepall (here) - perfect filter (F1_hard)    = what is left after dropping every careless correction
+# 1 arm x (2 experts + 2 intermediates + 2 novices at s = 0.3) x 2 seeds = 12 cells.
+#
+# The arm keeps the name `keepall`: its training commands are F1_hard's keepall commands without the three
+# careless-operator flags (tests/test_final_careful.py checks this). The campaign folder tells the two apart.
+# Operators, demonstrations and the ruler are copied from runs/final/F1_hard/ before the first run and checked by hash
+# (tools/run_final_careful_unattended.sh), so both campaigns train from byte-identical demonstrations.
+#
+# Run (unattended, both careful campaigns, results only in results/final_careful/):
+#   bash tools/run_final_careful_unattended.sh
+# Never run it in a folder of another campaign, and never mix its cells with another machine's.
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: cuboid
+  rpy_box: [0.1, 0.1, 0.4]         # orientation box (roll, pitch, yaw half-widths, rad), as in every new-stack run
+operators:
+  expert: 2
+  intermediate: 2
+  novice: 2
+  jitter: 0.15
+  sample_seed: 0
+  tier_s_exec: {novice: 0.3}       # the stronger novice: execution skill 0.3 (0 = the old novice, 1 = expert)
+  tier_s_mon: {novice: 0.3}        # ... and monitoring skill 0.3 (when to step in, how fast)
+demos:
+  per_operator: 3                  # harder: 3 demonstrations instead of 6 (F2_standard keeps 6)
+  filtered: true
+  max_attempts: 300
+methods:
+  - keepall
+arms:
+  keepall:                         # the ensemble, the operator decides, every correction kept
+    mode: quality
+    quality_score_mode: behavioral # computed and logged only (the score audit reads it)
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+replicates:
+  seeds: 2
+  seed_base: 0
+budget:
+  mode: steps
+  steps_cap: 30000                 # only bounds a failing cell; the mini-eval rule stops a learning one
+  minutes_per_cell: 240            # wall-clock safety cap only (anti-hang)
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.016,0.000"
+    - "-0.008,0.000"
+    - "0.000,0.000"
+    - "0.008,0.000"
+    - "0.016,0.000"
+  converge_mode: eval              # the autonomous mini-eval decides (2 passes in a row at 0.6)
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1                     # one learner step per env step
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 8               # the newest 8 ...
+  checkpoint_keep_every: 2000      # ... plus every 2 000-th learner step ...
+  checkpoint_keep_until: 17000     # ... up to 17 000 (env 12 000 for the warm-started arms): budget curves
+  demo_pretrain: true              # the ensemble's warm start; plain HIL-SERL opts out below
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # 0 = the built-in 3e-4 (the ablation's ens-wu)
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_inconsistent: false    # THE difference to the final study: the operator is never careless
+  synthetic_rotation_control: true
+  synthetic_orientation_monitor: true
+  synthetic_orientation_tilt_rad: 0
+  synthetic_orientation_yaw_rad: 0
+  trigger_terms: [uncertainty]     # the asking gate: the critics' disagreement alone
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true            # per-step simulator truth in the logs (analysis only)
+  critic_ensemble_size: 10
+  critic_subsample_size: 2
+  per_member_targets: true
+  bc_loss_weight: 0.0              # no imitation loss in any arm
+eval:
+  dx_mm: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+  skip_pretrain: true              # warm-start checkpoints are not scored ...
+  newest: 0                        # ... every other kept checkpoint is (budget curves)
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+logging:
+  wandb: "online"                  # the driver falls back to offline when no key is set
+  takeover_channels: true
+  wandb_tags: [final_study, careful_control, F3_careful_hard]
+analysis:
+  baseline: keepall
+  plots: true
