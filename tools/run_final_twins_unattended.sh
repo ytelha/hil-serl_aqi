@@ -20,6 +20,8 @@ DST="runs/final_twins"
 RES="results/final_twins"
 PAIRS=("F1_hard:F3_careful_hard" "F2_standard:F4_careful_standard"
        "F2_standard:F5_bc_standard" "F2_standard:F6_bc_careful_standard")
+# phase 0 also ran on its own (commit a290c12, 19-20 Nov) into this root: a twin finished there is not repeated
+EARLIER="runs/final_careful"
 if [ "${1:-}" != "--here" ]; then
     mkdir -p "${DST}"
     LOG="${DST}/unattended.out"
@@ -63,6 +65,15 @@ ROWS=()
 DONE_CAMPAIGNS=()
 for pair in "${PAIRS[@]}"; do
     s="${pair%%:*}"; d="${pair##*:}"
+    # ---- 0. finished before in the earlier root: not repeated
+    if [ -d "${EARLIER}/${d}/checkpoints" ]; then
+        n_e=$(ls -d "${EARLIER}/${d}"/checkpoints/*/.done 2>/dev/null | wc -l)
+        n_plan=$("${PY}" -c "import sys; sys.path.insert(0, 'examples'); import synthetic_suite as s; s.configure('final'); print(s.planned_cells(sys.argv[1]))" "${d}")
+        if [ "${n_e}" -ge "${n_plan}" ] && [ "${n_plan}" -gt 0 ]; then
+            note "${d}: finished before in ${EARLIER} (${n_e} of ${n_plan} runs); not repeated"
+            ROWS+=("| ${d} | finished before in ${EARLIER} | ${n_e} / ${n_plan} | - |"); continue
+        fi
+    fi
     # ---- 1. inputs copied once from the final study and checked by hash on every start
     missing=""
     for item in operators demos eval_grid.json; do [ -e "${SRC}/${s}/${item}" ] || missing="${missing} ${item}"; done

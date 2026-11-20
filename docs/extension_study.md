@@ -22,6 +22,9 @@ tail -f runs/extension_pipeline/pipeline.out      # progress
 
 ## Phases 0 and 1: twins of the final study
 
+Phase 0 also ran on its own (19–20 Nov, commit a290c12, into `runs/final_careful/`). The twins runner does not
+repeat a twin that finished there.
+
 A twin is a final-study campaign with one deliberate difference. It uses the final study's operators, demonstrations,
 ruler (`eval_grid.json`) and orientation limits. These are copied from `runs/final/<source>/` and checked by hash before
 the first run. A twin whose inputs differ is skipped, never trained on other inputs. Results are paired by operator

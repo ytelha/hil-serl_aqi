@@ -181,6 +181,7 @@ def test_twins_runner_pairs_hash_check_skip_and_never_push():
     for pair in SOURCE.items():
         assert f'"{pair[1]}:{pair[0]}"' in text, pair
     assert "sha256sum" in text and "SKIPPED" in text                        # a twin with other inputs is skipped
+    assert re.search(r'^EARLIER="runs/final_careful"$', text, re.M) and "not repeated" in text   # phase 0 ran alone
     assert '"${SUITE[@]}" prune' in text                                    # pruning through the suite's guard
     body = text.split("\nshift\n", 1)[1]
     assert body.count("exit 2") == 1 and "no .venv" in body                 # the only stop: nothing can run
