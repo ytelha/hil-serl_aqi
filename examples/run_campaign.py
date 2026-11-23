@@ -61,6 +61,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -236,6 +237,10 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     setk("checkpoint_keep", bud.get("checkpoint_keep"))
     setk("checkpoint_keep_every", bud.get("checkpoint_keep_every"))
     setk("checkpoint_keep_until", bud.get("checkpoint_keep_until"))
+    # fixed-budget protocol (extension study, phase 3): off unless set
+    setk("checkpoint_env_every", bud.get("checkpoint_env_every"))
+    setk("divergence_guard_every", bud.get("divergence_guard_every"))
+    setk("metrics_log_every", bud.get("metrics_log_every"))
 
     ev = cfg.get("eval") or {}
     if ev.get("dx_mm") is not None and "eval_dx_mm" not in explicit:
@@ -243,6 +248,8 @@ def apply_config(args, cfg: dict, explicit) -> dict:
     if ev.get("yaw") is not None and "eval_yaw" not in explicit:
         args.eval_yaw = _csv(ev["yaw"])
     setk("eval_reps", ev.get("reps"))
+    setk("eval_after_each_cell", ev.get("after_each_cell"))
+    setk("eval_prune_keep_last", ev.get("prune_keep_last"))
     setk("eval_max_steps", ev.get("max_steps"))
     setk("eval_last_k", ev.get("last_k"))
     setk("eval_select", ev.get("select"))
@@ -427,6 +434,14 @@ def _actor_budget(args):
     # Actor loop still needs a finite max_steps; keep it effectively unbounded
     # so wall-clock is the real stop criterion.
     return 1_000_000_000, float(args.minutes_per_cell)
+
+
+def _read_json(path: Path):
+    """The JSON at path, or None (missing or unreadable)."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _has_checkpoint(ckpt_dir: Path) -> bool:
@@ -1465,7 +1480,18 @@ def _learner_cmd(args, ckpt: Path, demo_path: Path, method: str, seed: int,
         ["--utd_ratio", str(args.utd_ratio)]
         if float(getattr(args, "utd_ratio", 0.0) or 0.0) > 0.0 else []) + (
         ["--learning_rate", str(lr)] if lr and lr > 0 else []
-    ) + _arm_flag(args, method) + _aqi_flags(args, method) + _wandb_flags(args)
+    ) + _run_guard_flags(args) + _arm_flag(args, method) + _aqi_flags(args, method) + _wandb_flags(args)
+
+
+def _run_guard_flags(args):
+    """Learner flags of the fixed-budget protocol (serl_launcher/utils/run_guard.py), each only when set (> 0), so
+    every earlier config keeps byte-identical commands."""
+    out = []
+    for key in ("checkpoint_env_every", "divergence_guard_every", "metrics_log_every"):
+        v = int(getattr(args, key, 0) or 0)
+        if v > 0:
+            out += [f"--{key}", str(v)]
+    return out
 
 
 def _arm_flag(args, arm):
@@ -1544,6 +1570,54 @@ def actor_crashed(actor_log: Path, actor_rc, timed_out: bool) -> bool:
     return actor_rc not in (0, None) and not timed_out
 
 
+def _wait_actor(ap, timeout, ckpt: Path, lp, grace=900.0, poll=30.0):
+    """ap.wait(timeout=timeout), with one addition: once the learner's divergence guard wrote DIVERGED.json and the
+    learner has exited, the actor gets `grace` seconds to notice the marker at an episode end (it may be waiting on
+    the learner that is gone), then it is terminated. Without the marker this is exactly ap.wait(timeout)."""
+    t0, div_t = time.time(), None
+    while True:
+        try:
+            return ap.wait(timeout=poll if timeout is None else max(0.1, min(poll, timeout - (time.time() - t0))))
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.time()
+        if timeout is not None and now - t0 >= timeout:
+            raise subprocess.TimeoutExpired(ap.args, timeout)
+        if div_t is None and (ckpt / "DIVERGED.json").exists() and lp.poll() is not None:
+            div_t = now
+        if div_t is not None and now - div_t >= grace:
+            _yellow(f"[train] the learner diverged and exited; the actor did not stop within {grace:g} s "
+                    f"-> terminating it.")
+            return _terminate(ap)
+
+
+def _mark_diverged(campaign: Path, cell, ckpt: Path, actor_rc=None, learner_rc=None):
+    """The learner's divergence guard wrote DIVERGED.json (--divergence_guard_every): keep a copy in
+    <campaign>/diverged/ (a retry deletes the run folder), and mark the run crashed (.crashed, no .done), so a re-run
+    of the campaign retrains it once from scratch and the ruler skips it."""
+    src = ckpt / "DIVERGED.json"
+    try:
+        payload = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = {}
+    arch = campaign / "diverged"
+    arch.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        (arch / f"{cell.id}.{stamp}.json").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    except OSError:
+        pass
+    (ckpt / ".crashed").write_text(json.dumps({
+        "cell": cell.id, "reason": "diverged", "diverged_step": payload.get("step"),
+        "phase": payload.get("phase"), "nonfinite": payload.get("nonfinite"),
+        "actor_rc": actor_rc, "learner_rc": learner_rc,
+        "when": datetime.datetime.now().isoformat(timespec="seconds")}, indent=2))
+    _red(f"[train] {cell.id}: the learner DIVERGED at learner step {payload.get('step')} "
+         f"({payload.get('phase')}; non-finite: {', '.join((payload.get('nonfinite') or [])[:4])}); "
+         f"marked .crashed, record in diverged/ -- a re-run of the campaign retrains it once.")
+    return False
+
+
 def train_cell(args, campaign: Path, cell: Cell):
     ckpt = campaign / "checkpoints" / cell.id
     done = ckpt / ".done"
@@ -1587,6 +1661,8 @@ def train_cell(args, campaign: Path, cell: Cell):
                  f"(timeout {ready_timeout:g}s or crash); see {llog.name}.")
             _terminate(lp)
             lf.close()
+            if (ckpt / "DIVERGED.json").exists():       # diverged during the warm start
+                return _mark_diverged(campaign, cell, ckpt, learner_rc=lp.returncode)
             return False
         actor_steps, actor_minutes = _actor_budget(args)
         if args.cell_budget_mode == "time":
@@ -1611,7 +1687,7 @@ def train_cell(args, campaign: Path, cell: Cell):
                                and args.minutes_per_cell > 0 else None))
         timed_out = False
         try:
-            arc = ap.wait(timeout=actor_timeout)
+            arc = _wait_actor(ap, actor_timeout, ckpt, lp)
         except subprocess.TimeoutExpired:
             _yellow(f"[train] {cell.id}: actor exceeded its time budget + grace "
                     f"-> terminating.")
@@ -1635,6 +1711,8 @@ def train_cell(args, campaign: Path, cell: Cell):
         lf.close()
         (ckpt / "STOP").unlink(missing_ok=True)
 
+    if (ckpt / "DIVERGED.json").exists():
+        return _mark_diverged(campaign, cell, ckpt, actor_rc=arc, learner_rc=lrc)
     if not _has_checkpoint(ckpt):
         _red(f"[train] {cell.id}: no checkpoint written; treating as FAILED.")
         return False
@@ -1660,6 +1738,8 @@ def train_cell(args, campaign: Path, cell: Cell):
         "converged": conv is not None,
         "converged_step": (conv or {}).get("step"),
         "convergence": conv,
+        **({"would_stop": _read_json(ckpt / "WOULD_STOP.json")}
+           if getattr(args, "converge_mode", "rolling") == "observe" else {}),
         "finished": datetime.datetime.now().isoformat(timespec="seconds")},
         indent=2))
     _document_run(args, campaign, cell, conv, cmds=(lcmd, acmd))
@@ -1828,6 +1908,30 @@ def eval_cell(args, campaign: Path, cell: Cell):
         return False
     _document_eval(args, campaign, cell)
     return True
+
+
+def prune_scored_cell(campaign: Path, cell, keep_last: int):
+    """eval.prune_keep_last > 0: delete a scored run's checkpoint_<step> folders except its best window and its newest
+    `keep_last` (the ruler result per checkpoint stays in cell.json). Returns the number of folders deleted."""
+    if keep_last <= 0:
+        return 0
+    ckpt = campaign / "checkpoints" / cell.id
+    res = _read_json(campaign / "eval_runs" / cell.id / "cell.json")
+    if res is None or not (ckpt / ".done").exists():
+        return 0
+    steps = sorted(int(p.name[11:]) for p in ckpt.iterdir()
+                   if p.is_dir() and re.fullmatch(r"checkpoint_\d+", p.name))
+    keep = {int(x) for x in (res.get("best_window_steps") or [])} | set(steps[-keep_last:])
+    if res.get("checkpoint_step") is not None:
+        keep.add(int(res["checkpoint_step"]))
+    gone = 0
+    for st in steps:
+        if st not in keep:
+            shutil.rmtree(ckpt / f"checkpoint_{st}", ignore_errors=True)
+            gone += 1
+    if gone:
+        _green(f"[eval] {cell.id}: {gone} scored checkpoints deleted (best window and newest {keep_last} kept)")
+    return gone
 
 
 def _document_eval(args, campaign: Path, cell):
@@ -2712,10 +2816,13 @@ def build_arg_parser():
     p.add_argument("--per_is_beta", type=float, default=None,
                    help="importance-sampling exponent for prioritised replay "
                         "(quality/aqi; 0 = off).")
-    p.add_argument("--converge_mode", choices=["rolling", "eval"], default="rolling",
+    p.add_argument("--converge_mode", choices=["rolling", "eval", "observe"], default="rolling",
                    help="rolling = the original convergence rule; eval = the "
                         "autonomous fixed-pose mini-eval decides (needs "
-                        "--converge_eval_threshold > 0). YAML: budget.converge_mode.")
+                        "--converge_eval_threshold > 0); observe = the same "
+                        "mini-evals never stop the run, the first would-be stop "
+                        "goes to WOULD_STOP.json (fixed budget). YAML: "
+                        "budget.converge_mode.")
     p.add_argument("--converge_eval_every", type=int, default=2000,
                    help="converge_mode eval: env steps between mini-evals.")
     p.add_argument("--converge_eval_consecutive", type=int, default=2,
@@ -2846,6 +2953,26 @@ def build_arg_parser():
     p.add_argument("--checkpoint_keep_until", type=int, default=0,
                    help="--checkpoint_keep_every: last protected learner step "
                         "(0 = no limit; YAML budget.checkpoint_keep_until).")
+    # fixed-budget protocol (extension study, phase 3; serl_launcher/utils/run_guard.py): passed to the learner only
+    # when > 0, so every earlier config keeps byte-identical commands
+    p.add_argument("--eval_after_each_cell", action="store_true", default=False,
+                   help="score each run on the ruler right after training it (YAML eval.after_each_cell); with "
+                        "--eval_prune_keep_last N then keep only its best window and newest N checkpoints")
+    p.add_argument("--eval_prune_keep_last", type=int, default=0,
+                   help="> 0 with --eval_after_each_cell: checkpoints kept besides the best window (YAML "
+                        "eval.prune_keep_last)")
+    p.add_argument("--checkpoint_env_every", type=int, default=0,
+                   help="> 0: checkpoints every N environment steps (needs "
+                        "--utd_ratio), all kept, instead of learner-step "
+                        "checkpoints (YAML budget.checkpoint_env_every).")
+    p.add_argument("--divergence_guard_every", type=int, default=0,
+                   help="> 0: the learner checks its metrics for NaN / inf every "
+                        "N steps and exits with DIVERGED.json; the run is then "
+                        "marked crashed and retrained once by the suites (YAML "
+                        "budget.divergence_guard_every).")
+    p.add_argument("--metrics_log_every", type=int, default=0,
+                   help="> 0: learner metrics every N steps in "
+                        "learner_metrics.jsonl (YAML budget.metrics_log_every).")
     p.add_argument("--demo_pretrain", action=argparse.BooleanOptionalAction,
                    default=False,
                    help="enable/disable learner demo-only warm start before "
@@ -3074,14 +3201,17 @@ def main(argv=None):
     if args.cell_budget_mode == "time" and args.minutes_per_cell <= 0:
         raise SystemExit("[config] --minutes_per_cell must be > 0 when "
                          "--cell_budget_mode=time.")
-    if args.converge_mode == "eval" and (
+    if args.converge_mode in ("eval", "observe") and (
             args.converge_eval_threshold <= 0 or args.converge_eval_every <= 0
             or args.converge_eval_consecutive < 1):
-        raise SystemExit("[config] --converge_mode eval needs "
+        raise SystemExit(f"[config] --converge_mode {args.converge_mode} needs "
                          "--converge_eval_threshold > 0, --converge_eval_every "
                          "> 0 and --converge_eval_consecutive >= 1.")
     if args.utd_ratio < 0:
         raise SystemExit("[config] --utd_ratio must be >= 0 (0 = off).")
+    if int(getattr(args, "checkpoint_env_every", 0) or 0) > 0 and args.utd_ratio <= 0:
+        raise SystemExit("[config] budget.checkpoint_env_every needs a fixed update "
+                         "ratio (budget.utd_ratio > 0).")
     if args.synthetic_orientation_monitor and not args.synthetic_rotation_control:
         raise SystemExit("[config] --synthetic_orientation_monitor needs "
                          "--synthetic_rotation_control: a takeover for a twisted "
@@ -3224,6 +3354,12 @@ def main(argv=None):
                 break
             _green(f"\n----- cell {i}/{len(cells)}: {cell.id} -----")
             ok = train_cell(args, campaign, cell) and ok
+            # eval.after_each_cell (phase 3): score the run right away and keep only the checkpoints its result
+            # needs, so the disk holds one run's full checkpoint set at a time, not the campaign's
+            if (getattr(args, "eval_after_each_cell", False) and "eval" in stages
+                    and (campaign / "checkpoints" / cell.id / ".done").exists()):
+                if eval_cell(args, campaign, cell):
+                    prune_scored_cell(campaign, cell, int(getattr(args, "eval_prune_keep_last", 0) or 0))
 
     # -- stage 4: eval every cell --------------------------------------------
     if "eval" in stages:

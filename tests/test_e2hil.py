@@ -21,7 +21,7 @@ import flax.linen as nn                       # noqa: E402
 from flax.core.frozen_dict import freeze      # noqa: E402
 
 from serl_launcher.agents.continuous.e2hil import (   # noqa: E402
-    e2hil_actor_loss, entropy_bounded_mask, influence_per_state)
+    e2hil_actor_loss, entropy_bounded_mask, influence_per_state, label_stats)
 from serl_launcher.agents.continuous.sac import SACAgent   # noqa: E402
 from serl_launcher.common.encoding import EncodingWrapper  # noqa: E402
 from serl_launcher.networks.actor_critic_nets import (      # noqa: E402
@@ -113,6 +113,22 @@ def test_masked_loss_and_label_stats():
     np.testing.assert_allclose(float(info["e2hil_keep_ratio"]), keep.mean())
     n_int = int((np.arange(B) % 3 == 2).sum())
     assert float(info["e2hil_intervention_count"]) == n_int
+    assert float(info["e2hil_careless_count"]) == 0.0
+    assert float(info["e2hil_takeover_count"]) == n_int
+
+
+def test_label_stats_careless_takeovers():
+    """Label 3 (careless takeover) gets its own count and keep fraction; 'takeover' pools 2 and 3."""
+    labels = jnp.asarray(np.array([0, 1, 2, 3, 3, 2, 1, 3]))
+    c = jnp.asarray(np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], dtype=np.float32))
+    mask = jnp.asarray(np.array([1, 1, 1, 0, 1, 1, 0, 0], dtype=np.float32))
+    s = label_stats(c, mask, labels)
+    assert float(s["e2hil_careless_count"]) == 3.0
+    np.testing.assert_allclose(float(s["e2hil_careless_keep_frac"]), 1.0 / 3.0, rtol=1e-5)
+    np.testing.assert_allclose(float(s["e2hil_intervention_keep_frac"]), 1.0, rtol=1e-5)
+    assert float(s["e2hil_takeover_count"]) == 5.0
+    np.testing.assert_allclose(float(s["e2hil_takeover_keep_frac"]), 3.0 / 5.0, rtol=1e-5)
+    np.testing.assert_allclose(float(s["e2hil_careless_abs_c_mean"]), (4 + 5 + 8) / 3.0, rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ from serl_launcher.agents.continuous.sac_hybrid_single import SACAgentHybridSing
 from serl_launcher.agents.continuous.sac_hybrid_dual import SACAgentHybridDualArm
 from serl_launcher.utils.timer_utils import Timer
 from serl_launcher.utils.update_ratio import UpdateRatio
+from serl_launcher.utils import run_guard
 from serl_launcher.utils.train_utils import concat_batches
 from serl_launcher.utils.sharding import DeviceSharding
 from serl_launcher.utils.obs_view import compose_obs_view, resolve_state_slices
@@ -134,6 +135,23 @@ flags.DEFINE_integer("checkpoint_keep_every", 0,
 flags.DEFINE_integer("checkpoint_keep_until", 0,
                      "--checkpoint_keep_every: the last learner step it protects "
                      "(0 = no limit).")
+# ---- fixed-budget protocol (extension study, phase 3; serl_launcher/utils/run_guard.py). All off by default.
+flags.DEFINE_integer("checkpoint_env_every", 0,
+                     "LEARNER, > 0: checkpoints on environment steps instead of "
+                     "learner steps: one after every N environment steps (U * N "
+                     "online updates under --utd_ratio U, which it needs), all "
+                     "kept, listed in env_checkpoints.jsonl; at the stop the "
+                     "learner catches up with the steps it received, then saves "
+                     "the last one. The periodic learner-step checkpoints are "
+                     "off. 0 = the learner-step checkpoints, as before.")
+flags.DEFINE_integer("divergence_guard_every", 0,
+                     "LEARNER, > 0: every N learner steps check that all learner "
+                     "metrics are finite; on the first NaN / inf write "
+                     "DIVERGED.json and exit (the actor then stops). 0 = off.")
+flags.DEFINE_integer("metrics_log_every", 0,
+                     "LEARNER, > 0: every N learner steps one line of scalar "
+                     "learner metrics in <checkpoint_path>/learner_metrics.jsonl "
+                     "(local, whatever W&B does). 0 = off.")
 flags.DEFINE_integer(
     "demo_pretrain_steps", 0,
     "LEARNER only: number of demo-only gradient steps to run before waiting "
@@ -185,14 +203,17 @@ flags.DEFINE_string(
     "semicolon-separated fixed reset poses for the convergence mini-eval: "
     "each pose is 'dx_m,dyaw_rad'.")
 flags.DEFINE_enum(
-    "converge_mode", "rolling", ["rolling", "eval"],
+    "converge_mode", "rolling", ["rolling", "eval", "observe"],
     "'rolling' = the original rule (--converge_success over the last "
     "--converge_window training episodes, then the optional mini-eval gate); "
     "'eval' = decide convergence with the autonomous fixed-pose mini-eval "
     "alone: every --converge_eval_every env steps (at episode ends, once the "
     "policy has succeeded without help at least once) and stop after "
     "--converge_eval_consecutive passes of --converge_eval_threshold in a row. "
-    "Independent of how often the operator steps in during training.")
+    "Independent of how often the operator steps in during training. "
+    "'observe' = the same mini-evals, but the run never stops on them: it "
+    "trains its whole --max_steps budget and the first would-be stop is "
+    "written to WOULD_STOP.json (fixed-budget protocol).")
 flags.DEFINE_integer("converge_eval_every", 2000,
                      "--converge_mode eval: env steps between mini-evals.")
 flags.DEFINE_integer("converge_eval_consecutive", 2,
@@ -836,6 +857,8 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
     request_cue_on = False
     hard_cue_on = False
     takeover_channels, handbacks = {}, {}     # --log_takeover_channels
+    careless = run_guard.CarelessCounter()    # --synthetic_inconsistent: careless takeovers per episode
+    learner_diverged = False                  # the learner's divergence guard wrote DIVERGED.json
 
     # ---- convergence-based early stop (actor) -----------------------------
     # A rolling window of recent episode outcomes lets the actor stop as soon as
@@ -870,9 +893,13 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
     # The rolling rule counts only training episodes the operator never
     # touched, so an operator who keeps stepping in delays it although the
     # policy may already succeed alone. In eval mode the mini-eval decides.
-    eval_mode = FLAGS.converge_mode == "eval"
+    # 'observe' (fixed-budget protocol): the same mini-evals, but they never stop the run; the first would-be stop
+    # is written to WOULD_STOP.json and the run trains its whole budget.
+    eval_mode = FLAGS.converge_mode in ("eval", "observe")
+    observe_mode = FLAGS.converge_mode == "observe"
+    would_stop_step = None
     if eval_mode and not converge_eval_on:
-        raise ValueError("--converge_mode eval needs --converge_eval_threshold > 0")
+        raise ValueError(f"--converge_mode {FLAGS.converge_mode} needs --converge_eval_threshold > 0")
     eval_passes, eval_history, last_eval_step = 0, [], None
     seen_autonomous = False
 
@@ -1053,10 +1080,14 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             if "right" in info:
                 info.pop("right")
 
+            # the hidden condition of the current takeover (inconsistent operator only; None otherwise)
+            op_condition = ((info.get("synthetic_operator") or {}).get("condition")
+                            if FLAGS.synthetic_inconsistent else None)
             # override the action with the intervention action
             if "intervene_action" in info:
                 actions = info.pop("intervene_action")
                 intervention_steps += 1
+                careless.step(True, not already_intervened, op_condition)   # counts only; logging
                 if not already_intervened:
                     intervention_count += 1
                 already_intervened = True
@@ -1077,9 +1108,9 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             if 'grasp_penalty' in info:
                 transition['grasp_penalty'] = info['grasp_penalty']
             if aqi_cfg.e2hil_on:
-                # source label for E2HiL's per-source diagnostics
-                # (1 = online policy step, 2 = human/synthetic takeover)
-                transition["labels"] = 2 if already_intervened else 1
+                # source label for E2HiL's per-source diagnostics (never in a loss): 1 = online policy step,
+                # 2 = human/synthetic takeover, 3 = a careless takeover of the inconsistent operator
+                transition["labels"] = run_guard.e2hil_label(already_intervened, op_condition)
             if aqi_cfg.quality_on:
                 # every transition must carry the AQI fields because the
                 # learner buffers allocate them; autonomous steps are zeros.
@@ -1245,6 +1276,8 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                             if FLAGS.log_takeover_channels:
                                 _rec["takeover_channels"] = dict(takeover_channels)
                                 _rec["handbacks"] = dict(handbacks)
+                            if FLAGS.synthetic_inconsistent:   # every arm, plain ones included
+                                _rec.update(careless.record())
                             _ef.write(json.dumps(_rec) + "\n")
                     except Exception:
                         pass
@@ -1358,7 +1391,29 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                                 pass
                         pbar.write(f">>> mini-eval at step {step}: SR {ruler_sr:.2f} "
                                    f"(pass {eval_passes}/{FLAGS.converge_eval_consecutive})")
-                        if eval_passes >= FLAGS.converge_eval_consecutive:
+                        if eval_passes >= FLAGS.converge_eval_consecutive and observe_mode:
+                            # fixed budget: record the first would-be stop, never stop
+                            if would_stop_step is None:
+                                would_stop_step = int(step)
+                                print_green(
+                                    f"\n>>> would-be stop at step {step}: fixed-pose mini-eval SR >= "
+                                    f"{FLAGS.converge_eval_threshold:.2f} in {eval_passes} evaluations in a "
+                                    f"row; the run goes on to its {config.max_steps}-step budget.")
+                                if FLAGS.checkpoint_path:
+                                    try:
+                                        run_guard.write_json(
+                                            os.path.join(os.path.abspath(FLAGS.checkpoint_path),
+                                                         run_guard.WOULD_STOP_FILE),
+                                            run_guard.would_stop_payload(
+                                                step, episodes_total, ruler_sr,
+                                                FLAGS.converge_eval_threshold,
+                                                FLAGS.converge_eval_consecutive,
+                                                FLAGS.converge_eval_every, list(eval_history),
+                                                [[float(dx), float(dyaw)]
+                                                 for dx, dyaw in converge_eval_poses]))
+                                    except OSError:
+                                        pass
+                        elif eval_passes >= FLAGS.converge_eval_consecutive:
                             converged = True
                             print_green(
                                 f"\n>>> CONVERGED at step {step}: fixed-pose mini-eval SR >= "
@@ -1385,11 +1440,17 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                 intervention_count = 0
                 intervention_steps = 0
                 takeover_channels, handbacks = {}, {}
+                careless.reset()
                 already_intervened = False
                 request_cue_on = False
                 client.update()
                 if utd is not None:
                     utd.actor_note_sent(step - start_step + 1)
+                # the learner's divergence guard stopped it: the run is void, stop collecting
+                if run_guard.diverged(FLAGS.checkpoint_path):
+                    learner_diverged = True
+                    print_red(f"\n>>> the learner diverged (DIVERGED.json) -> stopping the actor at step {step}.")
+                    break
                 obs, _ = env.reset()
                 aqi.begin_episode()
 
@@ -1429,7 +1490,13 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
             f"{sum(recent_outcomes) / max(len(recent_outcomes), 1):.2f} < "
             f"{FLAGS.converge_success:.2f}). This cell 'did not converge' -- a "
             f"real operator-dependency signal; no CONVERGED.json is written.")
-    if eval_mode and not converged and not timed_out:
+    if observe_mode and not timed_out and not learner_diverged:
+        print_green(
+            f"\n>>> fixed budget: the actor trained its {config.max_steps} steps; "
+            + (f"the mini-eval would have stopped it at step {would_stop_step}."
+               if would_stop_step is not None else "the mini-eval would not have stopped it.")
+            + f" {len(eval_history)} mini-evals in convergence_evals.jsonl.")
+    elif eval_mode and not converged and not timed_out and not learner_diverged:
         print_yellow(
             f"\n>>> actor reached the {config.max_steps}-step budget WITHOUT "
             f"converging: "
@@ -1461,8 +1528,11 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng, aqi_cfg):
                 op = {"operator_id": FLAGS.operator_id, "human": True}
             term = {"cap": config.max_steps, "converged": bool(converged),
                     "reason": ("converged" if converged else
+                               "learner_diverged" if learner_diverged else
                                "time_budget" if timed_out else "step_cap"),
                     "wall_minutes": round((time.time() - t_start) / 60.0, 2)}
+            if observe_mode:
+                term["would_stop_step"] = would_stop_step
             if FLAGS.max_minutes > 0:
                 term["time_budget_min"] = FLAGS.max_minutes
             if converged:
@@ -1564,6 +1634,37 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
             n = len(replay_buffer)
             return float("inf") if _rb_cap and n >= _rb_cap else n - _rb0
 
+    # ---- fixed-budget protocol (serl_launcher/utils/run_guard.py); each part is off unless its flag is set
+    env_ckpts = run_guard.EnvCheckpoints(FLAGS.checkpoint_path, FLAGS.checkpoint_env_every,
+                                         FLAGS.utd_ratio if utd is not None else 0.0)
+    guard = run_guard.DivergenceGuard(FLAGS.checkpoint_path, FLAGS.divergence_guard_every)
+    mlog = run_guard.MetricsLog(FLAGS.checkpoint_path, FLAGS.metrics_log_every)
+    env_ckpts.reset()
+    guard.reset()
+
+    def _save_all_kept(state, at_step):
+        """A checkpoint that no retention rule deletes (environment-step checkpoints)."""
+        checkpoints.save_checkpoint(os.path.abspath(FLAGS.checkpoint_path), state, step=int(at_step),
+                                    keep=10 ** 9, overwrite=True)
+
+    def _run_info(phase, n_online=None):
+        rec = {"online_updates": n_online}
+        if utd is not None:
+            r = _received()
+            rec["env_received"] = int(r) if np.isfinite(r) else None
+        return rec
+
+    def _diverged(at_step, info, phase, n_online=None):
+        """Metrics log + divergence guard of one learner step; True if the guard tripped."""
+        if mlog.due(at_step):
+            mlog.write(at_step, info, phase, _run_info(phase, n_online))
+        if guard.due(at_step) and guard.check(at_step, info, phase, _run_info(phase, n_online)):
+            print_red(f"\n>>> DIVERGED at learner step {at_step} ({phase}): non-finite "
+                      f"{', '.join(run_guard.core_nonfinite(run_guard.flatten_metrics(info))[:6])} "
+                      f"-> DIVERGED.json; the learner exits without a checkpoint.")
+            return True
+        return False
+
     if isinstance(agent, SACAgent):
         train_critic_networks_to_update = frozenset({"critic"})
         train_networks_to_update = frozenset({"critic", "actor", "temperature"})
@@ -1621,8 +1722,14 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
                 )
                 wandb_logger.log(update_info, step=step)
 
+            if _diverged(step, update_info, "pretrain"):
+                if wandb_logger is not None:
+                    wandb_logger.finish()
+                return
+
             if (
-                step > 0
+                not env_ckpts.on            # environment-step checkpoints: none during the warm start
+                and step > 0
                 and config.checkpoint_period
                 and step % config.checkpoint_period == 0
             ):
@@ -1707,6 +1814,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
     # e2hil ~1.3 learner steps per env step. Report it per method; changing
     # it here would make new cells incomparable with every finished one.
     online_start = step
+    _stop_at = {}                   # online updates when the stop was first requested (catch-up count)
     if utd is not None:             # training begins: the actor may now wait
         utd.learner_report(0)
         print_green(f"fixed update ratio: {FLAGS.utd_ratio:g} learner steps per env step")
@@ -1759,12 +1867,29 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
                 wandb_logger.log({"aqi": demo_buffer.priority_stats()},
                                  step=step)
 
-        if (
+        if _diverged(step, update_info, "online", _n_online if utd is not None else None):
+            break
+
+        if env_ckpts.on:
+            # environment-step checkpoints: after U * k * E online updates (>= k * E env steps received)
+            if env_ckpts.due(_n_online):
+                agent = jax.block_until_ready(agent)
+                _save_all_kept(agent.state, step)
+                _row = env_ckpts.record(step, _n_online, _received())
+                print_green(f"\n>>> checkpoint at {_row['env_steps']} environment steps (learner step {step})")
+        elif (
             step > 0
             and config.checkpoint_period
             and step % config.checkpoint_period == 0
         ):
             _save_run_checkpoint(agent.state, step)
+
+        # environment-step checkpoints: before the last one, catch up with the steps already received
+        # (env_ckpts.on implies the fixed update ratio, so _n_online and _received exist)
+        if (env_ckpts.on and _should_stop()
+                and env_ckpts.catch_up(_n_online, _received(),
+                                       _n_online - _stop_at.setdefault("n", _n_online))):
+            continue
 
         # graceful stop (STOP file / SIGINT / SIGTERM): write a final checkpoint
         # at the current step and exit cleanly. overwrite=True in case this exact
@@ -1773,7 +1898,13 @@ def learner(rng, agent, replay_buffer, demo_buffer, aqi_cfg, wandb_logger=None):
             print_green(f"\ngraceful stop at step {step} -> writing final checkpoint")
             if FLAGS.checkpoint_path:
                 agent = jax.block_until_ready(agent)
-                _save_run_checkpoint(agent.state, step, overwrite=True)
+                if env_ckpts.on:
+                    _save_all_kept(agent.state, step)
+                    _row = env_ckpts.record(step, _n_online, _received(), final=True)
+                    print_green(f">>> last checkpoint at {_row['env_steps']} environment steps "
+                                f"({_n_online - _stop_at.get('n', _n_online)} catch-up updates)")
+                else:
+                    _save_run_checkpoint(agent.state, step, overwrite=True)
             if stop_file and os.path.exists(stop_file):
                 os.remove(stop_file)   # so the next run doesn't stop immediately
             print_green(f"final checkpoint saved at step {step}; learner exiting.")

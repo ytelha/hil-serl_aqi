@@ -1,0 +1,238 @@
+# =====================================================================
+# phase3/X1_careless.yaml -- phase 3 of the extension study, the main campaign (docs/extension_phase3.md)
+#
+# The task phase 2 chose: the hex peg from the wider start range (runs/extension/DECISION.md: hexwide, novice skill
+# 0.15). The sometimes-careless operator (careless in 40 % of takeovers, spells of a few), 12 arms:
+#   hilserl      plain HIL-SERL (2 critics, no warm start)                                   reference
+#   e2hil        E2HiL: the entropy-bounded actor loss, minimum over the critics (paper)      published reference
+#   e2hil-mean   E2HiL's mask with the mean over the critics (HIL-SERL's actor): the mask alone
+#   keepall      the ensemble keeps every correction, no imitation
+#   bc           imitate every correction (weight 0.1, uniform)
+#   bc-discard   imitate; the behavioural score drops the lowest 40 %
+#   bc-random    imitate; a random 40 % dropped (same data loss, blind)
+#   bc-perfect   imitate; exactly the careless ones dropped (reads the label): the ceiling
+#   asks-15      the robot asks in its 15 % most uncertain steps; every correction kept, no imitation
+#   random-15    requests at random times, about as often (the final study's definition)
+#   asks-15-bc   asks 15 % and imitates every correction
+#   aqi          asks 15 % and imitates, the score drops the lowest 40 % (asking + graded imitation)
+# 12 arms x (2 experts + 2 intermediates + 2 novices at skill 0.15) x 2 seeds = 144 runs.
+#
+# Fixed budget (docs/extension_phase3.md, "Fixed budget and measurement"):
+#   - every run trains 20 000 environment steps; the mini-evaluation keeps running every 2 000 steps but never stops
+#     the run (converge_mode observe); its would-be stop goes to WOULD_STOP.json, so the old measures (steps and
+#     operator steps until the stop) come from the same runs;
+#   - checkpoints after every 2 000 environment steps for every arm (the warm start does not shift them), all scored
+#     with the 9-pose ruler; success at B = mean of the last three (16 000, 18 000, 20 000), AULC = mean of all;
+#   - divergence guard: the learner checks its metrics every 100 steps and exits on the first NaN (DIVERGED.json);
+#     the suite retrains that run once from scratch, a second divergence makes it a technical failure;
+#   - learner metrics every 200 steps in learner_metrics.jsonl (E2HiL's keep fractions for careful and careless
+#     takeover states included).
+#
+# Run (unattended, everything): bash tools/run_phase3_unattended.sh
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: hex
+  rpy_box: [0.1, 0.1, 0.4]         # orientation box, as in every new-stack run
+  random_xy: 0.025                 # the wider start range: +-25 mm ...
+  random_rz: 0.2                   # ... and +-0.2 rad
+operators:
+  expert: 2
+  intermediate: 2
+  novice: 2
+  jitter: 0.15
+  sample_seed: 0
+  tier_s_exec: {novice: 0.15}      # the novice skill the operator screen chose for this task
+  tier_s_mon: {novice: 0.15}
+demos:
+  per_operator: 6                  # standard: 6 demonstrations
+  filtered: true
+  max_attempts: 300
+methods:
+  - hilserl
+  - e2hil
+  - e2hil-mean
+  - keepall
+  - bc
+  - bc-discard
+  - bc-random
+  - bc-perfect
+  - asks-15
+  - random-15
+  - asks-15-bc
+  - aqi
+arms:
+  e2hil-mean:                    # E2HiL's mask alone: the mean over the critics, as in HIL-SERL's actor
+    mode: e2hil
+    e2hil_q_agg: mean
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  keepall:                       # the ensemble keeps every correction, no imitation
+    mode: quality
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+  bc:                            # imitate every correction, same weight (gamma 0)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-discard:                    # imitate; the behavioural score drops the lowest 40 %
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-random:                     # imitate; drop a random 40 % (same data loss, blind)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [random_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-perfect:                    # imitate; drop exactly the careless ones (reads the label)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [oracle_filter]
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  asks-15:                       # the robot asks in its 15 % most uncertain steps; every correction kept
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.15
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+  random-15:                     # requests at random times, about as often as asks-15 (final study's definition)
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    trigger_terms: []
+    random_request_rate: 0.05
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+  asks-15-bc:                    # the robot asks 15 %; imitate every correction
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.15
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  aqi:                           # asks 15 % + imitate, the score drops the lowest 40 %
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.15
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+replicates:
+  seeds: 2
+  seed_base: 0
+budget:
+  mode: steps
+  steps_cap: 20000                 # the fixed budget B: every run trains exactly this many environment steps
+  minutes_per_cell: 480            # wall-clock safety cap only (anti-hang); E2HiL's update costs about twice
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.024,0.000"
+    - "-0.012,0.000"
+    - "0.000,0.000"
+    - "0.012,0.000"
+    - "0.024,0.000"
+  converge_mode: observe           # the mini-eval runs every 2 000 steps, logs its would-be stop, never stops
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1                     # one learner step per env step
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 8               # unused: environment-step checkpoints are all kept
+  checkpoint_env_every: 2000       # checkpoints after every 2 000 environment steps, every arm alike
+  divergence_guard_every: 100      # NaN / inf in the learner -> DIVERGED.json, the run is retrained once
+  metrics_log_every: 200           # learner metrics in learner_metrics.jsonl
+  demo_pretrain: true              # the ensemble's warm start; plain HIL-SERL and E2HiL opt out
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # 0 = the built-in 3e-4
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_inconsistent: true     # the sometimes-careless operator: careful or careless per takeover (hidden label)
+  synthetic_bad_share: 0.4         # careless in 40 % of takeovers ...
+  synthetic_bad_persistence: 0.7   # ... in spells of a few takeovers
+  synthetic_rotation_control: true
+  synthetic_orientation_monitor: true
+  synthetic_orientation_tilt_rad: 0
+  synthetic_orientation_yaw_rad: 0
+  trigger_terms: [uncertainty]     # the asking gate: the critics' disagreement alone
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true            # per-step simulator truth in the logs (analysis only)
+  critic_ensemble_size: 10
+  critic_subsample_size: 2
+  per_member_targets: true
+  bc_loss_weight: 0.0              # no imitation loss unless the arm sets it
+  e2hil_K: 8                       # E2HiL as in the paper and the comprehensive study
+  e2hil_q_low: 0.05
+  e2hil_q_high: 0.90
+  e2hil_q_agg: min
+method_overrides:
+  hilserl:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  e2hil:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+eval:
+  dx_mm: [-24, -18, -12, -6, 0, 6, 12, 18, 24]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+  skip_pretrain: true              # warm-start checkpoints are not scored (there are none: env-step checkpoints)
+  newest: 0                        # every kept checkpoint is scored: the ten environment-step checkpoints
+  after_each_cell: true            # score each run right after training it ...
+  prune_keep_last: 3               # ... then keep its best window and its last three checkpoints (disk)
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+logging:
+  wandb: "online"                  # the driver falls back to offline when no key is set
+  takeover_channels: true
+  wandb_tags: [extension, phase3, X1_careless]
+analysis:
+  baseline: hilserl
+  plots: true

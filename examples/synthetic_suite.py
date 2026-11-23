@@ -142,6 +142,21 @@ SUITES = {
                "tests/test_campaign_switches.py", "tests/test_update_ratio.py", "tests/test_ruler_select.py",
                "tests/test_synthetic_suite.py"],
         ref_arms=("hilserl", "keepall"), ruler_check=False, gb_per_cell=1.6, sweep_shapes="cuboid,hex"),
+    # phase 3 of the extension study (docs/extension_phase3.md): the NaN probe, a smoke test, the main
+    # campaign with the sometimes-careless operator and its careful twin, on the task phase 2 chose (hex peg from the
+    # wider start range), fixed budget of 20 000 environment steps
+    "phase3": dict(
+        configs=HERE / "campaigns" / "phase3", root=REPO / "runs" / "phase3",
+        groups={"probe": ["X0_probe"], "smoke": ["X_smoke"], "main": ["X1_careless", "X2_careful"],
+                "audit": ["X_smoke", "X1_careless"]},
+        order=["X0_probe", "X_smoke", "X1_careless", "X2_careful"],
+        tests=["tests/test_run_guard.py", "tests/test_phase3.py", "tests/test_e2hil.py",
+               "tests/test_extension_suite.py", "tests/test_final_twins.py", "tests/test_final_suite.py",
+               "tests/test_inconsistent_operator.py", "tests/test_operator_rotation.py",
+               "tests/test_takeover_channels.py", "tests/test_quality_scores_v2.py", "tests/test_quality_audit.py",
+               "tests/test_campaign_switches.py", "tests/test_update_ratio.py", "tests/test_ruler_select.py",
+               "tests/test_synthetic_suite.py"],
+        ref_arms=("hilserl", "keepall"), ruler_check=False, gb_per_cell=1.0, sweep_shapes="hex"),
 }
 SUITE = "synthetic_suite"
 
@@ -381,6 +396,8 @@ def cmd_check(args):
     if SUITE == "extension":        # one campaign at a time: scored checkpoints are pruned after each campaign
         per = float(SUITES[SUITE].get("gb_per_cell", GB_PER_CELL))
         need = round(max(planned_cells(n) for n in ORDER) * per + DISK_MARGIN_GB, 1)
+    elif SUITE == "phase3":         # each run is pruned right after it is scored (eval.prune_keep_last)
+        need = disk_needed_gb()
     else:
         need = disk_needed_gb() if SUITE in ("study", "final") else 50
     info["disk_needed_gb"] = need
@@ -444,11 +461,11 @@ def cmd_stage0(args):
                       *(["--tiers", tiers] if tiers else []),
                       "--episodes", str(args.episodes), "--out", str(root / "operator_conditions.json")],
                      log=root / "operator_conditions.log", env={"JAX_PLATFORMS": "cpu"})
-    elif not args.skip_operator_test and SUITE != "extension":     # the extension suite screens operators itself
+    elif not args.skip_operator_test and SUITE not in ("extension", "phase3"):  # these screen operators themselves
         rc_all |= sh([sys.executable, "examples/oracle_insertion_test.py", "--shapes", "cuboid,cylinder",
                       "--episodes", str(args.episodes), "--out", str(root / "operator_test.json")],
                      log=root / "operator_test.log", env={"JAX_PLATFORMS": "cpu"})
-    if not args.skip_sweep and SUITE in ("synthetic_suite", "study", "final", "extension"):
+    if not args.skip_sweep and SUITE in ("synthetic_suite", "study", "final", "extension", "phase3"):
         shapes = SUITES[SUITE].get("sweep_shapes", "cuboid,cylinder")
         rc = sh([sys.executable, "examples/oracle_insertion_test.py", "--sweep", "tilt,yaw", "--shapes", shapes,
                  "--tiers", "expert,novice", "--episodes", str(args.sweep_episodes),
@@ -666,10 +683,10 @@ def cmd_audit(args):
             rc_all |= 1
             continue
         cmd = [sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp)]
-        if SUITE in ("study", "final", "extension"):  # the scores are computed in the quality arms only
+        if SUITE in ("study", "final", "extension", "phase3"):  # the scores are computed in the quality arms only
             cmd += ["--modes", "quality"]
         rc_all |= sh(cmd, log=root / f"{n}.audit.log", sim_env=False)
-        if SUITE in ("final", "extension"):  # and again where the robot asks: it picks the onset, no timing confound
+        if SUITE in ("final", "extension", "phase3"):  # again where the robot asks: it picks the onset, no timing confound
             rc_all |= sh([sys.executable, str(HERE / "inconsistent_operator_audit.py"), "--campaign", str(camp),
                           "--modes", "aqi", "--out", str(camp / "report" / "audit_robot_asks")],
                          log=root / f"{n}.audit_robot_asks.log", sim_env=False)
@@ -1432,6 +1449,8 @@ def cmd_all(args):
     step and every --push_every_h hours."""
     if SUITE == "extension":            # its own flow: screen, pilots, decision, smoke (never pushes)
         return cmd_extension_all(args)
+    if SUITE == "phase3":               # its own flow: probe, smoke, main campaign, careful twin (never pushes)
+        return cmd_phase3_all(args)
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
     st = RunStatus(root)
@@ -1539,7 +1558,7 @@ PILOT_RULE = {"budget_env_steps": 8000,           # keepall with the careful int
               "fallback_final_min": 0.50, "fallback_cap": 40000,  # none: hardest one still >= 50 %, cap 40 000
               "budget_target": 0.50,              # budget B: where keepall-intermediate is closest to 50 %
               "budgets": list(range(2000, 20001, 2000))}
-PRUNE_ROOTS = ("final_twins", "extension")       # runs/<name>: the only default roots whose checkpoints are pruned
+PRUNE_ROOTS = ("final_twins", "extension", "phase3")   # runs/<name>: the only default roots whose checkpoints are pruned
 PRUNE_MARKER = ".prune_scored_ok"                 # any other root needs this file to allow pruning
 
 
@@ -1797,10 +1816,11 @@ def prunable_root(root):
             or (r / PRUNE_MARKER).exists())
 
 
-def prune_campaign(camp, log=print):
+def prune_campaign(camp, log=print, keep_last=1):
     """Free the disk of scored cells: delete the checkpoint_<step> folders that the ruler result no longer needs,
-    keeping each cell's best window, its last scored and its newest checkpoint. Cells without .done or without a
-    ruler result, and every other file or folder, stay. Returns (cells pruned, folders deleted, bytes freed)."""
+    keeping each cell's best window, its last scored and its newest `keep_last` checkpoints (phase 3: the three behind
+    success at B). Cells without .done or without a ruler result, and every other file or folder, stay. Returns
+    (cells pruned, folders deleted, bytes freed)."""
     camp = Path(camp)
     ck = camp / "checkpoints"
     n_cells = n_dirs = freed = 0
@@ -1821,7 +1841,7 @@ def prune_campaign(camp, log=print):
                 steps.append(int(m.group(1)))
         if not steps:
             continue
-        keep = {int(s) for s in (d.get("best_window_steps") or [])} | {max(steps)}
+        keep = {int(s) for s in (d.get("best_window_steps") or [])} | set(sorted(steps)[-max(int(keep_last), 1):])
         if d.get("checkpoint_step") is not None:
             keep.add(int(d["checkpoint_step"]))
         gone = 0
@@ -1938,6 +1958,256 @@ def cmd_extension_all(args):
     return 1 if st.warnings else 0
 
 
+# ===================================================================== phase 3 of the extension study
+P3_SOURCE = REPO / "runs" / "extension"        # phase 2's root: stage-0 limits, the decision, P1_hex's inputs
+P3_PROBE = ("P1_hex", "X0_probe", ["operators/int00.json", "demos/int00_s0", "eval_grid.json"])
+P3_TWIN = ("X1_careless", "X2_careful", ["operators", "demos", "eval_grid.json"])
+P3_EXPECT = {"chosen": "hexwide", "novice_skill": 0.15}   # what the configs are written for (phase 2's decision)
+P3_KEEP_LAST = 3                               # checkpoints kept after scoring: the three behind success at B
+
+
+def tree_hashes(base, items):
+    """{relative path: sha256} of every file under the given items (files or folders) of `base`."""
+    base, out = Path(base), {}
+    for it in items:
+        p = base / it
+        files = [p] if p.is_file() else sorted(f for f in p.rglob("*") if f.is_file()) if p.is_dir() else []
+        for f in files:
+            out[f.relative_to(base).as_posix()] = sha256(f)
+    return out
+
+
+def copy_inputs(src, dst, items):
+    """Copy a campaign's inputs (operators, demonstrations, ruler) into another campaign folder once, then check them
+    by hash on every start. Returns (ok, message): a missing source or a differing copy is never trained on."""
+    src, dst = Path(src), Path(dst)
+    missing = [it for it in items if not (src / it).exists()]
+    if missing:
+        return False, f"inputs missing in {src}: {', '.join(missing)}"
+    for it in items:
+        if not (dst / it).exists():
+            (dst / it).parent.mkdir(parents=True, exist_ok=True)
+            if (src / it).is_dir():
+                shutil.copytree(src / it, dst / it)
+            else:
+                shutil.copy2(src / it, dst / it)
+    a, b = tree_hashes(src, items), tree_hashes(dst, items)
+    if a != b:
+        diff = sorted(set(a) ^ set(b) | {k for k in set(a) & set(b) if a[k] != b[k]})
+        return False, f"copied inputs differ from {src}: {', '.join(diff[:6])}"
+    (dst / "inputs_from.json").write_text(json.dumps({"source": str(src), "items": items, "files": len(a),
+                                                      "checked": now(), "sha256": a}, indent=2), encoding="utf-8")
+    return True, f"{len(a)} input files from {src.name}, identical by hash"
+
+
+def probe_report(camp):
+    """PROBE.md / probe.json of the NaN probe: per run, did the learner diverge, where, which metrics first."""
+    camp = Path(camp)
+    rows = []
+    for d in sorted((camp / "checkpoints").iterdir()) if (camp / "checkpoints").exists() else []:
+        if not d.is_dir():
+            continue
+        div = None
+        for p in [d / "DIVERGED.json"] + sorted((camp / "diverged").glob(f"{d.name}.*.json")):
+            if p.exists():
+                try:
+                    div = json.loads(p.read_text(encoding="utf-8"))
+                    break
+                except ValueError:
+                    pass
+        met = _jsonl(d / "learner_metrics.jsonl")
+        last = met[-1] if met else {}
+        rows.append({"run": d.name, "diverged": div is not None, "step": (div or {}).get("step"),
+                     "phase": (div or {}).get("phase"), "nonfinite": (div or {}).get("nonfinite", []),
+                     "last_finite_step": (div or {}).get("last_finite_step"),
+                     "last_finite": (div or {}).get("last_finite_metrics"),
+                     "metrics_rows": len(met), "last_logged_step": last.get("step"),
+                     "env_received": (div or {}).get("env_received", last.get("env_received"))})
+    rep = any(r["diverged"] for r in rows)
+    (camp / "probe.json").write_text(json.dumps({"created": now(), "reproduced": rep, "runs": rows}, indent=2),
+                                     encoding="utf-8")
+    L = ["# NaN probe (phase 3 of the extension study)", "",
+         f"{now()}. P1_hex's keepall run with int00, seed 0, twice, 3 000 environment steps, learner metrics and the "
+         "divergence check every 50 learner steps.", "",
+         "| run | diverged | learner step | phase | first non-finite metrics | last finite step | env steps received |",
+         "|---|---|---|---|---|---|---|"]
+    for r in rows:
+        L.append(f"| {r['run']} | {'yes' if r['diverged'] else 'no'} | {_fmt(r['step'])} | {r['phase'] or '-'} | "
+                 f"{', '.join(r['nonfinite'][:6]) or '-'} | {_fmt(r['last_finite_step'])} | {_fmt(r['env_received'])} |")
+    L += ["", "**Reading.** " + ("The divergence reproduced. The first non-finite metrics point to the term that breaks "
+                                 "first; the last finite values are in probe.json. A fix (for example gradient "
+                                 "clipping in every arm) is a design change: decide it before trusting runs that "
+                                 "diverge again. The main campaign runs regardless, with the divergence guard (one "
+                                 "retry per run)." if rep else
+                                 "Neither run diverged: the divergence did not reproduce on the same inputs, so it "
+                                 "depends on run-to-run noise (GPU non-determinism, timing). The guard handles it."),
+          ""]
+    for r in rows:
+        if r["diverged"] and r["last_finite"]:
+            keys = [k for k in r["last_finite"] if any(t in k for t in ("loss", "temperature", "entropy", "q", "bc"))]
+            L.append(f"Last finite values of {r['run']} (step {r['last_finite_step']}): " +
+                     ", ".join(f"{k} {r['last_finite'][k]}" for k in keys[:12]))
+    (camp / "PROBE.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+    return rep
+
+
+def smoke_checks(camp):
+    """[(check, ok, detail)] of the phase-3 smoke: every new code path left its trace."""
+    camp = Path(camp)
+    ck = camp / "checkpoints"
+    cells = sorted(d.name for d in ck.iterdir() if d.is_dir()) if ck.exists() else []
+    out = []
+    done = [c for c in cells if (ck / c / ".done").exists()]
+    out.append(("every run finished", len(done) == planned_cells(camp.name) and len(done) > 0,
+                f"{len(done)} of {planned_cells(camp.name)}"))
+    scored = [c for c in cells if (camp / "eval_runs" / c / "cell.json").exists()]
+    out.append(("every run scored on the ruler", len(scored) == len(done) and len(done) > 0, f"{len(scored)}"))
+    env_ok = []
+    for c in done:
+        rows = _jsonl(ck / c / "env_checkpoints.jsonl")
+        if rows and rows[-1].get("final") and len(rows) >= 3:
+            env_ok.append(c)
+    out.append(("environment-step checkpoints with a final one", len(env_ok) == len(done) and len(done) > 0,
+                f"{len(env_ok)} of {len(done)}"))
+    obs = [c for c in done if (ck / c / "convergence_evals.jsonl").exists()]
+    out.append(("mini-evaluations logged (observe mode)", len(obs) > 0, f"{len(obs)} runs; would-be stops: "
+                f"{sum((ck / c / 'WOULD_STOP.json').exists() for c in done)}"))
+    careless = [c for c in done if any("careless_takeovers" in e for e in _jsonl(ck / c / "episodes.jsonl"))]
+    out.append(("careless counts in episodes.jsonl, every arm", len(careless) == len(done) and len(done) > 0,
+                f"{len(careless)} of {len(done)}"))
+    met = [c for c in done if (ck / c / "learner_metrics.jsonl").exists()]
+    out.append(("learner metrics logged", len(met) == len(done) and len(done) > 0, f"{len(met)} of {len(done)}"))
+    e2 = [c for c in done if c.startswith("e2hil")]
+    e2ok = [c for c in e2 if any(k.split("/")[-1] == "e2hil_careless_keep_frac"
+                                 for r in _jsonl(ck / c / "learner_metrics.jsonl") for k in (r.get("metrics") or {}))]
+    out.append(("E2HiL keep fractions of careless takeover states", len(e2ok) == len(e2) and len(e2) > 0,
+                f"{len(e2ok)} of {len(e2)}"))
+    div = sorted(p.name for p in (camp / "diverged").glob("*.json")) if (camp / "diverged").exists() else []
+    out.append(("no divergence", not div, ", ".join(div) or "none"))
+    return out
+
+
+def cmd_phase3_report(args):
+    """examples/phase3_analysis.py on the phase-3 root -> <results>/PHASE3_REPORT.md (+ csv, json)."""
+    out = Path(getattr(args, "results", None) or default_results(Path(args.root)))
+    return sh([sys.executable, str(HERE / "phase3_analysis.py"), "--root", str(args.root), "--out", str(out)],
+              log=Path(args.root) / "phase3_report.log", sim_env=False)
+
+
+def cmd_phase3_all(args):
+    """Phase 3 in one go, unattended: check; stage 0 (tests; the hex orientation limits copied from phase 2); the NaN
+    probe on P1_hex's inputs; the smoke test; the main campaign X1_careless; its careful twin X2_careful on X1's
+    inputs (copied, checked by hash); audit, the phase-3 analysis, report, plots. A run that crashed or diverged is
+    retrained once; scored checkpoints are pruned to the best window and the last three. Never stops, never pushes."""
+    root = Path(args.root)
+    root.mkdir(parents=True, exist_ok=True)
+    st = RunStatus(root)
+    st.decisions["mode"] = "unattended: no step waits for a person; failures are recorded and the run goes on"
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(max(0.1, float(getattr(args, "push_every_h", 6.0))) * 3600.0):
+            _refresh(args, st, False)
+
+    threading.Thread(target=beat, daemon=True).start()
+    _step(st, "check", cmd_check, _ns(args))
+    mode = getattr(args, "wandb", None) or ("online" if wandb_logged_in() else "offline")
+    st.decisions["W&B"] = mode
+    # ---- the task phase 2 chose (the configs are written for it)
+    dp = P3_SOURCE / "decision.json"
+    dec = json.loads(dp.read_text(encoding="utf-8")) if dp.exists() else {}
+    if dec.get("chosen") != P3_EXPECT["chosen"] or abs(float(dec.get("novice_skill") or -1)
+                                                        - P3_EXPECT["novice_skill"]) > 1e-9:
+        st.warnings.append(f"phase 2's decision ({dp}) says {dec.get('chosen')} / novice "
+                           f"{dec.get('novice_skill')}; the configs are written for {P3_EXPECT['chosen']} / "
+                           f"{P3_EXPECT['novice_skill']}: running them as written")
+    st.decisions["task"] = "hex peg from the wider start range, novice skill 0.15 (phase 2's decision)"
+    # ---- stage 0: tests here; the hex orientation limits are phase 2's (the pilots and the smoke trained with them)
+    lim_src, lim = P3_SOURCE / "stage0" / "limits.json", root / "stage0" / "limits.json"
+    if lim_src.exists() and not lim.exists():
+        lim.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(lim_src, lim)
+    have = set((json.loads(lim.read_text(encoding="utf-8")).get("limits") or {}) if lim.exists() else {})
+    if "hex" in have:
+        st.decisions["stage 0"] = f"hex orientation limits copied from {lim_src} (phase 2); tests run here"
+        _step(st, "stage0", cmd_stage0, _ns(args, skip_tests=False, skip_operator_test=True, skip_sweep=True,
+                                           episodes=30, sweep_episodes=10))
+    else:
+        st.decisions["stage 0"] = "no phase-2 limits for the hex peg: measured here"
+        _step(st, "stage0", cmd_stage0, _ns(args, skip_tests=False, skip_operator_test=True, skip_sweep=False,
+                                           episodes=30, sweep_episodes=10))
+    _refresh(args, st, False)
+    run_kw = dict(wandb=mode, dry=False, keep_going=True, without_active=True, allow_orig=False, score_as_is=True,
+                  port_base=int(getattr(args, "port_base", 6100)))
+    par = max(1, int(getattr(args, "parallel", 2) or 2))
+
+    def campaign(name, note, retry=True):
+        shape = switches(load_yaml(config_path(name)))["peg_shape"]
+        dl = read_limits(root, shape) is None
+        if dl:
+            st.decisions[f"limits {name}"] = f"no stage-0 limits for {shape}: shape defaults"
+        _step(st, f"run {name}", cmd_run, _ns(args, names=[name], parallel=par, extra=[], default_limits=dl,
+                                              **run_kw), note=note)
+        crashed = crashed_cells(root / name)
+        if crashed and retry:
+            st.decisions[f"retry {name}"] = (f"{len(crashed)} crashed or diverged run(s) retrained once from scratch: "
+                                             f"{', '.join(crashed)}")
+            _step(st, f"retry {name}", cmd_run, _ns(args, names=[name], parallel=par, extra=[],
+                                                    default_limits=dl, **run_kw))
+            left = crashed_cells(root / name)
+            if left:
+                st.warnings.append(f"{name}: still crashed or diverged after one retry, technical failures (their "
+                                   f"pairs are left out): {', '.join(left)}")
+        if prunable_root(root):
+            _n, _d, freed = prune_campaign(root / name, keep_last=P3_KEEP_LAST)
+            if _d:
+                st.decisions[f"prune {name}"] = f"{_d} scored checkpoints deleted, {freed / 2 ** 30:.1f} GB freed"
+        _refresh(args, st, False)
+
+    # ---- 1. the NaN probe: P1_hex's diverged run again, twice, on its own inputs
+    src, dst, items = P3_PROBE
+    ok, msg = copy_inputs(P3_SOURCE / src, root / dst, items)
+    st.decisions["probe inputs"] = msg
+    if ok:
+        campaign(dst, "NaN probe: P1_hex keepall int00 s0, twice, 3 000 steps", retry=False)
+        rep = probe_report(root / dst)
+        st.decisions["probe"] = ("the divergence REPRODUCED (see X0_probe/PROBE.md); the main campaign runs with "
+                                 "the guard" if rep else "no divergence in either run (see X0_probe/PROBE.md)")
+        if rep:
+            st.warnings.append("NaN probe: the divergence reproduced; decide on a fix (X0_probe/PROBE.md)")
+    else:
+        st.warnings.append(f"probe skipped: {msg}")
+    # ---- 2. smoke: every new code path once
+    campaign("X_smoke", "smoke test of the phase-3 code paths, 4 000 steps")
+    checks = smoke_checks(root / "X_smoke")
+    (root / "X_smoke" / "SMOKE.md").write_text(
+        "# Smoke test (phase 3)\n\n| check | ok | detail |\n|---|---|---|\n"
+        + "".join(f"| {c} | {'yes' if ok_ else 'NO'} | {d} |\n" for c, ok_, d in checks), encoding="utf-8")
+    bad = [c for c, ok_, _d in checks if not ok_]
+    st.decisions["smoke"] = "all checks passed" if not bad else "failed checks: " + "; ".join(bad)
+    if bad:
+        st.warnings.append("smoke: " + "; ".join(bad) + " (X_smoke/SMOKE.md); the main campaign runs anyway")
+    # ---- 3. the main campaign, then its careful twin on the same inputs
+    campaign("X1_careless", "main campaign: sometimes-careless operator, 12 arms, fixed budget 20 000 steps")
+    src, dst, items = P3_TWIN
+    ok, msg = copy_inputs(root / src, root / dst, items)
+    st.decisions["twin inputs"] = msg
+    if ok:
+        campaign(dst, "careful twin of X1_careless: 6 arms, the same operators, demonstrations and ruler")
+    else:
+        st.warnings.append(f"X2_careful skipped: {msg}")
+    # ---- 4. analysis
+    _step(st, "audit", cmd_audit, _ns(args, names=[]))
+    _step(st, "phase3 report", cmd_phase3_report, _ns(args))
+    _step(st, "report", cmd_report, _ns(args, names=[]))
+    _step(st, "plots", cmd_plots, _ns(args, names=[]))
+    stop.set()
+    st.state = "finished" + (" with warnings" if st.warnings else "")
+    _refresh(args, st, False)
+    print(f"\n[all] {st.state}; see {root / 'RUN_STATUS.md'} and the results folder", flush=True)
+    return 1 if st.warnings else 0
+
+
 # ===================================================================== main
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1994,6 +2264,7 @@ def build_parser():
     sc = sub.add_parser("screen", help="extension: operator screen of the candidate tasks and the screen rule (CPU)")
     sc.add_argument("--episodes", type=int, default=SCREEN_EPISODES)
     sub.add_parser("decide", help="extension: the main-study task from the pilots (rule fixed in PILOT_RULE)")
+    sub.add_parser("phase3report", help="phase3: per-run measures and the fixed contrasts (examples/phase3_analysis.py)")
     pr = sub.add_parser("prune", help="delete checkpoints that scored runs no longer need (runs/final_twins, "
                                       "runs/extension, or a root with .prune_scored_ok)")
     pr.add_argument("names", nargs="*", help="settings or groups; default all")
@@ -2010,7 +2281,8 @@ def main(argv=None):
         args.root = str(DEFAULT_ROOT)
     rc = {"check": cmd_check, "stage0": cmd_stage0, "plan": cmd_plan, "run": cmd_run, "audit": cmd_audit,
           "report": cmd_report, "plots": cmd_plots, "rulercheck": cmd_rulercheck, "export": cmd_export,
-          "all": cmd_all, "screen": cmd_screen, "decide": cmd_decide, "prune": cmd_prune}[args.cmd](args)
+          "all": cmd_all, "screen": cmd_screen, "decide": cmd_decide, "prune": cmd_prune,
+          "phase3report": cmd_phase3_report}[args.cmd](args)
     if args.cmd in ("check", "stage0", "run", "audit", "report", "plots", "rulercheck", "screen",
                     "decide") and auto_export(args):
         export_results(args)

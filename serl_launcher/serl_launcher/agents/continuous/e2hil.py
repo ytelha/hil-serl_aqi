@@ -34,8 +34,12 @@ import jax
 import jax.numpy as jnp
 
 # Transition labels (official convention): 0 = offline demo, 1 = online
-# policy step, 2 = human intervention. Used for diagnostics only.
-LABEL_NAMES = {0: "demo", 1: "online", 2: "intervention"}
+# policy step, 2 = human intervention; this repo adds 3 = a step of a careless
+# takeover of the inconsistent synthetic operator (then 2 = a careful one).
+# Used for diagnostics only.
+LABEL_NAMES = {0: "demo", 1: "online", 2: "intervention", 3: "careless"}
+# reported groups: each label alone, and every takeover step (2 or 3) together
+LABEL_GROUPS = {"demo": (0,), "online": (1,), "intervention": (2,), "careless": (3,), "takeover": (2, 3)}
 
 _PI_CLIP = 1e6   # cap on pi(a|s) = exp(log pi); densities can be huge
 
@@ -98,12 +102,15 @@ def entropy_bounded_mask(
 
 def label_stats(c: jax.Array, mask: jax.Array, labels: jax.Array,
                 eps: float = 1e-8) -> Dict[str, jax.Array]:
-    """Per source (demo / online / intervention): count, mean |c| and the
-    fraction of those states KEPT by the mask (paper Table III / Fig. 8)."""
+    """Per source (demo / online / careful and careless intervention / every
+    takeover): count, mean |c| and the fraction of those states KEPT by the
+    mask (paper Table III / Fig. 8)."""
     c_abs = jnp.abs(c)
     out = {}
-    for lid, name in LABEL_NAMES.items():
-        sel = (labels == lid).astype(c_abs.dtype)
+    for name, lids in LABEL_GROUPS.items():
+        sel = jnp.zeros_like(c_abs)
+        for lid in lids:
+            sel = sel + (labels == lid).astype(c_abs.dtype)
         n = sel.sum()
         out[f"e2hil_{name}_count"] = n
         out[f"e2hil_{name}_abs_c_mean"] = (c_abs * sel).sum() / (n + eps)

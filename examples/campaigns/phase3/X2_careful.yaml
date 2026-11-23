@@ -1,0 +1,161 @@
+# =====================================================================
+# phase3/X2_careful.yaml -- phase 3 of the extension study, the careful twin (docs/extension_phase3.md)
+#
+# X1_careless with one deliberate difference: the operator is never careless (synthetic_inconsistent: false). Same
+# operators, demonstrations and ruler: the suite copies them from runs/phase3/X1_careless/ and checks them by hash
+# before the first run (a twin whose inputs differ is skipped, never trained on other inputs). Paired by operator
+# and seed with X1_careless. 6 arms:
+#   hilserl, e2hil   E2HiL's gain over HIL-SERL with a careful operator; with X1: does it gain more when the
+#                    operator is sometimes careless (the interaction)?
+#   keepall, bc      what carelessness costs without and with imitation
+#   bc-discard, aqi  what grading (and asking + grading) costs or wins when nothing is careless
+# 6 arms x (2 experts + 2 intermediates + 2 novices at skill 0.15) x 2 seeds = 72 runs.
+# Budget, checkpoints, ruler and guard as in X1_careless (fixed budget of 20 000 environment steps).
+#
+# Run (unattended, everything): bash tools/run_phase3_unattended.sh
+# =====================================================================
+task:
+  exp_name: sim_peg_insertion
+  peg_shape: hex
+  rpy_box: [0.1, 0.1, 0.4]         # orientation box, as in every new-stack run
+  random_xy: 0.025                 # the wider start range: +-25 mm ...
+  random_rz: 0.2                   # ... and +-0.2 rad
+operators:
+  expert: 2
+  intermediate: 2
+  novice: 2
+  jitter: 0.15
+  sample_seed: 0
+  tier_s_exec: {novice: 0.15}      # the novice skill the operator screen chose for this task
+  tier_s_mon: {novice: 0.15}
+demos:
+  per_operator: 6                  # standard: 6 demonstrations
+  filtered: true
+  max_attempts: 300
+methods:
+  - hilserl
+  - e2hil
+  - keepall
+  - bc
+  - bc-discard
+  - aqi
+arms:
+  keepall:                       # the ensemble keeps every correction, no imitation
+    mode: quality
+    quality_score_mode: behavioral
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+  bc:                            # imitate every correction, same weight (gamma 0)
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: []
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  bc-discard:                    # imitate; the behavioural score drops the lowest 40 %
+    mode: quality
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+  aqi:                           # asks 15 % + imitate, the score drops the lowest 40 %
+    mode: aqi
+    synthetic_request_hold_steps: 30
+    query_target_rate: 0.15
+    query_cooldown_steps: 5
+    quality_score_mode: behavioral
+    quality_gamma: 0.0
+    quality_warmup_steps: 1000
+    quality_filters: [score_filter]
+    quality_drop_fraction: 0.4
+    per_eta: 0.0
+    bc_loss_weight: 0.1
+replicates:
+  seeds: 2
+  seed_base: 0
+budget:
+  mode: steps
+  steps_cap: 20000                 # the fixed budget B: every run trains exactly this many environment steps
+  minutes_per_cell: 480            # wall-clock safety cap only (anti-hang); E2HiL's update costs about twice
+  converge_success: 0.9
+  converge_window: 20
+  converge_min_steps: 3000
+  converge_eval_threshold: 0.6
+  converge_eval_max_steps: 300
+  converge_eval_poses:
+    - "-0.024,0.000"
+    - "-0.012,0.000"
+    - "0.000,0.000"
+    - "0.012,0.000"
+    - "0.024,0.000"
+  converge_mode: observe           # the mini-eval runs every 2 000 steps, logs its would-be stop, never stops
+  converge_eval_every: 2000
+  converge_eval_consecutive: 2
+  utd_ratio: 1                     # one learner step per env step
+  total_hours: 0
+  learner_max_steps: 1000000
+  buffer_period: 0
+  checkpoint_keep: 8               # unused: environment-step checkpoints are all kept
+  checkpoint_env_every: 2000       # checkpoints after every 2 000 environment steps, every arm alike
+  divergence_guard_every: 100      # NaN / inf in the learner -> DIVERGED.json, the run is retrained once
+  metrics_log_every: 200           # learner metrics in learner_metrics.jsonl
+  demo_pretrain: true              # the ensemble's warm start; plain HIL-SERL and E2HiL opt out
+  demo_pretrain_steps: 5000
+  demo_pretrain_batch_size: 0
+  learning_rate: 0                 # 0 = the built-in 3e-4
+aqi:
+  synthetic_intervention_mode: signal
+  synthetic_inconsistent: false    # THE difference to X1_careless: the operator is never careless
+  synthetic_rotation_control: true
+  synthetic_orientation_monitor: true
+  synthetic_orientation_tilt_rad: 0
+  synthetic_orientation_yaw_rad: 0
+  trigger_terms: [uncertainty]     # the asking gate: the critics' disagreement alone
+  trigger_combiner: max
+  query_behavior: continue
+  quality_cf_diag: true            # per-step simulator truth in the logs (analysis only)
+  critic_ensemble_size: 10
+  critic_subsample_size: 2
+  per_member_targets: true
+  bc_loss_weight: 0.0              # no imitation loss unless the arm sets it
+  e2hil_K: 8                       # E2HiL as in the paper and the comprehensive study
+  e2hil_q_low: 0.05
+  e2hil_q_high: 0.90
+  e2hil_q_agg: min
+method_overrides:
+  hilserl:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+  e2hil:
+    demo_pretrain: false
+    demo_pretrain_steps: 0
+    learning_rate: 0
+eval:
+  dx_mm: [-24, -18, -12, -6, 0, 6, 12, 18, 24]
+  yaw:   [0.0]
+  reps: 1
+  max_steps: 300
+  last_k: 5
+  select: best_window
+  window_k: 3
+  skip_pretrain: true              # warm-start checkpoints are not scored (there are none: env-step checkpoints)
+  newest: 0                        # every kept checkpoint is scored: the ten environment-step checkpoints
+  after_each_cell: true            # score each run right after training it ...
+  prune_keep_last: 3               # ... then keep its best window and its last three checkpoints (disk)
+gpu:
+  jax_platform: cuda
+  mem_learner: 0.6
+  mem_actor: 0.2
+logging:
+  wandb: "online"                  # the driver falls back to offline when no key is set
+  takeover_channels: true
+  wandb_tags: [extension, phase3, X2_careful]
+analysis:
+  baseline: hilserl
+  plots: true
