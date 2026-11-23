@@ -9,7 +9,7 @@
 #                    operator is sometimes careless (the interaction)?
 #   keepall, bc      what carelessness costs without and with imitation
 #   bc-discard, aqi  what grading (and asking + grading) costs or wins when nothing is careless
-# 6 arms x (2 experts + 2 intermediates + 2 novices at skill 0.15) x 2 seeds = 72 runs.
+# 6 arms x (3 experts + 3 intermediates) x 2 seeds = 72 runs.
 # Budget, checkpoints, ruler and guard as in X1_careless (fixed budget of 20 000 environment steps).
 #
 # Run (unattended, everything): bash tools/run_phase3_unattended.sh
@@ -21,13 +21,10 @@ task:
   random_xy: 0.025                 # the wider start range: +-25 mm ...
   random_rz: 0.2                   # ... and +-0.2 rad
 operators:
-  expert: 2
-  intermediate: 2
-  novice: 2
+  expert: 3
+  intermediate: 3                  # no novices (decided 2026-11-24)
   jitter: 0.15
   sample_seed: 0
-  tier_s_exec: {novice: 0.15}      # the novice skill the operator screen chose for this task
-  tier_s_mon: {novice: 0.15}
 demos:
   per_operator: 6                  # standard: 6 demonstrations
   filtered: true

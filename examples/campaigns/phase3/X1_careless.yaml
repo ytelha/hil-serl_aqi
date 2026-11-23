@@ -1,8 +1,10 @@
 # =====================================================================
 # phase3/X1_careless.yaml -- phase 3 of the extension study, the main campaign (docs/extension_phase3.md)
 #
-# The task phase 2 chose: the hex peg from the wider start range (runs/extension/DECISION.md: hexwide, novice skill
-# 0.15). The sometimes-careless operator (careless in 40 % of takeovers, spells of a few), 12 arms:
+# The task phase 2 chose: the hex peg from the wider start range (runs/extension/DECISION.md: hexwide). Experts and
+# intermediates only (decided 2026-11-24): their careful and careless corrections differ most on this task (phase
+# 2's operator screen), so every pair carries the full careless-careful contrast. The
+# sometimes-careless operator (careless in 40 % of takeovers, spells of a few), 12 arms:
 #   hilserl      plain HIL-SERL (2 critics, no warm start)                                   reference
 #   e2hil        E2HiL: the entropy-bounded actor loss, minimum over the critics (paper)      published reference
 #   e2hil-mean   E2HiL's mask with the mean over the critics (HIL-SERL's actor): the mask alone
@@ -15,14 +17,15 @@
 #   random-15    requests at random times, about as often (the final study's definition)
 #   asks-15-bc   asks 15 % and imitates every correction
 #   aqi          asks 15 % and imitates, the score drops the lowest 40 % (asking + graded imitation)
-# 12 arms x (2 experts + 2 intermediates + 2 novices at skill 0.15) x 2 seeds = 144 runs.
+# 12 arms x (3 experts + 3 intermediates) x 2 seeds = 144 runs.
 #
 # Fixed budget (docs/extension_phase3.md, "Fixed budget and measurement"):
 #   - every run trains 20 000 environment steps; the mini-evaluation keeps running every 2 000 steps but never stops
 #     the run (converge_mode observe); its would-be stop goes to WOULD_STOP.json, so the old measures (steps and
 #     operator steps until the stop) come from the same runs;
 #   - checkpoints after every 2 000 environment steps for every arm (the warm start does not shift them), all scored
-#     with the 9-pose ruler; success at B = mean of the last three (16 000, 18 000, 20 000), AULC = mean of all;
+#     with the 9-pose ruler; AULC = mean of all ten (primary: good operators reach the ceiling early), success at
+#     B = mean of the last three (16 000, 18 000, 20 000);
 #   - divergence guard: the learner checks its metrics every 100 steps and exits on the first NaN (DIVERGED.json);
 #     the suite retrains that run once from scratch, a second divergence makes it a technical failure;
 #   - learner metrics every 200 steps in learner_metrics.jsonl (E2HiL's keep fractions for careful and careless
@@ -37,13 +40,10 @@ task:
   random_xy: 0.025                 # the wider start range: +-25 mm ...
   random_rz: 0.2                   # ... and +-0.2 rad
 operators:
-  expert: 2
-  intermediate: 2
-  novice: 2
+  expert: 3
+  intermediate: 3                  # no novices (decided 2026-11-24)
   jitter: 0.15
   sample_seed: 0
-  tier_s_exec: {novice: 0.15}      # the novice skill the operator screen chose for this task
-  tier_s_mon: {novice: 0.15}
 demos:
   per_operator: 6                  # standard: 6 demonstrations
   filtered: true

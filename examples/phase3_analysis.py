@@ -3,9 +3,11 @@
     python examples/phase3_analysis.py --root runs/phase3 --out results/phase3
 
 Reads the raw run folders only (no JAX). Per run:
+  AULC             mean ruler success over all environment-step checkpoints (2 000 ... 20 000): the primary measure,
+                   since experts and intermediates reach the ceiling early (the roster has no novices)
+  success at 8k    ruler success at the 8 000-step checkpoint (comparable with phase 1's "after 8 000 steps")
   success at B     mean ruler success of the last three environment-step checkpoints (16 000, 18 000 and the final
                    one at the budget B = 20 000): 3 x 9 = 27 trials
-  AULC             mean ruler success over all environment-step checkpoints (2 000 ... 20 000)
   would-be stop    the environment step where the mini-evaluation would have stopped the run (WOULD_STOP.json)
   operator steps   until the would-be stop (the old effort measure; runs without one: over the whole budget, marked)
                    and over the whole budget (secondary: asking keeps asking until the end)
@@ -33,34 +35,34 @@ TIERS = {"exp": "expert", "int": "intermediate", "nov": "novice"}
 # (hypothesis, label, measure, kind, spec); kind "diff": A - B; "inter": (A - B) - (C - D)
 # spec entries are (campaign, arm); the first contrast of each hypothesis is its primary one where noted in the doc
 CONTRASTS = [
-    ("H4b grading under imitation", "imitate, discard lowest 40 % vs imitate all", "success_at_B", "diff",
+    ("H4b grading under imitation", "imitate, discard lowest 40 % vs imitate all", "AULC", "diff",
      [("X1_careless", "bc-discard"), ("X1_careless", "bc")]),
-    ("H4b grading under imitation", "imitate, discard lowest 40 % vs imitate, random 40 % out", "success_at_B", "diff",
+    ("H4b grading under imitation", "imitate, discard lowest 40 % vs imitate, random 40 % out", "AULC", "diff",
      [("X1_careless", "bc-discard"), ("X1_careless", "bc-random")]),
-    ("H4b grading under imitation", "careless vs careful operator, imitate all (cost)", "success_at_B", "diff",
+    ("H4b grading under imitation", "careless vs careful operator, imitate all (cost)", "AULC", "diff",
      [("X1_careless", "bc"), ("X2_careful", "bc")]),
     ("H3' asking", "asks 15 % vs operator decides (operator steps until the would-be stop)", "op_steps_to_stop", "diff",
      [("X1_careless", "asks-15"), ("X1_careless", "keepall")]),
     ("H3' asking", "asks 15 % vs random requests at the same rate (operator steps until the would-be stop)",
      "op_steps_to_stop", "diff", [("X1_careless", "asks-15"), ("X1_careless", "random-15")]),
-    ("H3' asking", "asks 15 % vs operator decides (success at B)", "success_at_B", "diff",
+    ("H3' asking", "asks 15 % vs operator decides (AULC)", "AULC", "diff",
      [("X1_careless", "asks-15"), ("X1_careless", "keepall")]),
-    ("H5' combination", "interaction: (AQI - asks 15 % with imitation) - (discard - imitate all)", "success_at_B",
+    ("H5' combination", "interaction: (AQI - asks 15 % with imitation) - (discard - imitate all)", "AULC",
      "inter", [("X1_careless", "aqi"), ("X1_careless", "asks-15-bc"), ("X1_careless", "bc-discard"),
                ("X1_careless", "bc")]),
-    ("H5' combination", "AQI vs HIL-SERL", "success_at_B", "diff",
+    ("H5' combination", "AQI vs HIL-SERL", "AULC", "diff",
      [("X1_careless", "aqi"), ("X1_careless", "hilserl")]),
-    ("H6 E2HiL", "E2HiL vs HIL-SERL, careless operator", "success_at_B", "diff",
+    ("H6 E2HiL", "E2HiL vs HIL-SERL, careless operator", "AULC", "diff",
      [("X1_careless", "e2hil"), ("X1_careless", "hilserl")]),
-    ("H6 E2HiL", "E2HiL vs HIL-SERL, careful operator", "success_at_B", "diff",
+    ("H6 E2HiL", "E2HiL vs HIL-SERL, careful operator", "AULC", "diff",
      [("X2_careful", "e2hil"), ("X2_careful", "hilserl")]),
-    ("H6 E2HiL", "interaction: E2HiL's gain with the careless minus with the careful operator", "success_at_B",
+    ("H6 E2HiL", "interaction: E2HiL's gain with the careless minus with the careful operator", "AULC",
      "inter", [("X1_careless", "e2hil"), ("X1_careless", "hilserl"), ("X2_careful", "e2hil"),
                ("X2_careful", "hilserl")]),
-    ("H6 E2HiL", "E2HiL (minimum over critics) vs mask only (mean over critics)", "success_at_B", "diff",
+    ("H6 E2HiL", "E2HiL (minimum over critics) vs mask only (mean over critics)", "AULC", "diff",
      [("X1_careless", "e2hil"), ("X1_careless", "e2hil-mean")]),
 ]
-SECONDARY = ("AULC", "success_at_B", "op_steps_to_stop", "op_steps_total")
+SECONDARY = ("AULC", "success_at_B", "success_at_8k", "op_steps_to_stop", "op_steps_total")
 KEEP_CAMPAIGN = "X1_careless"   # where E2HiL meets careful and careless takeovers
 SKIP_CAMPAIGNS = ("X0_probe",)  # training only, no ruler: its own report (PROBE.md)
 DESCRIPTIVE = [("X1_careless", "bc-perfect", "the ceiling of grading under imitation (reads the label)")]
@@ -179,6 +181,7 @@ def read_run(camp, cid):
     return {"campaign": camp.name, "cell": cid, "arm": m["arm"], "operator": m["op"], "tier": TIERS[m["tier"]],
             "seed": int(m["seed"]), "valid": ok, "why_not": why, "retried_after_divergence": len(archived),
             "success_at_B": success_at_b(curve) if ok else None, "AULC": aulc(curve) if ok else None,
+            "success_at_8k": ({s_: v for s_, v, _ in curve}.get(8000) if ok else None),
             "curve": [[s, round(v, 4)] for s, v, _ in curve], "would_stop": stop,
             "op_steps_to_stop": op_stop if ok else None, "stop_censored": stop is None,
             "op_steps_total": op_all if ok else None, "env_steps": env_all, "takeovers": tk_all,
@@ -317,12 +320,12 @@ def _p(v):
     return "–" if v is None else f"{v:.3f}"
 
 
-def tier_means(runs):
-    """{(campaign, arm): {tier: mean success at B}} over valid runs."""
+def tier_means(runs, measure="AULC"):
+    """{(campaign, arm): {tier: mean of the measure}} over valid runs."""
     acc = {}
     for r in runs:
-        if r["valid"] and r["success_at_B"] is not None:
-            acc.setdefault((r["campaign"], r["arm"]), {}).setdefault(r["tier"], []).append(r["success_at_B"])
+        if r["valid"] and r.get(measure) is not None:
+            acc.setdefault((r["campaign"], r["arm"]), {}).setdefault(r["tier"], []).append(r[measure])
     return {k: {t: sum(v) / len(v) for t, v in by.items()} for k, by in acc.items()}
 
 
@@ -330,16 +333,16 @@ def arm_table(runs):
     rows = {}
     for r in runs:
         rows.setdefault((r["campaign"], r["arm"]), []).append(r)
-    L = ["| campaign | arm | runs (valid) | success at B | AULC | operator steps until the would-be stop | "
-         "no would-be stop | operator steps, whole budget | careless share |", "|---|---|---|---|---|---|---|---|---|"]
+    L = ["| campaign | arm | runs (valid) | AULC | success at 8k | success at B | operator steps until the would-be stop | "
+         "no would-be stop | operator steps, whole budget | careless share |", "|---|---|---|---|---|---|---|---|---|---|"]
     for (camp, arm), rs in sorted(rows.items()):
         v = [r for r in rs if r["valid"]]
 
         def mean(k):
             xs = [r[k] for r in v if r.get(k) is not None]
             return sum(xs) / len(xs) if xs else None
-        L.append(f"| {camp} | {arm} | {len(rs)} ({len(v)}) | {_f(mean('success_at_B'), True)} | "
-                 f"{_f(mean('AULC'), True)} | {_f(mean('op_steps_to_stop'))} | "
+        L.append(f"| {camp} | {arm} | {len(rs)} ({len(v)}) | {_f(mean('AULC'), True)} | "
+                 f"{_f(mean('success_at_8k'), True)} | {_f(mean('success_at_B'), True)} | {_f(mean('op_steps_to_stop'))} | "
                  f"{sum(r['stop_censored'] for r in v)} | {_f(mean('op_steps_total'))} | "
                  f"{_f(mean('careless_share'), True)} |")
     return L
@@ -348,21 +351,22 @@ def arm_table(runs):
 def render(runs, cs, e2):
     L = ["# Phase 3 of the extension study: results", "",
          "Generated by `examples/phase3_analysis.py` from the raw runs. Budget B = 20 000 environment steps for every "
-         "run; success at B = mean ruler success of the last three environment-step checkpoints (27 trials). "
+         "run; AULC = mean ruler success over the ten environment-step checkpoints (the primary measure); success at "
+         "B = mean of the last three (27 trials). "
          "Contrasts are paired by operator and seed (exact sign and Wilcoxon tests; Holm within each hypothesis on "
          "its listed measure). Diverged or crashed runs never enter a contrast.", "", "## Arms", ""]
     L += arm_table(runs)
-    L += ["", "## Operator dependency (H1'): success at B by tier", "",
-          "| campaign | arm | expert | intermediate | novice | expert - novice |", "|---|---|---|---|---|---|"]
+    L += ["", "## Operator dependency (H1'): AULC by tier", "",
+          "| campaign | arm | expert | intermediate | expert - intermediate |", "|---|---|---|---|---|"]
     for (camp, arm), by in sorted(tier_means(runs).items()):
-        gap = (by["expert"] - by["novice"]) if by.get("expert") is not None and by.get("novice") is not None else None
-        L.append(f"| {camp} | {arm} | {_f(by.get('expert'), True)} | {_f(by.get('intermediate'), True)} | "
-                 f"{_f(by.get('novice'), True)} | {'–' if gap is None else f'{100 * gap:+.1f} pp'} |")
+        e, i = by.get("expert"), by.get("intermediate")
+        gap = "–" if e is None or i is None else f"{100 * (e - i):+.1f} pp"
+        L.append(f"| {camp} | {arm} | {_f(e, True)} | {_f(i, True)} | {gap} |")
     L += ["", "## Contrasts", "",
           "| hypothesis | contrast | measure | pairs | better / worse / same | mean difference | sign p | Wilcoxon p "
           "| Holm p | left out |", "|---|---|---|---|---|---|---|---|---|---|"]
     for c in cs:
-        pct = c["measure"] in ("success_at_B", "AULC")
+        pct = c["measure"] in ("success_at_B", "AULC", "success_at_8k")
         md = None if c["mean_diff"] is None else (100 * c["mean_diff"] if pct else c["mean_diff"])
         L.append(f"| {c['hypothesis']} | {c['label']} | {c['measure']} | {c['n']} | {c['better']} / {c['worse']} / "
                  f"{c['same']} | {'–' if md is None else (f'{md:+.1f} pp' if pct else f'{md:+.0f}')} | "
@@ -404,7 +408,8 @@ def main(argv=None):
     (out / "PHASE3_REPORT.md").write_text(render(runs, cs, e2), encoding="utf-8")
     (out / "phase3_contrasts.json").write_text(json.dumps({"contrasts": cs, "e2hil_keep": e2}, indent=2),
                                                encoding="utf-8")
-    cols = ["campaign", "cell", "arm", "operator", "tier", "seed", "valid", "why_not", "success_at_B", "AULC",
+    cols = ["campaign", "cell", "arm", "operator", "tier", "seed", "valid", "why_not", "AULC", "success_at_8k",
+            "success_at_B",
             "would_stop", "op_steps_to_stop", "stop_censored", "op_steps_total", "env_steps", "takeovers",
             "careless_share", "operator_share", "retried_after_divergence"]
     with open(out / "phase3_runs.csv", "w", newline="", encoding="utf-8") as f:

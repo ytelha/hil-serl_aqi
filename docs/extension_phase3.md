@@ -1,8 +1,7 @@
 # Extension study, phase 3: the main study on the harder task
 
-Phases 0–2 ([extension_study.md](extension_study.md)) chose the task and the operators of the main study: the hex peg
-from the wider start range (`hexwide`), with the novice at skill 0.15. Phase 3 runs the main study there, on the second
-training machine, unattended and in one go:
+Phases 0–2 ([extension_study.md](extension_study.md)) chose the task of the main study: the hex peg from the wider
+start range (`hexwide`). Phase 3 runs the main study there, on the second training machine, unattended and in one go:
 
 ```bash
 bash tools/run_phase3_unattended.sh          # in the background; resumable
@@ -18,9 +17,18 @@ Status and results: `results/phase3/RUN_STATUS.md`, `results/phase3/PHASE3_REPOR
 | main | `phase3/X1_careless` | 144 | 12 arms with the sometimes-careless operator (careless in 40 % of takeovers, persistence 0.7). |
 | twin | `phase3/X2_careful` | 72 | 6 arms on the same operators, demonstrations and ruler; the operator is never careless. |
 
-Each main campaign has 2 experts, 2 intermediates and 2 novices at skill 0.15, with seeds 0–1, so 12 runs per arm.
-Runs are paired by operator and seed. The ensemble is set as in the final study: 10 critics, minimum over 2 in the
-target, warm start of 5 000 updates. Imitation weight λ_BC = 0.1, uniform (γ = 0); discard share 40 %.
+Each main campaign has 3 experts and 3 intermediates, with seeds 0–1, so 12 runs per arm. Runs are paired by operator
+and seed.
+
+**Why experts and intermediates only (decided 24 Nov 2026).** On this task the careful and careless corrections of
+experts and intermediates differ most: in phase 2's operator screen, careful ones rescue a failing robot far more often
+than careless ones, while a novice's two conditions differ about half as much. So every pair carries the full
+careless-against-careful contrast: grading under imitation, E2HiL with a careless operator, and what carelessness
+costs. The study measures dependence on the operator's *consistency*; dependence on *skill* (the novice) is covered by
+phase 2's pilots only.
+
+The ensemble is set as in the final study: 10 critics, minimum over 2 in the target, warm start of 5 000 updates.
+Imitation weight λ_BC = 0.1, uniform (γ = 0); discard share 40 %.
 
 ## Arms
 
@@ -57,11 +65,14 @@ synthetic operators to answer, so it would not be a fair test.
   (`eval.after_each_cell`). Then its checkpoints are pruned to the best window and the last three
   (`eval.prune_keep_last: 3`), so the disk holds one run's full set at a time.
 - **Primary measures:**
-  - *success at B*: mean ruler success of the last three checkpoints (16 000, 18 000, 20 000): 27 trials;
-  - *AULC*: mean ruler success over all ten checkpoints;
+  - *AULC*: mean ruler success over all ten checkpoints. Careful experts and intermediates are expected to reach the
+    ceiling early, so differences show in how fast a run gets there;
   - *operator steps until the would-be stop* (runs without one: over the whole budget, marked).
-- **Secondary:** operator steps over the whole budget. The quantile gate keeps asking until the end, so this measure
-  penalises asking by construction; it is reported, but it is not the effort measure.
+- **Secondary:**
+  - *success after 8 000 steps* (the 8 000-step checkpoint; comparable with phase 1);
+  - *success at B*: mean ruler success of the last three checkpoints (16 000, 18 000, 20 000), 27 trials;
+  - operator steps over the whole budget. The quantile gate keeps asking until the end, so this measure penalises
+    asking by construction; it is reported, but it is not the effort measure.
 
 ## Divergence guard and the NaN probe
 
@@ -94,19 +105,18 @@ open.
 
 | hypothesis | contrast | primary measure |
 |---|---|---|
-| H4b grading under imitation | `bc-discard` − `bc`; `bc-discard` − `bc-random`; `bc` careless − careful | success at B |
-| H3′ asking | `asks-15` − `keepall`; `asks-15` − `random-15` | operator steps until the would-be stop (and success at B) |
-| H5′ combination | (`aqi` − `asks-15-bc`) − (`bc-discard` − `bc`); `aqi` − `hilserl` | success at B |
-| H6 E2HiL | `e2hil` − `hilserl`, careless and careful; their difference (does E2HiL gain more with a careless operator?); `e2hil` − `e2hil-mean` | success at B |
+| H4b grading under imitation | `bc-discard` − `bc`; `bc-discard` − `bc-random`; `bc` careless − careful | AULC |
+| H3′ asking | `asks-15` − `keepall`; `asks-15` − `random-15` | operator steps until the would-be stop (and AULC) |
+| H5′ combination | (`aqi` − `asks-15-bc`) − (`bc-discard` − `bc`); `aqi` − `hilserl` | AULC |
+| H6 E2HiL | `e2hil` − `hilserl`, careless and careful; their difference (does E2HiL gain more with a careless operator?); `e2hil` − `e2hil-mean` | AULC |
 | H6 E2HiL's criterion | per E2HiL run: kept share of careless minus careful takeover states | paired over runs |
-| H1′ dependency | success at B by tier, expert − novice, per arm | descriptive |
+| H1′ dependency | AULC by tier, expert − intermediate, per arm | descriptive |
 
 - Exact two-sided sign and Wilcoxon signed-rank tests, paired by operator and seed; Holm within each hypothesis on its
-  primary measure. Every contrast also lists AULC and both operator-step measures.
+  primary measure. Every contrast also lists success after 8 000 steps, success at B and both operator-step
+  measures.
 - Diverged or crashed runs never enter a contrast; their pairs are listed.
 - `bc-perfect` is reported as the ceiling of grading, not tested.
-- The interaction of operator carelessness rests on experts and intermediates: a careless novice executes like a
-  careful one.
 
 ## Guardrails
 

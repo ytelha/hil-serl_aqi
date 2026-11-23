@@ -1962,7 +1962,7 @@ def cmd_extension_all(args):
 P3_SOURCE = REPO / "runs" / "extension"        # phase 2's root: stage-0 limits, the decision, P1_hex's inputs
 P3_PROBE = ("P1_hex", "X0_probe", ["operators/int00.json", "demos/int00_s0", "eval_grid.json"])
 P3_TWIN = ("X1_careless", "X2_careful", ["operators", "demos", "eval_grid.json"])
-P3_EXPECT = {"chosen": "hexwide", "novice_skill": 0.15}   # what the configs are written for (phase 2's decision)
+P3_EXPECT = {"chosen": "hexwide"}              # the task the configs are written for (phase 2's decision)
 P3_KEEP_LAST = 3                               # checkpoints kept after scoring: the three behind success at B
 
 
@@ -2116,12 +2116,11 @@ def cmd_phase3_all(args):
     # ---- the task phase 2 chose (the configs are written for it)
     dp = P3_SOURCE / "decision.json"
     dec = json.loads(dp.read_text(encoding="utf-8")) if dp.exists() else {}
-    if dec.get("chosen") != P3_EXPECT["chosen"] or abs(float(dec.get("novice_skill") or -1)
-                                                        - P3_EXPECT["novice_skill"]) > 1e-9:
-        st.warnings.append(f"phase 2's decision ({dp}) says {dec.get('chosen')} / novice "
-                           f"{dec.get('novice_skill')}; the configs are written for {P3_EXPECT['chosen']} / "
-                           f"{P3_EXPECT['novice_skill']}: running them as written")
-    st.decisions["task"] = "hex peg from the wider start range, novice skill 0.15 (phase 2's decision)"
+    if dec.get("chosen") != P3_EXPECT["chosen"]:
+        st.warnings.append(f"phase 2's decision ({dp}) says {dec.get('chosen')}; the configs are written for "
+                           f"{P3_EXPECT['chosen']}: running them as written")
+    st.decisions["task"] = ("hex peg from the wider start range (phase 2's decision); experts and intermediates "
+                            "only, careful (X2) and sometimes careless (X1)")
     # ---- stage 0: tests here; the hex orientation limits are phase 2's (the pilots and the smoke trained with them)
     lim_src, lim = P3_SOURCE / "stage0" / "limits.json", root / "stage0" / "limits.json"
     if lim_src.exists() and not lim.exists():

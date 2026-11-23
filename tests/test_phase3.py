@@ -69,6 +69,9 @@ def _without(cmd, seq):
 def test_planned_runs():
     ss.configure("phase3")
     assert [ss.planned_cells(n) for n in ss.ORDER] == [2, 8, 144, 72]
+    for name in ("X1_careless", "X2_careful"):          # experts and intermediates only (decided 2026-11-24)
+        ops = ss.load_yaml(ss.config_path(name))["operators"]
+        assert (ops.get("expert"), ops.get("intermediate"), ops.get("novice", 0)) == (3, 3, 0), name
     assert ss.GROUPS["main"] == ["X1_careless", "X2_careful"]
 
 
@@ -76,7 +79,7 @@ def test_careful_twin_equals_careless_campaign_but_the_operator():
     x1, x2 = _parse("phase3/X1_careless.yaml"), _parse("phase3/X2_careful.yaml")
     assert x2.methods.split(",") == ["hilserl", "e2hil", "keepall", "bc", "bc-discard", "aqi"]
     for arm in x2.methods.split(","):
-        for tier, op, seed in (("expert", "exp01", 0), ("novice", "nov00", 1)):
+        for tier, op, seed in (("expert", "exp02", 0), ("intermediate", "int02", 1)):
             l1, a1 = _cmds(x1, arm, tier, op, seed)
             l2, a2 = _cmds(x2, arm, tier, op, seed)
             assert l1 == l2, arm
@@ -186,6 +189,7 @@ def test_analysis_on_fixture():
         runs = pa.read_root(root)
         r = next(x for x in runs if x["cell"] == "bc_int00_s0")
         assert abs(r["success_at_B"] - (0.7 + 0.8 + 0.9) / 3) < 1e-9 and abs(r["AULC"] - 0.45) < 1e-9
+        assert abs(r["success_at_8k"] - 0.3) < 1e-9
         assert r["would_stop"] == 6100 and r["op_steps_to_stop"] == 70 and r["op_steps_total"] == 70
         assert r["careless_share"] == 1 / 3 and r["tier"] == "intermediate"
         h = next(x for x in runs if x["cell"] == "hilserl_int00_s0" and x["campaign"] == "X1_careless")
@@ -194,6 +198,7 @@ def test_analysis_on_fixture():
         assert not bad["valid"] and bad["why_not"] == "diverged"
         cs, e2 = pa.analyse(runs)
         c = next(x for x in cs if x["label"].startswith("imitate, discard lowest 40 % vs imitate all"))
+        assert c["measure"] == "AULC" and c["secondary"]["success_at_8k"]["n"] == 6
         assert c["n"] == 6 and c["better"] == 6 and abs(c["mean_diff"] - 0.05) < 1e-9 and c["holm_p"] is not None
         e = next(x for x in cs if x["label"] == "E2HiL vs HIL-SERL, careless operator")
         assert e["n"] == 5 and e["left_out"] == ["nov00 s1"]
