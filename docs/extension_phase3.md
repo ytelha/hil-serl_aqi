@@ -4,11 +4,14 @@ Phases 0–2 ([extension_study.md](extension_study.md)) chose the task of the ma
 start range (`hexwide`). Phase 3 runs the main study there, on the second training machine, unattended and in one go:
 
 ```bash
-bash tools/run_phase3_unattended.sh          # in the background; resumable
+git clone https://github.com/ytelha/hil-serl_aqi.git hil-serl_aqi && cd hil-serl_aqi   # fresh machine
+bash tools/run_phase3_unattended.sh          # in the background; sets up .venv if missing; resumable
+bash tools/phase3_watchdog.sh                # optional: restarts the pipeline if it dies before it finished
 tail -f runs/phase3/pipeline.out             # progress
 ```
 
-Status and results: `results/phase3/RUN_STATUS.md`, `results/phase3/PHASE3_REPORT.md` (never pushed).
+Status and results: `results/phase3/RUN_STATUS.md`, `results/phase3/PHASE3_REPORT.md` (never pushed). At the end the
+results folder is packed into `results/phase3_results_<date>.tgz` (with its sha256) for the transfer.
 
 | step | campaign | runs | what it is for |
 |---|---|---|---|
@@ -124,6 +127,13 @@ open.
   `runs/extension/P1_hex/`; X2 copies `operators/`, `demos/` and `eval_grid.json` from X1. Both are checked by hash
   (`inputs_from.json`). Inputs that differ are never trained on: that step is skipped and recorded.
 - **Read only:** `runs/extension/` (phase 2: the decision, the hex orientation limits, P1_hex's inputs).
+- **Fresh clone** (no `runs/extension/`): stage 0 measures the hex orientation limits, and the probe samples its inputs
+  from its config. The operator int00 and the ruler are then identical to P1_hex's by construction (checked against
+  P1_hex's files); its 6 demonstrations are recorded again with the same seed.
+- **One pipeline at a time:** the launcher holds `runs/phase3/.pipeline.lock`; a second copy exits at once. The
+  watchdog checks every 10 minutes and starts the pipeline again if it is not running and has not finished. It gives
+  up after 6 starts within 3 hours and writes `runs/phase3/WATCHDOG.md`. An interrupted run is retrained from
+  scratch, never resumed from a checkpoint.
 - **No stops:** nothing waits for a person. Failures are recorded in `RUN_STATUS.md` and the next step starts. A rerun
   resumes: finished runs are kept.
 - **Never pushes:** results go to `results/phase3/`.

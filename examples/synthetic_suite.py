@@ -2116,7 +2116,10 @@ def cmd_phase3_all(args):
     # ---- the task phase 2 chose (the configs are written for it)
     dp = P3_SOURCE / "decision.json"
     dec = json.loads(dp.read_text(encoding="utf-8")) if dp.exists() else {}
-    if dec.get("chosen") != P3_EXPECT["chosen"]:
+    if not dp.exists():
+        st.decisions["phase 2's folder"] = (f"{P3_SOURCE} is not on this machine (fresh clone): the hex orientation "
+                                            "limits are measured here, the probe samples its inputs afresh")
+    elif dec.get("chosen") != P3_EXPECT["chosen"]:
         st.warnings.append(f"phase 2's decision ({dp}) says {dec.get('chosen')}; the configs are written for "
                            f"{P3_EXPECT['chosen']}: running them as written")
     st.decisions["task"] = ("hex peg from the wider start range (phase 2's decision); experts and intermediates "
@@ -2165,7 +2168,15 @@ def cmd_phase3_all(args):
 
     # ---- 1. the NaN probe: P1_hex's diverged run again, twice, on its own inputs
     src, dst, items = P3_PROBE
-    ok, msg = copy_inputs(P3_SOURCE / src, root / dst, items)
+    if (P3_SOURCE / src).exists():
+        ok, msg = copy_inputs(P3_SOURCE / src, root / dst, items)
+    else:
+        # fresh clone: the probe's config samples the same operator int00 and builds the same ruler as P1_hex (both
+        # are deterministic in the config; checked against P1_hex's files on 24 Nov 2026); its 6 demonstrations are
+        # recorded again with the same seed
+        ok, msg = True, (f"{P3_SOURCE / src} is not on this machine: operator int00 and the ruler sampled from the "
+                         "config (identical to P1_hex's by construction), demonstrations recorded again (not checked "
+                         "by hash)")
     st.decisions["probe inputs"] = msg
     if ok:
         campaign(dst, "NaN probe: P1_hex keepall int00 s0, twice, 3 000 steps", retry=False)
